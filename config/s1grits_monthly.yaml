@@ -1,0 +1,144 @@
+# =============================================================================
+# S1-GRiTS Legacy Monthly Composite Workflow Configuration
+# =============================================================================
+# Usage: s1grits process --config config/s1grits_monthly.yaml
+#        s1grits process_monthly --config config/s1grits_monthly.yaml
+#
+# Produces monthly median composites from Sentinel-1 OPERA RTC-S1 data.
+# All bursts for a tile are combined regardless of acquisition geometry.
+#
+# For per-track scenes workflow, use s1grits process_scenes instead.
+#
+# Output structure:
+#   {base_dir}/
+#     {TILE}/
+#       catalog.parquet
+#       zarr/S1_monthly.zarr
+#       cog/{TILE}_S1_Monthly_{DIR}_{YYYY-MM}.tif
+#       preview/{TILE}_S1_Monthly_{DIR}_{YYYY-MM}.png
+#       {TILE}_{DIR}_{YYYY-MM}.json
+#   catalog.parquet
+# =============================================================================
+
+# Workflow type (validated by CLI)
+workflow: "monthly"
+
+# ---------------------------------------------------------------------------
+# Metadata — product registry reference
+# ---------------------------------------------------------------------------
+metadata:
+  product_config: config/s1grits_products.yaml
+
+# =============================================================================
+# ROI CONFIGURATION
+#   Pick one mode (comment out the other):
+#
+#   Mode A [wkt]    — polygon geometry, tiles auto-detected from overlap
+#   Mode B [manual] — explicit tile list, faster startup
+# =============================================================================
+roi:
+  # --- Mode A: WKT polygon (EPSG:4326) ---
+  # wkt: "POLYGON((...))"
+
+  # --- Mode B: Manual tile list ---
+  manual_mgrs_tiles:
+    # - "17MPU"
+    - "46SEG"
+    # - "17MQV"
+
+  flight_direction: "DESCENDING"
+  polarization: "VV+VH"
+
+# =============================================================================
+# TIME CONFIGURATION
+# =============================================================================
+time:
+  # --- Mode A: Full archive ---
+  # full: 2026
+
+  # --- Mode B: Specific years ---
+  years: [2026]
+  months: [1]
+
+# =============================================================================
+# OUTPUT CONFIGURATION
+# =============================================================================
+output:
+  base_dir: "./data_cubes"
+  overwrite: false
+
+  formats:
+    cog: true
+    preview: true
+
+# =============================================================================
+# PARALLEL PROCESSING
+# =============================================================================
+parallel:
+  enabled: true
+  max_workers: 4
+
+# =============================================================================
+# MEMORY MANAGEMENT
+# =============================================================================
+memory:
+  max_memory_gb: 'auto'
+  batch_strategy: 'auto'
+  max_download_workers: 4
+  clear_cache_per_batch: true
+  batch_max_retries: 2
+  max_failed_ratio: 0.0
+  scene_retry_timeout_seconds: 600.0
+
+# =============================================================================
+# PROCESSING CONFIGURATION
+# =============================================================================
+processing:
+  spatial_despeckle: false
+
+  # Optional derived bands
+  features_ratio: false
+  features_rvi: false
+  features_glcm: false
+
+  # GLCM texture config (only when features_glcm=true)
+  texture_features:
+    inputs: ["VV_dB", "VH_dB"]
+    metrics: ["contrast", "homogeneity", "entropy", "correlation"]
+    window_size: 5
+    distance: 1
+    angles: [0, 90]
+    average_angles: true
+    levels: 16
+    vv_db_range: [-25, 5]
+    vh_db_range: [-32, -5]
+
+  # Target CRS (null = auto-detect from MGRS tile)
+  target_crs: null
+  target_resolution: 30.0
+  use_roi_mask: false
+  tile_clip: true
+  trim_fraction: 0.15
+  on_time_conflict: "skip"
+  min_valid_lin: 1.0e-7
+  eps_lin: 1.0e-7
+
+  despeckle:
+    method: "tv_bregman"
+    kwargs:
+      reg_param: 5.0
+
+  zarr_chunks:
+    y: 1024
+    x: 1024
+
+  cog_block_size: 256
+
+# =============================================================================
+# LOGGING
+# =============================================================================
+logging:
+  file_level: 'DEBUG'
+  console_level: 'WARNING'
+  suppress_third_party: true
+  log_file: './logs/s1grits_monthly_{timestamp}.log'

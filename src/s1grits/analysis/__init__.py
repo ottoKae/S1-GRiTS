@@ -54,6 +54,12 @@ from .catalog import (
     validate_catalog,
     get_catalog_statistics,
 )
+from s1grits.canonical_catalog_schema import (
+    CANONICAL_CATALOG_COLUMNS,
+    SCHEMA_VERSION,
+    normalize_catalog_record,
+    filter_complete_records,
+)
 
 from .validation import (
     validate_cog_file,

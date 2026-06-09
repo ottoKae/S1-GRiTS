@@ -1,0 +1,76 @@
+# =============================================================================
+# S1-GRiTS Product Registry
+# =============================================================================
+# Defines STRUCTURAL metadata for every product type.
+# Actual bands are determined by workflow config, NOT by this file.
+#
+# Fields:
+#   collection_id   — STAC collection identity
+#   time_varying    — true (time-series) or false (static)
+#   array_dims      — Zarr dimension layout
+#   derived_from    — minimum guaranteed bands (validator checks catalog.bands
+#                     includes these; workflow can append additional bands)
+#   variant_fields  — workflow config dotted-paths that affect product semantics
+#                     (used to compute processing_signature and product_variant)
+#
+# Adding a new product type:
+#   1. Add a new entry under `products:` with a unique product_type
+#   2. Define collection_id, time_varying, array_dims, derived_from, variant_fields
+#   3. Workflow config drives the actual band list via processing.features_*
+#   4. Use the product_type in your workflow's catalog records
+# =============================================================================
+
+schema_version: 3
+
+products:
+  # --- Per-acquisition scenes (workflow_scenes) ---
+  scenes:
+    collection_id: s1grits-scenes
+    time_varying: true
+    array_dims: ["time", "y", "x"]
+    derived_from: ["VV_dB", "VH_dB"]
+    variant_fields:
+      - processing.spatial_despeckle
+      - processing.despeckle_method
+      - processing.despeckle_strength
+      - processing.features_ratio
+      - processing.features_rvi
+      - processing.features_glcm
+
+  # --- Monthly median composites from scenes (workflow_scenes monthly.enabled=true) ---
+  smonthly:
+    collection_id: s1grits-smonthly
+    time_varying: true
+    array_dims: ["time", "y", "x"]
+    derived_from: ["VV_dB", "VH_dB"]
+    variant_fields:
+      - processing.spatial_despeckle
+      - processing.despeckle_method
+      - processing.despeckle_strength
+      - processing.features_ratio
+      - processing.features_rvi
+      - processing.features_glcm
+      - processing.monthly.composite_method
+
+  # --- Static geometry layers (workflow_static) ---
+  static:
+    collection_id: s1grits-static
+    time_varying: false
+    array_dims: ["y", "x"]
+    derived_from:
+      - local_inc_angle
+    variant_fields:
+      - processing.bands
+
+  # --- Legacy monthly composites (workflow.py) ---
+  monthly:
+    collection_id: s1grits-monthly
+    time_varying: true
+    array_dims: ["time", "y", "x"]
+    derived_from: ["VV_dB", "VH_dB"]
+    variant_fields:
+      - processing.monthly_despeckle
+      - processing.despeckle_method
+      - processing.composite_method
+      - processing.features_ratio
+      - processing.features_rvi

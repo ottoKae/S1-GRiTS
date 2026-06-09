@@ -45,13 +45,17 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # Resolve gui/app.py relative to this file:
-    #   src/s1grits/gui_entry.py  →  ../../..  →  repo root
-    gui_app = Path(__file__).resolve().parent.parent.parent / "gui" / "app.py"
+    # Resolve gui/app.py via the installed gui package location.
+    # gui/ is bundled as a top-level package alongside s1grits in site-packages.
+    try:
+        import gui as _gui_pkg
+        gui_app = Path(_gui_pkg.__file__).resolve().parent / "app.py"
+    except ImportError:
+        gui_app = None
 
-    if not gui_app.exists():
-        print(f"ERROR: GUI application not found at {gui_app}", file=sys.stderr)
-        print("       Ensure the S1-GRiTS-core repository structure is intact.", file=sys.stderr)
+    if gui_app is None or not gui_app.exists():
+        print("ERROR: GUI application not found. "
+              "Install with GUI extras: pip install s1grits[gui]", file=sys.stderr)
         sys.exit(1)
 
     cmd = [

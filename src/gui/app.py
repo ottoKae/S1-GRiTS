@@ -13,11 +13,12 @@ from pathlib import Path
 
 import streamlit as st
 
-# Ensure the project root is on the Python path so both
-# `gui.*` and `s1grits.*` imports resolve correctly.
-_ROOT = Path(__file__).resolve().parent.parent
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+# When running directly (streamlit run src/gui/app.py), ensure src/ is on
+# sys.path so that `gui.*` imports resolve correctly.
+# When installed via pip, gui is already importable as a package.
+_SRC = Path(__file__).resolve().parent.parent
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
 
 from gui.styles import inject_css, render_footer
 from gui.pages import page_process, page_catalog, page_tile, page_mosaic, page_mapping

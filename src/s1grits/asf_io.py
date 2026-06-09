@@ -159,7 +159,7 @@ def _get_session(retries=5, backoff_factor=1, pool_maxsize=8) -> requests.Sessio
 
 def _download_to_bytes(
     url: str,
-    timeout: tuple = (30, 900),
+    timeout: tuple = (30, 120),
     retry_timeout_seconds: float = 600.0,
     max_backoff: float = 60.0,
 ) -> bytes:
@@ -352,6 +352,8 @@ def load_and_despeckle_rtc_strict(
     df: pd.DataFrame,
     max_workers: int = 2,
     do_despeckle: bool = False,
+    despeckle_method: str = "tv_bregman",
+    despeckle_kwargs: dict = None,
     scene_max_retries: int = 3,
     max_failed_ratio: float = 0.0,
     retry_timeout_seconds: float = 600.0,
@@ -362,7 +364,10 @@ def load_and_despeckle_rtc_strict(
     Args:
         df: DataFrame with url_copol, url_crosspol, acq_datetime columns.
         max_workers: Parallel download workers.
-        do_despeckle: Apply TV-Bregman despeckle after download.
+        do_despeckle: Apply spatial despeckle after download.
+        despeckle_method: Despeckle algorithm — 'tv_bregman' or 'nlm'.
+        despeckle_kwargs: Extra keyword arguments forwarded to despeckle_2d
+            (e.g. {'reg_param': 25.0} or {'nlm_h': 25.0}).  None uses defaults.
         scene_max_retries: Max retry rounds per scene for network errors.
         max_failed_ratio: Max tolerated ratio of network-failed scenes (0.0 = zero
             tolerance). 404 scenes are always exempt and never counted as failures.
@@ -448,9 +453,11 @@ def load_and_despeckle_rtc_strict(
             )
 
     if do_despeckle:
-        logging.info("Applying TV Despeckle...")
-        final_vv = [despeckle_2d(a, method="tv_bregman") for a in valid_vv]
-        final_vh = [despeckle_2d(a, method="tv_bregman") for a in valid_vh]
+        logging.info("Applying %s despeckle...", despeckle_method)
+        _dkw = despeckle_kwargs or {}
+        _method_key = 'tv_kwargs' if despeckle_method == 'tv_bregman' else 'nlm_kwargs'
+        final_vv = [despeckle_2d(a, method=despeckle_method, **{_method_key: _dkw}) for a in valid_vv]
+        final_vh = [despeckle_2d(a, method=despeckle_method, **{_method_key: _dkw}) for a in valid_vh]
     else:
         final_vv = [a.astype(np.float32) for a in valid_vv]
         final_vh = [a.astype(np.float32) for a in valid_vh]
@@ -458,3 +465,82 @@ def load_and_despeckle_rtc_strict(
     del raw_vv, raw_vh
     gc.collect()
     return final_vv, valid_vv_prof, final_vh, valid_vh_prof, valid_dates
+
+
+# =========================================================
+#  Part 5: Static Layer Download
+# =========================================================
+
+def download_static_burst_arrays(
+    url_copol_list: list[str],
+    layers: list[str],
+    max_workers: int = 2,
+    retry_timeout_seconds: float = 600.0,
+) -> dict[str, tuple[list, list, list]]:
+    """
+    Download static layer GeoTIFFs for a list of burst copol URLs.
+
+    Derives static layer URLs from each copol URL via suffix substitution and
+    downloads them in parallel using the existing read_asf_rtc_image_data
+    infrastructure (with retry, 404 handling, etc.).
+
+    Args:
+        url_copol_list: List of copol (VV/HH) URLs, one per burst.
+        layers: Subset of ['dem', 'inc_map', 'ls_map'] to download.
+        max_workers: Number of parallel download workers.
+        retry_timeout_seconds: Per-URL retry budget in seconds.
+
+    Returns:
+        dict[layer_name, (arrs, profs, error_types)] where each tuple is
+        aligned with url_copol_list. arrs[i] is None on download failure.
+    """
+    from s1grits.asf_tiles import derive_static_urls
+
+    # Log the first copol URL so URL pattern issues are immediately visible.
+    if url_copol_list:
+        logging.info("[Static] Sample url_copol: %s", url_copol_list[0])
+
+    results: dict[str, tuple[list, list, list]] = {}
+    for layer in layers:
+        urls = []
+        for url_copol in url_copol_list:
+            try:
+                derived = derive_static_urls(url_copol)[layer]
+                urls.append(derived)
+                logging.debug("[Static] Derived %s URL: %s", layer, derived)
+            except ValueError as e:
+                # URL suffix not recognised — log clearly so the user can diagnose.
+                logging.warning(
+                    "[Static] Cannot derive %s URL from copol URL %r: %s",
+                    layer, url_copol, e,
+                )
+                urls.append(None)
+
+        # Filter out None entries: replace with empty string so read_asf_rtc_image_data
+        # receives a list of the same length, but skip the actual HTTP request.
+        safe_urls = [u if u is not None else '' for u in urls]
+
+        # Warn if all URLs failed derivation
+        valid_count = sum(1 for u in safe_urls if u)
+        if valid_count == 0:
+            logging.error(
+                "[Static] All %d copol URLs failed suffix derivation for layer '%s'. "
+                "Check that url_copol ends with '_VV.tif' or '_HH.tif'.",
+                len(url_copol_list), layer,
+            )
+
+        arrs, profs, error_types = read_asf_rtc_image_data(
+            safe_urls,
+            max_workers=max_workers,
+            retry_timeout_seconds=retry_timeout_seconds,
+        )
+
+        # Mark entries that had no valid URL as not_found (not network_error)
+        for i, u in enumerate(safe_urls):
+            if not u:
+                arrs[i] = None
+                profs[i] = None
+                error_types[i] = 'not_found'
+
+        results[layer] = (arrs, profs, error_types)
+    return results

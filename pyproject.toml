@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "s1grits"
-version = "1.0.4"
+version = "2.0.0"
 description = "S1-GRiTS: Sentinel-1 Gridded Radiometrically Terrain-Corrected gamma0 Monthly Composite Time Series"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
@@ -59,6 +59,7 @@ dependencies = [
     # ASF data access
     "asf-search>=7.0.0",
     "requests>=2.31.0",
+    "tenacity>=8.0.0",
 
     # Data and configuration
     "pydantic>=2.0.0",
@@ -70,10 +71,14 @@ dependencies = [
     "rich>=13.0.0",
     "tqdm>=4.66.0",
 
-    # Image processing (despeckle + preview)
+    # Image processing (despeckle + preview + visualization)
     "scikit-image>=0.22.0",
     "opencv-python>=4.5.0",
     "pillow>=10.0.0",
+    "matplotlib>=3.7.0",
+
+    # Data validation
+    "pandera>=0.18.0",
 
     # System utilities
     "psutil>=5.9.0",
@@ -129,3 +134,5 @@ where = ["src"]
     "*.so",
 ]
 "s1grits.analysis" = ["*.py"]
+"gui" = ["*.py"]
+"gui.pages" = ["*.py"]

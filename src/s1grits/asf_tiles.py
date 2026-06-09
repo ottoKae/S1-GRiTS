@@ -19,31 +19,64 @@ def convert_asf_url_to_cumulus(url: str) -> str:
     """
     Convert an ASF datapool URL to the equivalent Cumulus earthdatacloud URL.
 
+    Handles both RTC time-series and RTC-STATIC product URLs.
+
+    RTC URL format:    https://datapool.asf.alaska.edu/RTC/OPERA-S1/<filename>
+    RTC-STATIC format: https://datapool.asf.alaska.edu/RTC-STATIC/OPERA-S1/<filename>
+    Cumulus format:    https://cumulus.asf.earthdatacloud.nasa.gov/OPERA/OPERA_L2_RTC-S1/<granule>/<filename>
+
     Args:
-        url: Source URL (ASF datapool or Cumulus format)
+        url: Source URL (ASF datapool RTC, ASF datapool RTC-STATIC, or Cumulus format)
 
     Returns:
         Cumulus URL if input is an ASF datapool URL, otherwise returns input unchanged.
-
-    Raises:
-        ValueError: If the granule name cannot be extracted from the filename.
     """
-    asf_base = 'https://datapool.asf.alaska.edu/RTC/OPERA-S1/'
     cumulus_base = 'https://cumulus.asf.earthdatacloud.nasa.gov/OPERA/OPERA_L2_RTC-S1/'
+    asf_rtc_base = 'https://datapool.asf.alaska.edu/RTC/OPERA-S1/'
+    asf_rtc_static_base = 'https://datapool.asf.alaska.edu/RTC-STATIC/OPERA-S1/'
 
-    if not (url.startswith(cumulus_base) or url.startswith(asf_base)):
-        warn(f'URL {url} is not a valid ASF datapool or cumulus earthdatacloud URL.')
+    # Already a Cumulus URL — return as-is
+    if url.startswith(cumulus_base):
         return url
 
-    if not url.startswith(asf_base):
+    # Determine which ASF datapool base this URL belongs to
+    if url.startswith(asf_rtc_base):
+        asf_base = asf_rtc_base
+    elif url.startswith(asf_rtc_static_base):
+        asf_base = asf_rtc_static_base
+    else:
+        # Not a recognised ASF URL — return unchanged (no warning for non-TIF files)
+        if url.endswith('.tif'):
+            warn(f'URL {url} is not a recognised ASF datapool or Cumulus URL.')
         return url
 
-    filename = url.split('/')[-1]
-    granule_pol_parts = filename.rsplit('_', 1)
-    if len(granule_pol_parts) != 2:
-        raise ValueError(f'Could not extract granule name from filename: {filename}')
+    filename = url[len(asf_base):]  # strip base, keep filename only
+    # OPERA granule name is the filename stem up to (but not including) the layer suffix.
+    # RTC filename:        OPERA_L2_RTC-S1_T018-038646-IW2_20230501T120000Z_..._VV.tif
+    # RTC-STATIC filename: OPERA_L2_RTC-S1-STATIC_T018-038646-IW2_20140403_S1A_30_v1.0_mask.tif
+    # The granule name is the product directory; we derive it by stripping the layer suffix
+    # (everything after the last underscore before a known suffix, or just using the sceneName pattern).
+    # Simplest approach: granule name = filename without the trailing _<layer>.tif part.
+    # The OPERA granule dir has the same name as the product minus the layer suffix.
+    # For RTC-STATIC: OPERA_L2_RTC-S1-STATIC_T018-038646-IW2_20140403_S1A_30_v1.0
+    # For RTC:        OPERA_L2_RTC-S1_T018-038646-IW2_20230501T120000Z_20230501T120010Z_S1A_30_v1.0
+    # Strip known layer suffixes to get the granule name
+    _known_layer_suffixes = (
+        '_VV.tif', '_VH.tif', '_HH.tif', '_HV.tif',
+        '_dem.tif', '_mask.tif', '_incidence_angle.tif',
+        '_local_incidence_angle.tif', '_number_of_looks.tif',
+        '_rtc_anf_gamma0_to_beta0.tif', '_rtc_anf_gamma0_to_sigma0.tif',
+    )
+    granule_name = None
+    for suffix in _known_layer_suffixes:
+        if filename.endswith(suffix):
+            granule_name = filename[:-len(suffix)]
+            break
+    if granule_name is None:
+        # Fallback: strip last underscore-delimited segment (handles unknown suffixes)
+        parts = filename.rsplit('_', 1)
+        granule_name = parts[0] if len(parts) == 2 else filename.replace('.tif', '')
 
-    granule_name = granule_pol_parts[0]
     new_url = f'{cumulus_base}{granule_name}/{filename}'
     return new_url
 
@@ -237,6 +270,219 @@ def get_rtc_s1_ts_metadata_by_burst_ids(
     df_rtc = reorder_columns(df_rtc, rtc_s1_resp_schema)
 
     return df_rtc
+
+
+# =============================================================================
+# Static Layer URL Derivation and RTC-STATIC Product Query
+# =============================================================================
+
+STATIC_LAYER_SUFFIXES: dict[str, str] = {
+    'dem':     '_dem.tif',
+    'inc_map': '_inc_map.tif',
+    'ls_map':  '_ls_map.tif',
+}
+
+# File suffix patterns used to identify static layer files within an RTC-STATIC product.
+# RTC-STATIC products do NOT contain a DEM file; dem is excluded.
+# IMPORTANT: '_local_incidence_angle.tif' must be listed BEFORE '_incidence_angle.tif'
+# because the shorter suffix is a substring of the longer one — endswith() would match
+# both, and we want the more specific (local) variant to take priority.
+# Layover/shadow mask uses '_mask.tif'.
+_STATIC_LAYER_FILE_PATTERNS: dict[str, tuple[str, ...]] = {
+    'local_inc_angle': ('_local_incidence_angle.tif',),
+    'inc_angle':       ('_incidence_angle.tif',),
+    'ls_map':          ('_mask.tif',),
+    'number_of_looks': ('_number_of_looks.tif',),
+    'rtc_anf_beta0':   ('_rtc_anf_gamma0_to_beta0.tif',),
+    'rtc_anf_sigma0':  ('_rtc_anf_gamma0_to_sigma0.tif',),
+}
+
+
+def _extract_static_layer_urls(all_urls: list[str]) -> dict[str, str | None]:
+    """
+    Extract static layer URLs from an RTC-STATIC product's URL list.
+
+    Scans the list of URLs for each known static layer file pattern and
+    returns the first match per layer. Returns None for any layer not found.
+
+    Args:
+        all_urls: List of all URLs for one RTC-STATIC granule (url + additionalUrls).
+
+    Returns:
+        dict mapping layer name to URL or None, e.g.
+        {'dem': 'https://...dem.tif', 'inc_map': None, 'ls_map': 'https://...mask.tif'}
+    """
+    result: dict[str, str | None] = {}
+    for layer, patterns in _STATIC_LAYER_FILE_PATTERNS.items():
+        matched = None
+        for url in all_urls:
+            for pat in patterns:
+                if url.lower().endswith(pat):
+                    matched = url
+                    break
+            if matched:
+                break
+        result[layer] = matched
+    return result
+
+
+def query_rtc_static_metadata_by_burst_ids(
+    burst_ids: list[str],
+    batch_size: int = 50,
+    max_results: int = 5000,
+    max_query_retries: int = 5,
+    query_retry_base_delay: float = 2.0,
+) -> 'pd.DataFrame':
+    """
+    Query ASF for OPERA RTC-STATIC products by burst IDs.
+
+    RTC-STATIC products are not time-series; they are static ancillary layers
+    (DEM, incidence angle map, layover/shadow mask) associated with each burst.
+    They must be queried directly with processingLevel='RTC-STATIC' — they are
+    NOT accessible by deriving URLs from RTC time-series products.
+
+    Args:
+        burst_ids: List of JPL/ASF burst IDs (e.g. ['T018_038645_IW2', ...]).
+            Both underscore and hyphen formats are accepted and normalised.
+        batch_size: Number of burst IDs per ASF query (default 50).
+        max_results: Maximum results per batch query.
+        max_query_retries: Max retries per batch on transient failures (default 5).
+        query_retry_base_delay: Base delay in seconds before first retry,
+            doubled each attempt with jitter (default 2.0).
+
+    Returns:
+        pd.DataFrame with columns:
+            jpl_burst_id, opera_id,
+            url_local_inc_angle, url_inc_angle, url_ls_map,
+            url_number_of_looks, url_rtc_anf_beta0, url_rtc_anf_sigma0,
+            flight_direction, path_number
+        One row per RTC-STATIC granule. Rows missing all layer URLs are dropped.
+    """
+    import time as _time
+    import random as _random
+    import logging
+
+    # Normalise burst IDs to ASF format (uppercase, underscores)
+    normalised = [bid.upper().replace('-', '_') for bid in burst_ids]
+
+    all_records: list[dict] = []
+
+    for i in range(0, len(normalised), batch_size):
+        batch = normalised[i:i + batch_size]
+        batch_num = i // batch_size + 1
+        total_batches = (len(normalised) + batch_size - 1) // batch_size
+        logging.debug("[Static] Querying RTC-STATIC batch %d/%d: %d burst IDs",
+                      batch_num, total_batches, len(batch))
+
+        results = None
+        last_error = None
+        for attempt in range(1, max_query_retries + 1):
+            try:
+                results = asf.search(
+                    operaBurstID=batch,
+                    processingLevel='RTC-STATIC',
+                    maxResults=max_results,
+                )
+                break  # success
+            except Exception as e:
+                last_error = e
+                if attempt < max_query_retries:
+                    delay = query_retry_base_delay * (2 ** (attempt - 1))
+                    jitter = _random.uniform(0, delay * 0.5)
+                    wait = delay + jitter
+                    logging.warning(
+                        "[Static] RTC-STATIC batch %d/%d attempt %d/%d failed: %s. "
+                        "Retrying in %.1fs...",
+                        batch_num, total_batches, attempt, max_query_retries,
+                        e, wait,
+                    )
+                    _time.sleep(wait)
+                else:
+                    logging.warning(
+                        "[Static] RTC-STATIC batch %d/%d failed after %d attempts: %s",
+                        batch_num, total_batches, max_query_retries, e,
+                    )
+
+        if results is None:
+            results = []
+
+        for r in results:
+            p = r.properties
+            # Use ASF datapool URLs directly — RTC-STATIC products are NOT on Cumulus.
+            # Do NOT convert to Cumulus format; the ASF datapool URLs are the correct endpoints.
+            all_urls: list[str] = ([p.get('url', '')] + list(p.get('additionalUrls') or []))
+            all_urls = [u for u in all_urls if u]
+
+            layer_urls = _extract_static_layer_urls(all_urls)
+
+            # Skip granules with no recognised static files at all
+            if not any(layer_urls.values()):
+                logging.debug("[Static] Skipping granule with no static layer URLs: %s",
+                              p.get('sceneName', ''))
+                continue
+
+            all_records.append({
+                'jpl_burst_id':        p.get('operaBurstID', '').upper().replace('-', '_'),
+                'opera_id':            p.get('sceneName', ''),
+                'url_local_inc_angle': layer_urls.get('local_inc_angle'),
+                'url_inc_angle':       layer_urls.get('inc_angle'),
+                'url_ls_map':          layer_urls.get('ls_map'),
+                'url_number_of_looks': layer_urls.get('number_of_looks'),
+                'url_rtc_anf_beta0':   layer_urls.get('rtc_anf_beta0'),
+                'url_rtc_anf_sigma0':  layer_urls.get('rtc_anf_sigma0'),
+                'flight_direction':    p.get('flightDirection', ''),
+                'path_number':         p.get('pathNumber'),
+            })
+
+        _time.sleep(0.2)
+
+    if not all_records:
+        logging.warning(
+            "[Static] No RTC-STATIC products found for %d burst IDs. "
+            "Ensure asf_search >= 6.7.3 and that RTC-STATIC data exists for this region.",
+            len(burst_ids),
+        )
+        import pandas as _pd
+        return _pd.DataFrame(columns=[
+            'jpl_burst_id', 'opera_id',
+            'url_dem', 'url_inc_map', 'url_ls_map',
+            'flight_direction', 'path_number',
+        ])
+
+    import pandas as _pd
+    df = _pd.DataFrame(all_records)
+    # One RTC-STATIC granule per burst — keep unique burst IDs (latest opera_id if duplicates)
+    df = df.sort_values('opera_id').drop_duplicates(subset=['jpl_burst_id'], keep='last')
+    df = df.reset_index(drop=True)
+    logging.info("[Static] Found %d RTC-STATIC granules for %d burst IDs",
+                 len(df), len(burst_ids))
+    return df
+
+
+def derive_static_urls(url_copol: str) -> dict[str, str]:
+    """
+    Derive static layer URLs from a copol (VV/HH) URL by suffix substitution.
+
+    .. deprecated::
+        OPERA RTC-S1 time-series products do NOT include static ancillary files
+        (_dem.tif, _inc_map.tif, _ls_map.tif). These files only exist in
+        dedicated RTC-STATIC products. Use query_rtc_static_metadata_by_burst_ids()
+        instead. This function is retained for backward compatibility only.
+
+    Args:
+        url_copol: Cumulus URL ending in '_VV.tif' or '_HH.tif'.
+
+    Returns:
+        dict mapping layer name to derived URL (may return 404 if files do not exist).
+
+    Raises:
+        ValueError: If url_copol does not end with a recognised copol suffix.
+    """
+    for copol_suffix in ('_VV.tif', '_HH.tif'):
+        if url_copol.endswith(copol_suffix):
+            base = url_copol[:-len(copol_suffix)]
+            return {layer: base + suffix for layer, suffix in STATIC_LAYER_SUFFIXES.items()}
+    raise ValueError(f"Cannot derive static URLs from copol URL: {url_copol!r}")
 
 
 def get_rtc_s1_metadata_from_acq_group(

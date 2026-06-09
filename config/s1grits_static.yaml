@@ -1,0 +1,106 @@
+# =============================================================================
+# S1-GRiTS Static Layers Workflow Configuration
+# =============================================================================
+# Usage: s1grits process_static --config config/s1grits_static.yaml
+#
+# Generates time-invariant geometry layers (DEM, incidence angle, layover/
+# shadow mask) per MGRS tile, grouped by acquisition geometry (track+burs group).
+#
+# Each acq_group produces its own 2D Zarr store with (y, x) dimensions.
+#
+# Output structure:
+#   {base_dir}/
+#     {TILE}/
+#       catalog.parquet
+#       static_{DIR}/zarr/s1grits_static_{TILE}_{DIR}_TK{tk}_N{nn}.zarr
+#       static_{DIR}/cog/*.tif
+#       static_{DIR}/items/{TILE}_{DIR}_TK{tk}_N{nn}_static.json
+#   catalog.parquet
+# =============================================================================
+
+# Workflow type (validated by CLI)
+workflow: "static"
+
+# ---------------------------------------------------------------------------
+# Metadata — product registry reference
+# ---------------------------------------------------------------------------
+metadata:
+  product_config: config/s1grits_products.yaml
+
+# =============================================================================
+# ROI CONFIGURATION
+# =============================================================================
+roi:
+  manual_mgrs_tiles:
+    # - "50RKV"
+    - "46SEG"
+    # - "17MQV"
+
+  flight_direction: "DESCENDING"
+
+# =============================================================================
+# OUTPUT CONFIGURATION
+# =============================================================================
+output:
+  base_dir: "./data_cubes"
+  overwrite: true
+
+  formats:
+    cog: false
+    preview: false
+    zarr: true
+
+# =============================================================================
+# PARALLEL PROCESSING
+# =============================================================================
+parallel:
+  enabled: true
+  max_workers: 4
+
+# =============================================================================
+# STATIC LAYERS CONFIGURATION
+# =============================================================================
+static_layers:
+  # Set enabled=true to generate static layers
+  enabled: true
+
+  # Layer names to produce (true = enable, false = skip)
+  layers:
+    local_inc_angle: true
+    inc_angle: true
+    ls_map: true
+    number_of_looks: true
+    rtc_anf_beta0: true
+    rtc_anf_sigma0: true
+
+  # Target resolution in meters
+  target_resolution: 30.0
+
+  # Zarr chunk size
+  zarr_chunks:
+    y: 512
+    x: 512
+
+  # COG block size
+  cog_block_size: 256
+
+# =============================================================================
+# MEMORY / NETWORK MANAGEMENT
+# =============================================================================
+memory:
+  max_memory_gb: 'auto'
+  batch_strategy: 'auto'
+  max_download_workers: 4
+  clear_cache_per_batch: true
+  batch_max_retries: 3
+  max_failed_ratio: 0.0
+  scene_retry_timeout_seconds: 900.0
+
+# =============================================================================
+# LOGGING
+# =============================================================================
+logging:
+  file_level: 'DEBUG'
+  console_level: 'WARNING'
+  suppress_third_party: true
+  log_file: './logs/s1grits_static_{timestamp}.log'

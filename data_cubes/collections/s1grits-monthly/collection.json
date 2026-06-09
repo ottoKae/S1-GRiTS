@@ -1,28 +1,29 @@
 {
   "stac_version": "1.1.0",
   "stac_extensions": [
-    "https://stac-extensions.github.io/datacube/v2.3.0/schema.json"
+    "https://stac-extensions.github.io/datacube/v2.3.0/schema.json",
+    "https://stac-extensions.github.io/projection/v2.0.0/schema.json"
   ],
   "type": "Collection",
-  "id": "s1-grits-monthly",
+  "id": "s1grits-monthly",
   "title": "S1-GRiTS: Sentinel-1 Monthly Composite Time Series",
-  "description": "Monthly Sentinel-1 SAR backscatter composites processed from OPERA RTC-S1 products and gridded to MGRS tiles. Tiles: 50RKV. Bands: VV_dB (dB), VH_dB (dB), Ratio = VH/VV (dimensionless, linear), RVI = 4*VH/(VV+VH) (dimensionless, range 0-4).",
+  "description": "Monthly Sentinel-1 SAR backscatter composites processed from OPERA RTC-S1 products and gridded to MGRS tiles. Tiles: 46SEG. Bands: VV_dB (dB), VH_dB (dB), Ratio = VH/VV (dimensionless, linear), RVI = 4*VH/(VV+VH) (dimensionless, range 0-4).",
   "license": "proprietary",
   "extent": {
     "spatial": {
       "bbox": [
         [
-          113.837873,
-          30.606877,
-          115.015286,
-          31.619796
+          92.999431,
+          36.951209,
+          94.249354,
+          37.94759
         ]
       ]
     },
     "temporal": {
       "interval": [
         [
-          "2026-02-01T00:00:00Z",
+          "2026-01-01T00:00:00Z",
           null
         ]
       ]
@@ -43,8 +44,8 @@
       "type": "temporal",
       "step": "P1M",
       "extent": [
-        "2026-02-01T00:00:00Z",
-        "2026-02-01T00:00:00Z"
+        "2026-01-01T00:00:00Z",
+        "2026-01-01T00:00:00Z"
       ]
     },
     "spectral": {
@@ -66,13 +67,16 @@
       "c-sar"
     ],
     "mgrs:tile_id": [
-      "50RKV"
+      "46SEG"
     ],
     "s1:orbit_direction": [
-      "ascending"
+      "descending"
     ],
     "s1:band_count": 4,
-    "s1:glcm_enabled": false
+    "s1:glcm_enabled": false,
+    "s1:output_types": [
+      "monthly"
+    ]
   },
   "links": [
     {
@@ -81,9 +85,9 @@
     },
     {
       "rel": "item",
-      "href": "./50RKV_ASCENDING/50RKV_ASCENDING_2026-02.json",
+      "href": "../../46SEG/items/monthly_DESCENDING_ARDC/46SEG_DESCENDING_2026-01.json",
       "type": "application/geo+json",
-      "title": "50RKV_ASCENDING_2026-02"
+      "title": "46SEG_DESCENDING_2026-01"
     }
   ]
 }

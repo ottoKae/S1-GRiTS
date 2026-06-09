@@ -36,13 +36,26 @@ from s1grits.logger_config import get_logger
 logger = get_logger(__name__)
 
 
-def _is_future_or_current_month(year: int, month: int) -> bool:
-    """Return True if (year, month) is the current incomplete month or any future month."""
+def _is_future_or_current_month(year: int, month: int, allow_current: bool = False) -> bool:
+    """Return True if (year, month) should be skipped due to being current or future.
+
+    Args:
+        year: The year to check.
+        month: The month to check.
+        allow_current: If True, the current (incomplete) month is allowed and only
+                       strictly future months are blocked. Default is False (monthly
+                       workflow behavior: block current month until it is complete).
+    """
     today = _date.today()
+    if allow_current:
+        # Block only strictly future months; current month is allowed
+        return (year, month) > (today.year, today.month)
     return (year, month) >= (today.year, today.month)
 
 
-def parse_time_range_config(config: dict, wkt: str) -> list[tuple[str, str]]:
+def parse_time_range_config(
+    config: dict, wkt: str, allow_current_month: bool = False
+) -> list[tuple[str, str]]:
     """
     Parse the time range from the configuration dictionary.
 
@@ -183,7 +196,7 @@ def parse_time_range_config(config: dict, wkt: str) -> list[tuple[str, str]]:
         else:
             valid_months = []
             for m in months:
-                if _is_future_or_current_month(year, m):
+                if _is_future_or_current_month(year, m, allow_current=allow_current_month):
                     logger.warning(
                         "Skipping %d-%02d: month is current (incomplete) or future "
                         "(today is %s)",

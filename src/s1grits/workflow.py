@@ -10,6 +10,7 @@ v1.0.0 - Supports parallel processing and catalog management
 import sys
 import os
 import gc
+import json
 import time
 import logging
 from pathlib import Path
@@ -48,6 +49,14 @@ from s1grits.adapters import (
 )
 from s1grits.zarr_time_fix import fix_zarr_order
 from s1grits.logger_config import get_logger
+from s1grits.file_lock import acquire_lock, release_lock
+from s1grits.product_instance import (
+    resolve_variant_values,
+    make_processing_signature,
+    make_product_variant,
+    derive_actual_bands,
+)
+from s1grits.product_registry import load_product_registry
 
 logger = get_logger(__name__)
 
@@ -89,7 +98,7 @@ def enumerate_mgrs_tiles(config: dict) -> list[str]:
     Raises:
         ValueError: If no MGRS tiles intersect the ROI geometry.
     """
-    roi_config = config['roi']
+    roi_config = config.get('roi', {})
 
     # Check if MGRS tiles are manually specified
     manual_tiles = roi_config.get('manual_mgrs_tiles')
@@ -98,7 +107,7 @@ def enumerate_mgrs_tiles(config: dict) -> list[str]:
         return manual_tiles
 
     # Auto-detect MGRS tiles
-    wkt_str = roi_config['wkt']
+    wkt_str = roi_config.get('wkt', '')
     geom = shapely_wkt.loads(wkt_str)
 
     logger.info("Auto-detecting MGRS tiles from WKT...")
@@ -133,7 +142,7 @@ def query_rtc_metadata_for_tile(
     Returns:
         gpd.GeoDataFrame: Merged metadata
     """
-    roi_config = config['roi']
+    roi_config = config.get('roi', {})
     polarization = roi_config.get('polarization', 'VV+VH')
 
     all_metadata = []
@@ -211,6 +220,9 @@ def process_single_mgrs_tile(
 
         if df_rtc_ts.empty:
             return {
+                'tile_dir': None,
+                'catalog_path': None,
+                'written_months': [],
                 'status': 'failed',
                 'error': 'No data available'
             }
@@ -218,12 +230,15 @@ def process_single_mgrs_tile(
         _console.print(f"[dim]  [1/4] Found [bold]{len(df_rtc_ts)}[/bold] scenes[/dim]")
 
         # 2. Filter by flight direction
-        flight_direction = config['roi'].get('flight_direction')
+        flight_direction = config.get('roi', {}).get('flight_direction')
         if flight_direction:
             df_rtc_ts = filter_by_flight_direction(df_rtc_ts, flight_direction)
 
             if df_rtc_ts.empty:
                 return {
+                    'tile_dir': None,
+                    'catalog_path': None,
+                    'written_months': [],
                     'status': 'failed',
                     'error': f'Flight direction {flight_direction} No data'
                 }
@@ -234,7 +249,7 @@ def process_single_mgrs_tile(
         _console.print(f"[dim]  [2/4] Batch strategy: [bold]{batch_strategy}[/bold] ({n_scenes} scenes)[/dim]")
 
         # 4. Prepare output paths (using new output_root architecture)
-        output_config = config['output']
+        output_config = config.get('output', {})
         # Defensive read: YAML parses "processing:\n\n  key: val" correctly, but an
         # empty "processing:" node returns None.  Guard against that here.
         processing_config = config.get('processing') or {}
@@ -244,15 +259,43 @@ def process_single_mgrs_tile(
                 "Check that 'processing:' in the YAML has no blank line immediately after it."
             )
         # Apply processing level suffix to output root directory
-        # post_processing=true  → hARDCp (despeckle applied)
-        # post_processing=false → ARDC   (no despeckle)
-        _post_processing = processing_config.get('post_processing', True)
-        _processing_level = "hARDCp" if _post_processing else "ARDC"
-        _level_suffix = f"_{_processing_level}"
-        output_root = Path(str(output_config['base_dir']) + _level_suffix)
+        # spatial_despeckle=true  → hARDCp (despeckle applied)
+        # spatial_despeckle=false → ARDC   (no despeckle)
+        _monthly_despeckle = processing_config.get('spatial_despeckle', False)
+        _processing_level = "hARDCp" if _monthly_despeckle else "ARDC"
+        features_ratio = processing_config.get('features_ratio', False)
+        features_rvi = processing_config.get('features_rvi', False)
+        features_glcm = processing_config.get('features_glcm', False)
+        tile_clip = processing_config.get('tile_clip', True)
+        _dir_token = {"ASCENDING": "ASCENDING", "DESCENDING": "DESCENDING"}.get(
+            config.get('roi', {}).get('flight_direction'), ""
+        )
+        # Build band token from enabled feature flags (only non-default bands get a token)
+        _band_parts = []
+        if features_ratio:
+            _band_parts.append('Ratio')
+        if features_rvi:
+            _band_parts.append('RVI')
+        if features_glcm:
+            _band_parts.append('GLCM')
+        _band_token = ('_' + '_'.join(_band_parts)) if _band_parts else ''
+        output_root = Path(output_config.get('base_dir', './output'))
 
         logger.info("Output root directory: %s", output_root)
         logger.info("Tile directory: %s", output_root / mgrs_tile_id)
+
+        # Compute processing variant metadata for monthly product
+        _registry = load_product_registry()
+        _monthly_spec = _registry.get("monthly")
+        _monthly_variant_fields = _monthly_spec.variant_fields if _monthly_spec else []
+        _monthly_variant_vals = resolve_variant_values(config, _monthly_variant_fields)
+        _monthly_bands = derive_actual_bands(config, "monthly")
+        _monthly_sig = make_processing_signature(_monthly_variant_vals)
+        _monthly_variant = make_product_variant("monthly", _monthly_variant_vals, _monthly_bands)
+        logger.info(
+            "Monthly variant: %s  signature: %s  bands: %s",
+            _monthly_variant, _monthly_sig, _monthly_bands,
+        )
 
         # 5. Process in batches
         dates = pd.to_datetime(df_rtc_ts['acq_dt']).unique()
@@ -283,17 +326,18 @@ def process_single_mgrs_tile(
             # Download + despeckle (with batch-level retry)
             logger.info("  Downloading data...")
             _console.print("[dim]      Downloading...[/dim]", end="\r")
-            _batch_max_retries          = config['memory'].get('batch_max_retries', 2)
-            _scene_max_retries          = config['memory'].get('scene_max_retries', 3)  # ignored, kept for compat
-            _max_failed_ratio           = config['memory'].get('max_failed_ratio', 0.0)
-            _scene_retry_timeout        = config['memory'].get('scene_retry_timeout_seconds', 600.0)
+            _mem_cfg = config.get('memory', {})
+            _batch_max_retries          = _mem_cfg.get('batch_max_retries', 2)
+            _scene_max_retries          = _mem_cfg.get('scene_max_retries', 3)
+            _max_failed_ratio           = _mem_cfg.get('max_failed_ratio', 0.0)
+            _scene_retry_timeout        = _mem_cfg.get('scene_retry_timeout_seconds', 600.0)
             _batch_success = False
             final_vv = final_vh = clean_dates = None
             for _batch_attempt in range(_batch_max_retries + 1):
                 try:
                     final_vv, prof_vv, final_vh, prof_vh, clean_dates = load_and_despeckle_rtc_strict(
                         df_input,
-                        max_workers=config['memory']['max_download_workers'],
+                        max_workers=config.get('memory', {}).get('max_download_workers', 4),
                         do_despeckle=False,
                         scene_max_retries=_scene_max_retries,
                         max_failed_ratio=_max_failed_ratio,
@@ -301,7 +345,7 @@ def process_single_mgrs_tile(
                     )
                     _batch_success = True
                     break
-                except RuntimeError as _batch_err:
+                except Exception as _batch_err:
                     if _batch_attempt < _batch_max_retries:
                         _wait = 30 * (2 ** _batch_attempt)  # 30s, 60s
                         logger.warning(
@@ -331,28 +375,35 @@ def process_single_mgrs_tile(
                 prof_vh=prof_vh,
                 acq_datetimes=clean_dates,
                 mgrs_tile_id=mgrs_tile_id,
-                flight_direction=config['roi'].get('flight_direction'),
+                flight_direction=config.get('roi', {}).get('flight_direction'),
                 output_root=str(output_root),
-                target_res=processing_config['target_resolution'],
-                roi_wkt=config['roi'].get('wkt'),
-                use_roi_mask=processing_config['use_roi_mask'],
-                group_mode=processing_config['group_mode'],
-                trim_fraction=processing_config['trim_fraction'],
-                on_time_conflict="overwrite" if output_config.get('overwrite', False) else processing_config.get('on_time_conflict', 'skip'),
-                monthly_despeckle=processing_config['despeckle']['monthly_despeckle'],
-                despeckle_method=processing_config['despeckle']['method'],
-                despeckle_kwargs=processing_config['despeckle']['kwargs'],
-                min_valid_lin=processing_config['min_valid_lin'],
-                eps_lin=processing_config['eps_lin'],
-                chunk_y=processing_config['zarr_chunks']['y'],
-                chunk_x=processing_config['zarr_chunks']['x'],
-                cog_block=processing_config['cog_block_size'],
+                target_res=processing_config.get('target_resolution', 30.0),
+                roi_wkt=config.get('roi', {}).get('wkt'),
+                use_roi_mask=processing_config.get('use_roi_mask', False),
+                group_mode=processing_config.get('group_mode', 'hour'),
+                trim_fraction=processing_config.get('trim_fraction', 0.15),
+                on_time_conflict=output_config.get('on_time_conflict', 'skip'),
+                monthly_despeckle=_monthly_despeckle,
+                despeckle_method=processing_config.get('despeckle', {}).get('method', 'tv_bregman'),
+                despeckle_kwargs=processing_config.get('despeckle', {}).get('kwargs', {'reg_param': 5.0}),
+                min_valid_lin=processing_config.get('min_valid_lin', 1e-6),
+                eps_lin=processing_config.get('eps_lin', 1e-8),
+                chunk_y=processing_config.get('zarr_chunks', {}).get('y', 512),
+                chunk_x=processing_config.get('zarr_chunks', {}).get('x', 512),
+                cog_block=processing_config.get('cog_block_size', 256),
                 overwrite_cog=output_config.get('overwrite', False),
                 generate_cog=output_config.get('formats', {}).get('cog', True),
                 generate_preview=output_config.get('formats', {}).get('preview', True),
                 preview_res=300.0,
                 processing_level=_processing_level,
                 texture_cfg=processing_config.get('texture_features'),
+                features_ratio=features_ratio,
+                features_rvi=features_rvi,
+                features_glcm=features_glcm,
+                tile_clip=tile_clip,
+                processing_signature=_monthly_sig,
+                product_variant=_monthly_variant,
+                processing_variant_json=json.dumps(_monthly_variant_vals),
             )
 
             batch_months = res.get('written_months', [])
@@ -363,8 +414,31 @@ def process_single_mgrs_tile(
                 f"wrote {len(batch_months)} month(s): {', '.join(batch_months)}[/green]"
             )
 
+            # Patch catalog parquet with variant metadata for records written in this batch
+            _catalog_path = res.get('catalog_path')
+            if _catalog_path and batch_months:
+                try:
+                    import json as _json
+                    import pyarrow.parquet as _pq
+                    import pyarrow as _pa
+                    _df_cat = _pq.read_table(_catalog_path).to_pandas()
+                    _mask = _df_cat['month'].isin(batch_months) & (_df_cat['product_type'] == 'monthly')
+                    if _mask.any():
+                        _df_cat.loc[_mask, 'product_variant'] = _monthly_variant
+                        _df_cat.loc[_mask, 'processing_signature'] = _monthly_sig
+                        _df_cat.loc[_mask, 'processing_config_json'] = _json.dumps(
+                            _monthly_variant_vals, sort_keys=True
+                        )
+                        _pq.write_table(_pa.Table.from_pandas(_df_cat), _catalog_path)
+                        logger.info(
+                            "[Catalog] Patched %d monthly records with variant=%s sig=%s",
+                            _mask.sum(), _monthly_variant, _monthly_sig,
+                        )
+                except Exception as _patch_err:
+                    logger.warning("Failed to patch catalog with variant metadata: %s", _patch_err)
+
             # Clean up memory
-            if config['memory']['clear_cache_per_batch']:
+            if config.get('memory', {}).get('clear_cache_per_batch', True):
                 del final_vv, final_vh, df_batch, df_input
                 gc.collect()
 
@@ -378,7 +452,7 @@ def process_single_mgrs_tile(
         )
 
         # Apply Zarr time ordering fix if enabled
-        zarr_fix_config = config['processing'].get('zarr_time_fix', {})
+        zarr_fix_config = config.get('processing', {}).get('zarr_time_fix', {})
         if zarr_fix_config.get('enabled', False):
             zarr_path = Path(res['tile_dir']) / 'zarr' / 'S1_monthly.zarr'
             if zarr_path.exists():
@@ -400,6 +474,26 @@ def process_single_mgrs_tile(
             else:
                 logger.warning("Zarr path not found: %s", zarr_path)
 
+        # Static layer processing (one-shot, time-invariant)
+        # Runs after monthly compositing so df_rtc_ts is already in scope.
+        static_cfg = config.get('static_layers', {})
+        if static_cfg.get('enabled', False):
+            from s1grits.workflow_static import _get_enabled_layers, process_static_for_tile
+            _static_layers = _get_enabled_layers(config)
+            if _static_layers:
+                _console.print("[dim]  [5/5] Processing static layers...[/dim]")
+                _static_result = process_static_for_tile(
+                    mgrs_tile_id=mgrs_tile_id,
+                    config=config,
+                    output_root=output_root,
+                    layers=_static_layers,
+                )
+                if _static_result['status'] == 'failed':
+                    logger.warning(
+                        "Static layer processing failed for %s: %s",
+                        mgrs_tile_id, _static_result['error'],
+                    )
+
         return {
             'tile_dir': res['tile_dir'],
             'catalog_path': res['catalog_path'],
@@ -411,6 +505,9 @@ def process_single_mgrs_tile(
     except Exception as e:
         logger.error("Processing failed for %s: %s", mgrs_tile_id, e, exc_info=True)
         return {
+            'tile_dir': None,
+            'catalog_path': None,
+            'written_months': [],
             'status': 'failed',
             'error': str(e)
         }
@@ -475,7 +572,7 @@ def run_multi_mgrs_monthly_workflow(config_path: str | Path) -> dict[str, dict]:
 
     # 3. Parse time ranges
     # wkt is only needed for mode='full' without manual_mgrs_tiles; use None for Mode B
-    wkt = config['roi'].get('wkt')
+    wkt = config.get('roi', {}).get('wkt')
     time_ranges = parse_time_range_config(config, wkt)
 
     # 4. Parallel configuration
@@ -484,12 +581,14 @@ def run_multi_mgrs_monthly_workflow(config_path: str | Path) -> dict[str, dict]:
     max_workers = parallel_config.get('max_workers', 4)
 
     results = {}
+    _base_dir = config.get('output', {}).get('base_dir', './output')
+    _lock_info = acquire_lock(str(_base_dir))
 
     # 4b. Disk space pre-check
     try:
         import shutil as _shutil
         from pathlib import Path as _Path
-        output_root_check = _Path(config['output']['base_dir'])
+        output_root_check = _Path(_base_dir)
         # Walk up to the nearest existing ancestor so disk_usage works even
         # when the output directory has not been created yet.
         while output_root_check != output_root_check.parent and not output_root_check.exists():
@@ -573,12 +672,12 @@ def run_multi_mgrs_monthly_workflow(config_path: str | Path) -> dict[str, dict]:
     # 6. Merge all tile catalogs
     from s1grits.asf_output_writing import merge_tile_catalogs
 
-    _post_proc = config['processing'].get('post_processing', True)
-    _proc_suffix = "_hARDCp" if _post_proc else "_ARDC"
-    output_root = str(config['output']['base_dir']) + _proc_suffix
+    output_root = str(config.get('output', {}).get('base_dir', '.'))
     try:
         catalog_path = merge_tile_catalogs(output_root)
         logger.info("Global catalog: %s", catalog_path)
+        from s1grits.catalog_sync import update_root_catalog
+        update_root_catalog(output_root)
     except Exception as e:
         logger.warning("Catalog merge failed: %s", e)
 
@@ -604,8 +703,10 @@ def run_multi_mgrs_monthly_workflow(config_path: str | Path) -> dict[str, dict]:
     # Per-tile coverage summary (from catalog if available)
     try:
         import pandas as _pd
-        _level_suffix = "_hARDCp" if config['processing'].get('post_processing', True) else "_ARDC"
-        _output_root = Path(str(config['output']['base_dir']) + _level_suffix)
+        _dir_cov = {"ASCENDING": "ASCENDING", "DESCENDING": "DESCENDING"}.get(
+            config.get('roi', {}).get('flight_direction'), ""
+        )
+        _output_root = Path(config.get('output', {}).get('base_dir', './output'))
         _catalog_glob = list(_output_root.glob("*/catalog.parquet"))
         if _catalog_glob:
             _dfs = []
@@ -627,4 +728,5 @@ def run_multi_mgrs_monthly_workflow(config_path: str | Path) -> dict[str, dict]:
 
     logger.info("=" * 60)
 
+    release_lock(_lock_info)
     return results

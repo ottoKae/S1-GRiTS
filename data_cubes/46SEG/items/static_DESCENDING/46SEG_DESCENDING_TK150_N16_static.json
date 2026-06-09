@@ -1,0 +1,96 @@
+{
+  "stac_version": "1.1.0",
+  "stac_extensions": [
+    "https://stac-extensions.github.io/datacube/v2.3.0/schema.json",
+    "https://stac-extensions.github.io/projection/v2.0.0/schema.json"
+  ],
+  "type": "Feature",
+  "id": "46SEG_DESCENDING_TK150_N16_static",
+  "collection": "s1grits-static",
+  "geometry": null,
+  "bbox": null,
+  "properties": {
+    "datetime": null,
+    "start_datetime": null,
+    "end_datetime": null,
+    "s1grits:time_type": "static",
+    "s1grits:product_type": "static",
+    "s1grits:tile_id": "46SEG",
+    "s1grits:flight_direction": "DESCENDING",
+    "s1grits:track": 150,
+    "s1grits:n_bursts": 16,
+    "s1grits:geometry_group_id": "46SEG_DESCENDING_TK150_N16",
+    "s1grits:grid_id": "46SEG_native_30m",
+    "s1grits:time_varying": false,
+    "s1grits:array_dims": [
+      "y",
+      "x"
+    ],
+    "s1grits:bands": [
+      "local_inc_angle",
+      "inc_angle",
+      "ls_map",
+      "number_of_looks",
+      "rtc_anf_beta0",
+      "rtc_anf_sigma0"
+    ],
+    "cube:dimensions": {
+      "x": {
+        "type": "spatial",
+        "axis": "x"
+      },
+      "y": {
+        "type": "spatial",
+        "axis": "y"
+      },
+      "spectral": {
+        "type": "bands",
+        "values": [
+          "local_inc_angle",
+          "inc_angle",
+          "ls_map",
+          "number_of_looks",
+          "rtc_anf_beta0",
+          "rtc_anf_sigma0"
+        ]
+      }
+    }
+  },
+  "assets": {
+    "zarr": {
+      "href": "../../static_DESCENDING/zarr/s1grits_static_46SEG_DESCENDING_TK150_N16.zarr",
+      "type": "application/vnd.zarr; version=3",
+      "roles": [
+        "data",
+        "zarr",
+        "static",
+        "auxiliary"
+      ],
+      "title": "S1-GRiTS static geometry layers Zarr"
+    },
+    "cog": {
+      "href": "../../static_DESCENDING/cog/s1grits_static_46SEG_DESCENDING_TK150_N16_local_inc_angle.tif",
+      "type": "image/tiff; application=geotiff; profile=cloud-optimized",
+      "roles": [
+        "data",
+        "visual",
+        "cog"
+      ],
+      "title": "Static layer multi-band COG"
+    }
+  },
+  "links": [
+    {
+      "rel": "self",
+      "href": "./46SEG_DESCENDING_TK150_N16_static.json"
+    },
+    {
+      "rel": "collection",
+      "href": "../../../../collections/s1grits-static/collection.json"
+    },
+    {
+      "rel": "root",
+      "href": "../../../../catalog.json"
+    }
+  ]
+}

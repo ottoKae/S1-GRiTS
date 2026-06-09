@@ -1,0 +1,179 @@
+# =============================================================================
+# S1-GRiTS Scenes Workflow Configuration
+# =============================================================================
+# Usage: s1grits process_scenes --config config/s1grits_scenes.yaml
+#
+# Produces per-pass tile mosaics as the primary product, with optional
+# monthly compositing controlled by processing.monthly.enabled.
+#
+# Output structure:
+#   {base_dir}/
+#     {TILE}/
+#       catalog.parquet
+#       scenes_{DESPECKLE}_{BANDS}/zarr/s1grits_scenes_{TILE}_{DIR}_TK{tk}_N{nn}.zarr
+#       scenes_{DESPECKLE}_{BANDS}/cog/{TILE}_{DIR}_{ACQDT}.tif
+#       scenes_{DESPECKLE}_{BANDS}/preview/{TILE}_{DIR}_{ACQDT}.png
+#       scenes_{DESPECKLE}_{BANDS}/items/{TILE}_{DIR}_{ACQDT}.json
+#       smonthly_{DESPECKLE}_{BANDS}/                                       (if monthly.enabled)
+#         zarr/s1grits_smonthly_{TILE}_{DIR}_monthly.zarr
+#         cog/{TILE}_S1_Monthly_{DIR}_{YYYY-MM}.tif
+#         preview/{TILE}_S1_Monthly_{DIR}_{YYYY-MM}.png
+#         items/{TILE}_{DIR}_{YYYY-MM}.json
+#   catalog.parquet
+# =============================================================================
+
+# Workflow type (validated by CLI)
+workflow: "scenes"
+
+# ---------------------------------------------------------------------------
+# Metadata — product registry reference
+# ---------------------------------------------------------------------------
+metadata:
+  # Path to product registry YAML (relative to project root or absolute)
+  # Defines collection_id, bands, array_dims for each product_type.
+  # If omitted, defaults to config/s1grits_products.yaml then built-in.
+  product_config: config/s1grits_products.yaml
+
+# =============================================================================
+# ROI CONFIGURATION — tile selection
+#   Pick one mode (comment out the other):
+#
+#   Mode A [wkt]    — polygon geometry, tiles auto-detected from overlap
+#   Mode B [manual] — explicit tile list, faster startup
+#
+#   Both modes work with time Mode A (full) and Mode B (years)
+# =============================================================================
+roi:
+  # --- Mode A: WKT polygon (EPSG:4326) ---
+  # wkt: "POLYGON((...))"
+
+  # --- Mode B: Manual tile list ---
+  manual_mgrs_tiles:
+    # - "50RKV"
+    # - "17MPU"
+    - "46SEG"
+    # - "17MQV"
+
+  # Orbit direction (process one direction at a time)
+  flight_direction: "DESCENDING"
+  # flight_direction: "ASCENDING"
+
+  polarization: "VV+VH"
+
+# =============================================================================
+# TIME CONFIGURATION
+#   Pick one mode (comment out the other):
+#
+#   Mode A [full]  — auto-detect earliest data, process to end_year-12-31
+#   Mode B [years] — process specific years / months
+# =============================================================================
+time:
+  # --- Mode A: Full archive ---
+  # full: 2026
+
+  # --- Mode B: Specific years ---
+  years: [2026]
+  months: [1]
+
+# =============================================================================
+# OUTPUT CONFIGURATION
+# =============================================================================
+output:
+  base_dir: "./data_cubes"
+  # Whether to overwrite existing outputs (false = incremental-safe skip mode)
+  overwrite: false
+
+  # On time conflict: "skip" (keep existing) or "overwrite" (replace)
+  on_time_conflict: "skip"
+
+  # Output format toggles (Zarr is always generated — it is the primary Data Cube product)
+  formats:
+    cog: true        # Optional: per-acquisition GeoTIFF exports
+    preview: true    # Optional: PNG visualization exports
+    # zarr is NOT listed here — it is always produced regardless
+
+# =============================================================================
+# PARALLEL PROCESSING
+# =============================================================================
+parallel:
+  enabled: true
+  # Recommended: 2 for <=16GB, 4 for 32GB, 6-8 for >=64GB
+  max_workers: 4
+
+# =============================================================================
+# MEMORY MANAGEMENT
+# =============================================================================
+memory:
+  # Maximum memory (GB): 'auto' or a number
+  max_memory_gb: 'auto'
+  # Batch strategy: 'auto', 'yearly', 'quarterly', 'monthly'
+  batch_strategy: 'auto'
+  max_download_workers: 4
+  clear_cache_per_batch: true
+  batch_max_retries: 2
+  scene_max_retries: 3
+  # Maximum allowed failed scene ratio (0.0 = zero tolerance)
+  max_failed_ratio: 0.0
+  scene_retry_timeout_seconds: 600.0
+
+# =============================================================================
+# PROCESSING CONFIGURATION
+# =============================================================================
+processing:
+  # TV despeckle toggle
+  # true  -> suffix _tvbregmanX, despeckle applied
+  # false -> no despeckle, output suffix is cleaner
+  spatial_despeckle: false
+
+  # Optional derived bands (default: false — 2-band VV_dB + VH_dB only)
+  features_ratio: true         # Ratio = VH/VV
+  features_rvi: false          # RVI = 4*VH/(VV+VH)
+  features_glcm: false         # GLCM texture bands
+
+  # Clip output to MGRS tile boundary after all processing (recommended: true)
+  tile_clip: true
+
+  # Target resolution in meters
+  target_resolution: 30.0
+
+  # Zarr chunk size (y x x pixels per chunk)
+  zarr_chunks:
+    y: 512
+    x: 512
+
+  # COG internal tile block size
+  cog_block_size: 256
+
+  # Despeckle algorithm (only used when spatial_despeckle=true)
+  despeckle:
+    method: "tv_bregman"
+    kwargs:
+      reg_param: 5.0
+
+  # On time conflict: "skip" or "overwrite"
+  on_time_conflict: "skip"
+
+  # ===========================================================================
+  # Monthly compositing (optional)
+  # Set enabled=false to produce only per-pass scenes output
+  # ===========================================================================
+  monthly:
+    enabled: false
+
+    # Composite method: "nanmedian" (recommended)
+    composite_method: "nanmedian"
+
+    # Whether to generate COG files
+    generate_cog: true
+
+    # Whether to generate PNG previews
+    generate_preview: true
+
+# =============================================================================
+# LOGGING
+# =============================================================================
+logging:
+  file_level: 'DEBUG'
+  console_level: 'WARNING'
+  suppress_third_party: true
+  log_file: './logs/s1grits_scenes_{timestamp}.log'

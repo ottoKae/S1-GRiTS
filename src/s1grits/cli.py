@@ -2,7 +2,10 @@
 CLI with subcommands structure
 
 Provides a professional CLI interface with subcommands:
-- s1grits process  --config config.yaml
+- s1grits process          --config config.yaml
+- s1grits process_ablation --config config_experience/s1grits_ablation_template.yaml
+- s1grits process_static   --config config.yaml
+- s1grits process_normal40 --config config_experience/s1grits_normal_config.yaml
 - s1grits catalog  rebuild  --output-dir ./output
 - s1grits catalog  validate --output-dir ./output
 - s1grits catalog  inspect  --output-dir ./output
@@ -115,12 +118,23 @@ def cmd_process(args):
     with open(config_path, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
 
+    expected = config.get("workflow")
+    if expected and expected != "monthly":
+        console.print(
+            f"[red]ERROR: Config workflow='{expected}' but CLI is 'process'. "
+            f"Expected workflow='monthly'.[/red]"
+        )
+        sys.exit(1)
+
     console.rule("[bold cyan]S1-GRiTS: Sentinel-1 Gridded Time Series[/bold cyan]", style="cyan")
     console.print(f"[dim]Config: {config_path}[/dim]\n")
 
     log_file, logger = setup_logging(config)
     console.print(f"[dim]Log: {log_file}[/dim]\n")
 
+    from s1grits.product_registry import load_product_registry
+    _products = load_product_registry(workflow_config=config)
+    logger.info("Product registry: %s", _products.config_path or "built-in defaults")
     logger.info("Starting workflow: %s", config_path)
     start_time = pd.Timestamp.now()
 
@@ -131,6 +145,13 @@ def cmd_process(args):
     duration = end_time - start_time
 
     print_summary(results)
+
+    # Show output directory
+    for r in results.values():
+        if r.get('tile_dir'):
+            out_root = str(Path(r['tile_dir']).parent)
+            console.print(f"\n[bold]Output:[/bold] {out_root}")
+            break
 
     logger.info("Workflow completed in %s", duration)
     console.print(f"\nTotal time: [bold]{duration}[/bold]")
@@ -143,27 +164,64 @@ def cmd_process(args):
         sys.exit(1)
 
 
-def cmd_catalog_rebuild(args):
-    """Rebuild global catalog from COG files, then resync STAC Items and collection.json"""
-    from s1grits.analysis import rebuild_global_catalog
+def cmd_process_static(args):
+    """Run the static layer workflow (DEM, incidence angle map, layover/shadow mask)."""
+    from s1grits.workflow_static import run_static_layer_workflow
+    from s1grits.logger_config import setup_logging
+    import pandas as pd
+    import yaml
 
-    output_dir = args.output_dir
-
-    console.rule("[bold cyan]Rebuild Catalog + STAC[/bold cyan]", style="cyan")
-    console.print(f"[dim]Output directory: {output_dir}[/dim]\n")
-
-    result = rebuild_global_catalog(output_dir)
-
-    if result['success']:
-        console.print(f"[green]INFO   Catalog rebuilt successfully[/green]")
-        console.print(f"[dim]       Tiles:   {result['tile_count']}[/dim]")
-        console.print(f"[dim]       Records: {result['total_records']}[/dim]")
-        console.print(f"[dim]       Catalog: {result['catalog_path']}[/dim]")
-        sys.exit(0)
-    else:
-        console.print(f"[red]ERROR  {result['message']}[/red]")
+    config_path = Path(args.config)
+    if not config_path.exists():
+        console.print(f"[red]ERROR: Config file does not exist: {config_path}[/red]")
         sys.exit(1)
 
+    with open(config_path, 'r', encoding='utf-8') as f:
+        config = yaml.safe_load(f)
+
+    expected = config.get("workflow")
+    if expected and expected != "static":
+        console.print(
+            f"[red]ERROR: Config workflow='{expected}' but CLI is 'process_static'. "
+            f"Expected workflow='static'.[/red]"
+        )
+        sys.exit(1)
+
+    console.rule("[bold cyan]S1-GRiTS: Static Layer Workflow[/bold cyan]", style="cyan")
+    console.print(f"[dim]Config: {config_path}[/dim]\n")
+
+    log_file, logger_inst = setup_logging(config)
+    console.print(f"[dim]Log: {log_file}[/dim]\n")
+
+    from s1grits.product_registry import load_product_registry
+    _products = load_product_registry(workflow_config=config)
+    logger_inst.info("Product registry: %s", _products.config_path or "built-in defaults")
+    start_time = pd.Timestamp.now()
+    results = run_static_layer_workflow(config_path)
+    duration = pd.Timestamp.now() - start_time
+
+    console.print(f"\nTotal time: [bold]{duration}[/bold]")
+
+    for tile_id, r in sorted(results.items()):
+        if r['status'] in ('success', 'skipped'):
+            groups = r.get('groups_written', [])
+            for g in groups:
+                layers_ok = [k for k, v in g.get('layers_written', {}).items() if v]
+                tag = "[dim]SKIP[/dim]" if g['status'] == 'skipped' else "[green]OK  [/green]"
+                console.print(
+                    f"  {tag} {tile_id} {g['name_prefix']}: "
+                    f"{layers_ok}"
+                )
+        else:
+            console.print(f"  [red]FAIL[/red] {tile_id}: {r['error']}")
+
+    n_ok = sum(1 for r in results.values() if r['status'] in ('success', 'skipped'))
+    if n_ok == len(results):
+        console.print(f"\n[bold green]Success![/bold green]\n")
+        sys.exit(0)
+    else:
+        console.print(f"\n[bold yellow]WARNING: Some tasks failed[/bold yellow]\n")
+        sys.exit(1)
 
 def cmd_catalog_validate(args):
     """Validate catalog schema integrity and STAC Item alignment"""
@@ -222,6 +280,44 @@ def cmd_catalog_validate(args):
         console.print(f"[yellow]WARN   {warning}[/yellow]")
 
     sys.exit(0 if result['valid'] else 1)
+
+
+def cmd_catalog_doctor(args):
+    """Validate catalog consistency: catalog.parquet ↔ STAC items ↔ Zarr attrs."""
+    from s1grits.catalog_validator import validate_catalog_integrity
+
+    console.rule("[bold cyan]Catalog Doctor[/bold cyan]", style="cyan")
+    console.print(f"[dim]Checking: {args.output_dir}[/dim]\n")
+
+    result = validate_catalog_integrity(args.output_dir, strict=args.strict)
+    console.print(result.report())
+
+    if result.valid:
+        console.print("\n[bold green]All checks passed![/bold green]")
+        sys.exit(0)
+    else:
+        console.print(f"\n[bold red]{len(result.errors)} error(s) found[/bold red]")
+        sys.exit(1)
+
+
+def cmd_catalog_resync(args):
+    """Resync catalog + STAC from existing filesystem data."""
+    from s1grits.analysis.catalog import resync_catalog_from_filesystem
+
+    output_dir = args.output_dir
+    console.rule("[bold cyan]Catalog Resync[/bold cyan]", style="cyan")
+    console.print(f"[dim]Scanning: {output_dir}[/dim]\n")
+
+    result = resync_catalog_from_filesystem(output_dir)
+
+    if result['success']:
+        console.print(f"[green]OK[/green] {result['message']}")
+        for tile in result.get('tiles', []):
+            console.print(f"  [dim]{tile}[/dim]")
+        sys.exit(0)
+    else:
+        console.print(f"[red]FAIL[/red] {result['message']}")
+        sys.exit(1)
 
 
 def cmd_catalog_inspect(args):
@@ -428,6 +524,227 @@ def cmd_mosaic(args):
         sys.exit(1)
 
 
+def cmd_process_scenes(args):
+    """Run the scenes workflow (per-pass outputs + optional monthly)."""
+    from s1grits.workflow_scenes import run_scenes_workflow
+    from s1grits.logger_config import setup_logging
+    import pandas as pd
+    import yaml
+
+    config_path = Path(args.config)
+    if not config_path.exists():
+        console.print(
+            f"[red]ERROR: Config file does not exist: {config_path}[/red]"
+        )
+        sys.exit(1)
+
+    with open(config_path, 'r', encoding='utf-8') as f:
+        config = yaml.safe_load(f)
+
+    expected = config.get("workflow")
+    if expected and expected != "scenes":
+        console.print(
+            f"[red]ERROR: Config workflow='{expected}' but CLI is 'process_scenes'. "
+            f"Expected workflow='scenes'.[/red]"
+        )
+        sys.exit(1)
+
+    processing_cfg = config.get('processing', {})
+    monthly_enabled = processing_cfg.get('monthly', {}).get('enabled', False)
+
+    console.rule(
+        "[bold cyan]S1-GRiTS: Scenes Workflow[/bold cyan]", style="cyan"
+    )
+    console.print(f"[dim]Config:              {config_path}[/dim]")
+    console.print(f"[dim]Monthly:             {monthly_enabled}[/dim]")
+    console.print(f"[dim]Output:              {config.get('output', {}).get('base_dir', 'unknown')}[/dim]")
+    console.print(f"[dim]Product dirs:        scenes_{{despeckle}}_{{bands}}/[zarr|cog|preview][/dim]\n")
+
+    log_file, logger = setup_logging(config)
+    console.print(f"[dim]Log: {log_file}[/dim]\n")
+
+    from s1grits.product_registry import load_product_registry
+    _products = load_product_registry(workflow_config=config)
+    logger.info(
+        "Starting scenes workflow: %s (monthly=%s), products=%s",
+        config_path, monthly_enabled,
+        _products.config_path or "built-in defaults",
+    )
+    start_time = pd.Timestamp.now()
+
+    results = run_scenes_workflow(config_path)
+
+    duration = pd.Timestamp.now() - start_time
+    print_summary(results)
+
+    for r in results.values():
+        if r.get('tile_dir'):
+            out_root = str(Path(r['tile_dir']).parent)
+            console.print(f"\n[bold]Output:[/bold] {out_root}")
+            break
+
+    logger.info("Scenes workflow completed in %s", duration)
+    console.print(f"\nTotal time: [bold]{duration}[/bold]")
+
+    if all(r['status'] == 'success' for r in results.values()):
+        console.print(f"\n[bold green]Success![/bold green]\n")
+        sys.exit(0)
+    else:
+        console.print(
+            f"\n[bold yellow]WARNING: Some tasks failed[/bold yellow]\n"
+        )
+        sys.exit(1)
+
+
+def cmd_mosaic_scenes(args):
+    """Create a multi-tile mosaic VRT or COG for per-pass scenes on a given date."""
+    import pandas as pd
+    from pathlib import Path
+
+    output_dir = Path(args.output_dir).resolve()
+    catalog_path = output_dir / 'catalog.parquet'
+
+    console.rule(
+        "[bold cyan]Create Scenes Mosaic[/bold cyan]", style="cyan"
+    )
+
+    if not catalog_path.exists():
+        console.print(
+            f"[red]ERROR: Catalog not found: {catalog_path}[/red]"
+        )
+        sys.exit(1)
+
+    try:
+        df = pd.read_parquet(catalog_path)
+    except Exception as e:
+        console.print(f"[red]ERROR: Failed to read catalog: {e}[/red]")
+        sys.exit(1)
+
+    # Filter to scenes only
+    if 'output_type' in df.columns:
+        df = df[df['output_type'] == 'scenes']
+    console.print(f"[dim]Loaded {len(df)} scenes records[/dim]")
+
+    # Filter by direction
+    direction = args.direction.upper()
+    if direction != 'ALL':
+        df = df[df['flight_direction'].str.upper() == direction]
+        console.print(f"[dim]Filtered to direction {direction}: {len(df)} records[/dim]")
+
+    # Filter by date or date range (catalog uses 'datetime' column)
+    if 'datetime' not in df.columns:
+        console.print("[red]ERROR: Catalog missing 'datetime' column[/red]")
+        sys.exit(1)
+
+    df['_date'] = pd.to_datetime(df['datetime'], utc=True, errors='coerce')
+    df = df.dropna(subset=['_date'])
+
+    if args.date:
+        target_date = pd.Timestamp(args.date).tz_localize('UTC')
+        df = df[df['_date'].dt.floor('min') == target_date.floor('min')]
+        console.print(
+            f"[dim]Filtered to date {args.date}: {len(df)} records[/dim]"
+        )
+    elif args.start or args.end:
+        if args.start:
+            start_ts = pd.Timestamp(args.start).tz_localize('UTC')
+            df = df[df['_date'] >= start_ts]
+        if args.end:
+            end_ts = pd.Timestamp(args.end).tz_localize('UTC')
+            df = df[df['_date'] <= end_ts]
+        console.print(
+            f"[dim]Filtered to date range: {len(df)} records[/dim]"
+        )
+    else:
+        console.print(
+            "[yellow]WARN: No --date, --start, or --end specified. "
+            "Showing all dates.[/yellow]"
+        )
+
+    if df.empty:
+        console.print("[red]ERROR: No scenes match the filter criteria[/red]")
+        sys.exit(1)
+
+    # Group by datetime (minute-floored per-pass)
+    df['_acq_grp'] = df['_date'].dt.floor('min')
+    groups = df.groupby('_acq_grp')
+
+    console.print(
+        f"[dim]{len(groups)} unique acquisition timestamp(s) found[/dim]"
+    )
+
+    # Determine output directory
+    if args.output:
+        mosaic_output_dir = Path(args.output)
+    else:
+        mosaic_output_dir = Path("analysis_results") / "mosaic_scenes"
+    mosaic_output_dir.mkdir(parents=True, exist_ok=True)
+
+    from s1grits.logger_config import get_logger
+    _logger = get_logger(__name__)
+
+    for acq_grp, grp_df in groups:
+        acq_str = acq_grp.strftime('%Y%m%dT%H%M%S')
+
+        # Collect COG paths that exist on disk
+        cog_files = []
+        for _, row in grp_df.iterrows():
+            cog_rel = row.get('cog_path')
+            if cog_rel and not pd.isna(cog_rel):
+                tile_id = row['mgrs_tile_id']
+                direction_str = row.get('flight_direction', '')
+                tile_dir = output_dir / f"{tile_id}_{direction_str}"
+                cog_full = tile_dir / cog_rel
+                if cog_full.exists():
+                    cog_files.append(str(cog_full.resolve()))
+                else:
+                    _logger.warning(
+                        "[WARN] COG not found: %s", cog_full
+                    )
+
+        if not cog_files:
+            console.print(
+                f"[yellow]WARN: No COG files on disk for {acq_str}, "
+                f"skipping[/yellow]"
+            )
+            continue
+
+        # Output filename
+        if args.out_file and len(groups) == 1:
+            out_path = Path(args.out_file)
+        else:
+            ext = 'vrt' if args.format == 'vrt' else 'tif'
+            out_path = mosaic_output_dir / (
+                f"{direction if direction != 'ALL' else 'DualDir'}"
+                f"_{acq_str}.{ext}"
+            )
+
+        if args.format == 'cog':
+            # Full reproject to target CRS
+            from osgeo import gdal
+            ref_crs = args.crs if hasattr(args, 'crs') else 'EPSG:4326'
+            vrt_path = str(out_path.with_suffix('.vrt'))
+            gdal.BuildVRT(vrt_path, cog_files)
+            gdal.Translate(
+                str(out_path), vrt_path,
+                format='COG', resampleAlg='bilinear',
+                dstSRS=ref_crs,
+            )
+            console.print(
+                f"[green]INFO   COG created: {out_path}[/green]"
+            )
+        else:
+            # VRT (fast, no reprojection)
+            from osgeo import gdal
+            gdal.BuildVRT(str(out_path), cog_files)
+            console.print(
+                f"[green]INFO   VRT created: {out_path}[/green]"
+            )
+
+    console.print(f"\n[bold green]Done.[/bold green]")
+    sys.exit(0)
+
+
 def main():
     """Main CLI entry point"""
     parser = argparse.ArgumentParser(
@@ -436,8 +753,12 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''\
 Examples:
-  # Run processing workflow
-  s1grits process --config config.yaml
+  # Run processing workflows
+  s1grits process          --config config.yaml
+  s1grits process_ablation --config config_experience/s1grits_ablation_template.yaml
+  s1grits process_static   --config config.yaml
+  s1grits process_normal40 --config config_experience/s1grits_normal_config.yaml
+  s1grits process_scenes   --config config_scenes.yaml
 
   # Catalog management (rebuild also resyncs STAC Items + collection.json)
   s1grits catalog rebuild  --output-dir ./output
@@ -454,6 +775,10 @@ Examples:
   s1grits mosaic --month 2024-01 --direction ASCENDING --format COG
   s1grits mosaic --month 2024-01 --direction ALL
   s1grits mosaic --month 2024-01 --direction ASCENDING --mgrs-prefix 50R
+
+  # Create per-pass scenes mosaic
+  s1grits mosaic_scenes --output-dir ./output_scenes_hARDCp --direction ASCENDING --date 2024-03-15
+  s1grits mosaic_scenes --output-dir ./output_scenes_hARDCp --direction ASCENDING --start 2024-01 --end 2024-03
         '''
     )
 
@@ -469,17 +794,25 @@ Examples:
     parser_process.add_argument('--config', required=True, help='Path to YAML config file')
     parser_process.set_defaults(func=cmd_process)
 
+    # ── process_monthly (alias for process) ─────────────────────────────────
+    parser_monthly = subparsers.add_parser(
+        'process_monthly',
+        help='Run the legacy monthly composite workflow (alias for process)'
+    )
+    parser_monthly.add_argument('--config', required=True, help='Path to YAML config file')
+    parser_monthly.set_defaults(func=cmd_process)
+
+    # ── process_static ───────────────────────────────────────────────────────
+    parser_static = subparsers.add_parser(
+        'process_static',
+        help='Generate static layers (DEM, incidence angle, layover/shadow mask) per MGRS tile'
+    )
+    parser_static.add_argument('--config', required=True, help='Path to YAML config file')
+    parser_static.set_defaults(func=cmd_process_static)
+
     # ── catalog ───────────────────────────────────────────────────────────────
     parser_catalog = subparsers.add_parser('catalog', help='Catalog management')
     catalog_sub = parser_catalog.add_subparsers(dest='catalog_cmd', help='Catalog operations')
-
-    # catalog rebuild
-    p = catalog_sub.add_parser(
-        'rebuild',
-        help='Rebuild catalog.parquet from COG files and resync STAC Items + collection.json'
-    )
-    p.add_argument('--output-dir', required=True, help='Output root directory')
-    p.set_defaults(func=cmd_catalog_rebuild)
 
     # catalog validate
     p = catalog_sub.add_parser(
@@ -488,6 +821,23 @@ Examples:
     )
     p.add_argument('--output-dir', required=True, help='Output root directory')
     p.set_defaults(func=cmd_catalog_validate)
+
+    # catalog resync
+    p = catalog_sub.add_parser(
+        'resync',
+        help='Resync catalog + STAC from filesystem (no re-processing)'
+    )
+    p.add_argument('--output-dir', required=True, help='Output root directory')
+    p.set_defaults(func=cmd_catalog_resync)
+
+    # catalog doctor
+    p = catalog_sub.add_parser(
+        'doctor',
+        help='Validate catalog.parquet + STAC items + Zarr attrs for consistency'
+    )
+    p.add_argument('--output-dir', required=True, help='Output root directory')
+    p.add_argument('--strict', action='store_true', help='Treat warnings as errors')
+    p.set_defaults(func=cmd_catalog_doctor)
 
     # catalog inspect
     p = catalog_sub.add_parser(
@@ -552,6 +902,56 @@ Examples:
         help='Filter tiles by MGRS prefix (e.g., 50R includes 50RKU, 50RKV, …)'
     )
     parser_mosaic.set_defaults(func=cmd_mosaic)
+
+    # ── process_scenes ────────────────────────────────────────────────────────
+    parser_scenes = subparsers.add_parser(
+        'process_scenes',
+        help='Scenes workflow: per-pass outputs with optional monthly compositing'
+    )
+    parser_scenes.add_argument(
+        '--config', required=True, help='Path to YAML config file'
+    )
+    parser_scenes.set_defaults(func=cmd_process_scenes)
+
+    # ── mosaic_scenes ─────────────────────────────────────────────────────────
+    parser_mosaic_scenes = subparsers.add_parser(
+        'mosaic_scenes',
+        help='Create multi-tile mosaic VRT or COG for per-pass scenes on a given date'
+    )
+    parser_mosaic_scenes.add_argument(
+        '--output-dir', required=True,
+        help='Output root directory containing catalog.parquet'
+    )
+    parser_mosaic_scenes.add_argument(
+        '--direction', required=True,
+        choices=['ASCENDING', 'DESCENDING', 'ALL'],
+        help='Flight direction. ALL includes both directions.',
+    )
+    parser_mosaic_scenes.add_argument(
+        '--date', help='Single date YYYY-MM-DD'
+    )
+    parser_mosaic_scenes.add_argument(
+        '--start', help='Start date YYYY-MM-DD (for date range)'
+    )
+    parser_mosaic_scenes.add_argument(
+        '--end', help='End date YYYY-MM-DD (for date range)'
+    )
+    parser_mosaic_scenes.add_argument(
+        '--format', choices=['vrt', 'cog'], default='vrt',
+        help='Output format (default: vrt)'
+    )
+    parser_mosaic_scenes.add_argument(
+        '--crs', default='EPSG:4326',
+        help='Target CRS for COG output (default: EPSG:4326)'
+    )
+    parser_mosaic_scenes.add_argument(
+        '--out-file', help='Output file path (auto-named if omitted)'
+    )
+    parser_mosaic_scenes.add_argument(
+        '--output',
+        help='Destination directory for mosaic output (default: analysis_results/mosaic_scenes/)'
+    )
+    parser_mosaic_scenes.set_defaults(func=cmd_mosaic_scenes)
 
     # ── dispatch ──────────────────────────────────────────────────────────────
     args = parser.parse_args()

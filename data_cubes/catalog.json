@@ -1,0 +1,37 @@
+{
+  "stac_version": "1.1.0",
+  "type": "Catalog",
+  "id": "s1-grits-root",
+  "title": "S1-GRiTS DataCube",
+  "description": "Sentinel-1 analysis-ready data: 3 records",
+  "links": [
+    {
+      "rel": "self",
+      "href": "./catalog.json"
+    },
+    {
+      "rel": "child",
+      "href": "./collections/s1grits-monthly/collection.json",
+      "type": "application/json",
+      "title": "S1-GRiTS Monthly (legacy, all-track composites)"
+    },
+    {
+      "rel": "child",
+      "href": "./collections/s1grits-scenes/collection.json",
+      "type": "application/json",
+      "title": "S1-GRiTS Scenes (per-acquisition)"
+    },
+    {
+      "rel": "child",
+      "href": "./collections/s1grits-smonthly/collection.json",
+      "type": "application/json",
+      "title": "S1-GRiTS Monthly (per-track composites)"
+    },
+    {
+      "rel": "child",
+      "href": "./collections/s1grits-static/collection.json",
+      "type": "application/json",
+      "title": "S1-GRiTS Static Layers"
+    }
+  ]
+}

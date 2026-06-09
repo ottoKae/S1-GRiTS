@@ -20,7 +20,6 @@ logger = get_logger(__name__)
 
 STAC_VERSION = "1.1.0"
 DATACUBE_EXTENSION_URI = "https://stac-extensions.github.io/datacube/v2.3.0/schema.json"
-COLLECTION_ID = "s1-grits-monthly"
 
 # Core 4 bands always present
 _CORE_BANDS_VV = ["VV_dB", "VH_dB", "Ratio", "RVI"]
@@ -126,39 +125,99 @@ def write_stac_item(
     record: dict,
     output_root: str,
     polarization: str = "VV+VH",
+    tile_dir_override: str = None,
 ) -> str:
     """
-    Write a STAC Item JSON for one tile × month composite.
+    Write a STAC Item JSON for one tile x time slice.
 
-    The file is written to {output_root}/{tile_dir_name}/{item_id}.json,
-    alongside the COG, Zarr, and preview files.
+    Supports both legacy monthly composites and the newer workflow_scenes
+    output structure (scenes/ + monthly/ subdirectories).
 
-    Band list is resolved dynamically from the COG file on disk so that
-    GLCM texture bands are included whenever texture features were enabled
-    during processing (12-band output). Falls back to the 4-band core list
-    when the COG is unavailable.
+    - output_type='scenes':   item written to {tile_dir}/items/{product_label}/{item_id}.json
+    - output_type='smonthly': item written to {tile_dir}/items/{product_label}/{item_id}.json
+    - output_type='static':   item written to {tile_dir}/items/{product_label}/{item_id}.json
+    - output_type='monthly':  item written to {tile_dir}/items/{product_label}/{item_id}.json
+    - no output_type (legacy): item written to {tile_dir}/{item_id}.json
 
     Args:
-        record: Catalog record dict (keys: mgrs_tile_id, flight_direction, month,
-                cog_path, zarr_path, preview_path, crs, width, height, transform).
+        record: Catalog record dict. Required keys: mgrs_tile_id, month,
+                cog_path, crs, width, height, transform.
+                Optional: flight_direction, zarr_path, preview_path,
+                output_type ('scenes' or 'monthly'), processing_level,
+                product_label, item_id.
         output_root: Root output directory.
         polarization: SAR polarization mode ('VV+VH' or 'HH+HV').
+        tile_dir_override: Explicit tile directory name. If provided,
+                used instead of constructing from tile_id + direction.
 
     Returns:
         Path to the written Item JSON file.
     """
-    mgrs_tile_id = record["mgrs_tile_id"]
+    mgrs_tile_id = record.get("tile_id") or record.get("mgrs_tile_id", "")
     flight_direction = record.get("flight_direction")
-    month = str(record["month"])  # "YYYY-MM"
+    output_type = record.get("output_type")  # 'scenes', 'monthly', or None (legacy)
     crs = record["crs"]
     width = int(record["width"])
     height = int(record["height"])
     transform = list(record["transform"])
 
     flight_suffix = f"_{flight_direction}" if flight_direction else ""
-    tile_dir_name = f"{mgrs_tile_id}{flight_suffix}"
-    item_id = f"{mgrs_tile_id}{flight_suffix}_{month}"
-    datetime_str = f"{month}-01T00:00:00Z"
+    if tile_dir_override:
+        tile_dir_name = tile_dir_override
+    else:
+        tile_dir_name = f"{mgrs_tile_id}{flight_suffix}"
+
+    # ---- Item identity ----
+    month = str(record.get("month", ""))
+    _explicit_id = record.get("item_id")
+    if _explicit_id and output_type not in ("scenes",):
+        # Use explicit item_id from catalog record (resync or direct caller)
+        item_id = _explicit_id
+        datetime_str = f"{month}-01T00:00:00Z" if month else "1970-01-01T00:00:00Z"
+    elif output_type == "scenes":
+        # Datetime-based item id for per-acquisition scenes
+        dt_val = record.get("datetime")
+        if dt_val is not None:
+            ts = pd.Timestamp(dt_val)
+            item_id = f"{mgrs_tile_id}{flight_suffix}_{ts.strftime('%Y%m%dT%H%M%S')}"
+            datetime_str = ts.strftime("%Y-%m-%dT%H:%M:%SZ")
+        else:
+            item_id = f"{mgrs_tile_id}{flight_suffix}_{month}"
+            datetime_str = f"{month}-01T00:00:00Z"
+    else:
+        # Monthly composite (new or legacy)
+        item_id = f"{mgrs_tile_id}{flight_suffix}_{month}"
+        datetime_str = f"{month}-01T00:00:00Z"
+
+    # ---- Item subdirectory (where the JSON lives) ----
+    _product_label = record.get("product_label", "")
+    if output_type == "scenes":
+        item_subdir = f"items/{_product_label}" if _product_label else "items/scenes"
+    elif output_type == "smonthly":
+        item_subdir = f"items/{_product_label}" if _product_label else "items/smonthly"
+    elif output_type == "static":
+        item_subdir = f"items/{_product_label}" if _product_label else "items/static"
+    elif output_type == "monthly":
+        item_subdir = f"items/{_product_label}" if _product_label else "items/monthly"
+    else:
+        item_subdir = ""  # legacy: item at tile_dir root
+
+    # Collection ID for item links (from catalog record or default)
+    _cid = record.get("collection_id", "s1grits-monthly")
+
+    # ---- Asset href resolution (relative to the item JSON location) ----
+    # Catalog paths are stored relative to tile_dir (e.g. scenes/cog/file.tif).
+    # Items live 2 levels deeper (items/s1grits_scenes/), so we prepend ../../
+    # to reach the data directories.
+    def _rel_to_item(path_from_record):
+        """Convert a tile_dir-relative catalog path to an item-relative href."""
+        if not path_from_record:
+            return None
+        p = str(path_from_record).replace("\\", "/")
+        if not item_subdir:
+            return "./" + p
+        # item_subdir is e.g. "items/s1grits_scenes" -> need ../../ prefix
+        return "../../" + p
 
     # Compute WGS84 bbox and GeoJSON geometry
     bbox, geometry = _utm_extent_to_wgs84(transform, width, height, crs)
@@ -174,23 +233,15 @@ def write_stac_item(
     # Resolve actual band list from the COG file (includes GLCM bands if present)
     bands = _resolve_bands(record, output_root, polarization)
 
-    def _rel_to_tile(path_from_root):
-        """Convert an absolute or output_root-relative path to tile-dir-relative href."""
-        if not path_from_root:
-            return None
-        p = str(path_from_root).replace("\\", "/")
-        # Strip output_root prefix if the path is absolute
-        out_root_norm = str(output_root).replace("\\", "/").rstrip("/") + "/"
-        if p.startswith(out_root_norm):
-            p = p[len(out_root_norm):]
-        prefix = tile_dir_name + "/"
-        if p.startswith(prefix):
-            return "./" + p[len(prefix):]
-        return "../" + p
+    # Temporal extent step differs for scenes vs monthly
+    time_step = "P1D" if output_type == "scenes" else "P1M"
 
     item = {
         "stac_version": STAC_VERSION,
-        "stac_extensions": [DATACUBE_EXTENSION_URI],
+        "stac_extensions": [
+            DATACUBE_EXTENSION_URI,
+            "https://stac-extensions.github.io/projection/v2.0.0/schema.json",
+        ],
         "type": "Feature",
         "id": item_id,
         "geometry": geometry,
@@ -202,8 +253,25 @@ def write_stac_item(
             "mgrs:tile_id": mgrs_tile_id,
             "s1:orbit_direction": flight_direction.lower() if flight_direction else None,
             "s1:processing_level": record.get("processing_level", "hARDCp"),
-            "s1:monthly_composite": "median",
+            "s1:monthly_composite": "median" if output_type != "scenes" else None,
             "s1:despeckle": record.get("processing_level") != "ARDC",
+            "s1grits:product_variant": record.get("product_variant") or None,
+            "s1grits:processing_signature": record.get("processing_signature") or None,
+            "s1grits:processing_variant": (
+                json.loads(record["processing_variant_json"])
+                if record.get("processing_variant_json") and isinstance(record.get("processing_variant_json"), str)
+                else record.get("processing_variant_json") or None
+            ),
+            "s1grits:bands": (
+                json.loads(record["bands"])
+                if record.get("bands") and isinstance(record.get("bands"), str)
+                else record.get("bands") or None
+            ),
+            "proj:epsg": epsg,
+            "proj:shape": [height, width],
+            "proj:transform": list(transform)[:9],
+            "proj:geometry": geometry,
+            "proj:bbox": bbox,
             "cube:dimensions": {
                 "x": {
                     "type": "spatial",
@@ -222,7 +290,7 @@ def write_stac_item(
                 "time": {
                     "type": "temporal",
                     "extent": [datetime_str, datetime_str],
-                    "step": "P1M",
+                    "step": time_step,
                 },
                 "spectral": {
                     "type": "bands",
@@ -231,33 +299,38 @@ def write_stac_item(
             },
         },
         "assets": {},
-        "links": [
-            {"rel": "self", "href": f"./{item_id}.json"},
-            {"rel": "collection", "href": "../collection.json"},
-            {"rel": "root", "href": "../collection.json"},
-        ],
     }
+    item["links"] = [
+        {"rel": "self", "href": f"./{item_id}.json"},
+        {"rel": "collection", "href": f"../../../../collections/{_cid}/collection.json" if item_subdir else f"../collections/{_cid}/collection.json"},
+        {"rel": "root", "href": "../../../../catalog.json" if item_subdir else "../catalog.json"},
+    ]
 
-    # Assets
-    cog_href = _rel_to_tile(record.get("cog_path"))
+    # Assets — hrefs are relative to the item JSON
+    asset_title_prefix = (
+        "Scene" if output_type == "scenes" else "Monthly Composite"
+    )
+
+    cog_href = _rel_to_item(record.get("cog_path"))
     if cog_href:
         item["assets"]["cog"] = {
             "href": cog_href,
             "type": "image/tiff; application=geotiff; profile=cloud-optimized",
             "roles": ["data"],
-            "title": f"Monthly Composite COG ({', '.join(bands)})",
+            "title": f"{asset_title_prefix} COG ({', '.join(bands)})",
         }
 
-    zarr_href = _rel_to_tile(record.get("zarr_path"))
+    zarr_path_rec = record.get("zarr_path") or record.get("vv_path")
+    zarr_href = _rel_to_item(zarr_path_rec)
     if zarr_href:
         item["assets"]["zarr"] = {
             "href": zarr_href,
-            "type": "application/vnd+zarr",
+            "type": "application/vnd.zarr; version=3",
             "roles": ["data"],
             "title": "Full Time Series Zarr Store",
         }
 
-    preview_href = _rel_to_tile(record.get("preview_path"))
+    preview_href = _rel_to_item(record.get("preview_path"))
     if preview_href:
         item["assets"]["preview"] = {
             "href": preview_href,
@@ -266,11 +339,11 @@ def write_stac_item(
             "title": "RGB Preview (VV / VH / Ratio)",
         }
 
-    tile_dir = os.path.join(output_root, tile_dir_name)
-    os.makedirs(tile_dir, exist_ok=True)
-    item_path = os.path.join(tile_dir, f"{item_id}.json")
-    with open(item_path, "w", encoding="utf-8") as f:
-        json.dump(item, f, indent=2, ensure_ascii=False)
+    item_dir = os.path.join(output_root, tile_dir_name, item_subdir) if item_subdir else os.path.join(output_root, tile_dir_name)
+    os.makedirs(item_dir, exist_ok=True)
+    item_path = os.path.join(item_dir, f"{item_id}.json")
+    from s1grits.atomic_write import atomic_write_json
+    atomic_write_json(item, item_path)
 
     return item_path
 
@@ -278,6 +351,7 @@ def write_stac_item(
 def write_stac_collection(
     catalog_path_or_df,
     output_root: str,
+    collection_id: str,
     polarization: str = "VV+VH",
 ) -> str | None:
     """
@@ -330,10 +404,14 @@ def write_stac_collection(
         else [-180, -90, 180, 90]
     )
 
-    # Temporal extent
-    datetimes = pd.to_datetime(df["datetime"])
-    t_start = datetimes.min().strftime("%Y-%m-%dT00:00:00Z")
-    t_end = datetimes.max().strftime("%Y-%m-%dT00:00:00Z")
+    # Temporal extent (handle None/NaT for static products)
+    _dt_col = df["datetime"].dropna()
+    if len(_dt_col) > 0:
+        datetimes = pd.to_datetime(_dt_col)
+        t_start = datetimes.min().strftime("%Y-%m-%dT00:00:00Z")
+        t_end = datetimes.max().strftime("%Y-%m-%dT00:00:00Z")
+    else:
+        t_start = t_end = None
 
     # Pixel size from first valid transform record
     pixel_size = 10.0
@@ -370,40 +448,86 @@ def write_stac_collection(
     )
 
     # Summaries
-    tiles = sorted(df["mgrs_tile_id"].unique().tolist())
+    _tid_col = "tile_id" if "tile_id" in df.columns else "mgrs_tile_id"
+    tiles = sorted(df[_tid_col].dropna().unique().tolist())
     directions = (
         sorted(df["flight_direction"].dropna().unique().tolist())
         if "flight_direction" in df.columns
         else []
     )
+    has_output_type = "product_type" in df.columns
+    output_types = (
+        sorted(df["product_type"].dropna().unique().tolist())
+        if has_output_type
+        else ["monthly"]
+    )
 
-    # Item links (one per row)
+    # Item links (one per row) — honour the output_type subdirectory
     item_links = []
     for _, row in df.iterrows():
-        tile_id = row["mgrs_tile_id"]
+        tile_id = row.get("tile_id") or row.get("mgrs_tile_id", "")
         fd = row.get("flight_direction")
-        month = str(row["month"])
         fs = f"_{fd}" if fd else ""
-        tile_dir_name = f"{tile_id}{fs}"
-        item_id = f"{tile_id}{fs}_{month}"
+        ot = row.get("product_type") if has_output_type else None
+        pl = row.get("product_label") or ""
+        month = str(row.get("month", ""))
+        # Construct item_id from canonical fields
+        _item_id = row.get("item_id")
+        if not _item_id:
+            if ot == "scenes":
+                dt_val = row.get("datetime")
+                _item_id = f"{tile_id}{fs}_{pd.Timestamp(dt_val).strftime('%Y%m%dT%H%M%S')}" if dt_val else f"{tile_id}{fs}_{month}"
+            elif ot in ("smonthly", "monthly"):
+                _item_id = f"{tile_id}{fs}_{month}"
+            elif ot == "static":
+                _item_id = f"{tile_id}{fs}_static"
+            else:
+                _item_id = f"{tile_id}{fs}_{month}"
+        # Build href from canonical product_label (uses bare tile_id, no direction suffix)
+        _subdir = pl if pl else (f"static_{fd}" if ot == "static" and fd else (ot or "items"))
+        href = f"../../{tile_id}/items/{_subdir}/{_item_id}.json"
+
         item_links.append(
             {
                 "rel": "item",
-                "href": f"./{tile_dir_name}/{item_id}.json",
+                "href": href,
                 "type": "application/geo+json",
-                "title": item_id,
+                "title": _item_id,
             }
+        )
+
+    # Dynamic collection title & description
+    if "scenes" in output_types and "monthly" in output_types:
+        coll_title = "S1-GRiTS: Sentinel-1 Scenes + Monthly Composite Time Series"
+        coll_desc_base = (
+            "Sentinel-1 SAR backscatter time series (per-acquisition scenes and "
+            "monthly composites) processed from OPERA RTC-S1 products and gridded "
+            "to MGRS tiles."
+        )
+    elif "scenes" in output_types:
+        coll_title = "S1-GRiTS: Sentinel-1 Per-Scene Time Series"
+        coll_desc_base = (
+            "Sentinel-1 SAR backscatter per-acquisition scenes processed from "
+            "OPERA RTC-S1 products and gridded to MGRS tiles."
+        )
+    else:
+        coll_title = "S1-GRiTS: Sentinel-1 Monthly Composite Time Series"
+        coll_desc_base = (
+            "Monthly Sentinel-1 SAR backscatter composites processed from OPERA "
+            "RTC-S1 products and gridded to MGRS tiles."
         )
 
     collection = {
         "stac_version": STAC_VERSION,
-        "stac_extensions": [DATACUBE_EXTENSION_URI],
+        "stac_extensions": [
+            DATACUBE_EXTENSION_URI,
+            "https://stac-extensions.github.io/projection/v2.0.0/schema.json",
+        ],
         "type": "Collection",
-        "id": COLLECTION_ID,
-        "title": "S1-GRiTS: Sentinel-1 Monthly Composite Time Series",
+        "id": collection_id,
+        "title": coll_title,
         "description": (
-            "Monthly Sentinel-1 SAR backscatter composites processed from OPERA RTC-S1 "
-            "products and gridded to MGRS tiles. "
+            f"{coll_desc_base} "
             f"Tiles: {', '.join(tiles)}. "
             f"Bands: {core_band_desc}.{glcm_desc}"
         ),
@@ -432,6 +556,7 @@ def write_stac_collection(
             "s1:orbit_direction": [d.lower() for d in directions],
             "s1:band_count": len(all_bands),
             "s1:glcm_enabled": len(glcm_bands) > 0,
+            "s1:output_types": output_types,
         },
         "links": [
             {"rel": "self", "href": "./collection.json"},
@@ -439,9 +564,11 @@ def write_stac_collection(
         ],
     }
 
-    collection_path = os.path.join(output_root, "collection.json")
-    with open(collection_path, "w", encoding="utf-8") as f:
-        json.dump(collection, f, indent=2, ensure_ascii=False)
+    collection_dir = os.path.join(output_root, "collections", collection_id)
+    os.makedirs(collection_dir, exist_ok=True)
+    collection_path = os.path.join(collection_dir, "collection.json")
+    from s1grits.atomic_write import atomic_write_json
+    atomic_write_json(collection, collection_path)
 
     logger.info("Collection written: %s (%d items, %d bands)", collection_path, len(df), len(all_bands))
     return collection_path
@@ -480,4 +607,5 @@ def rebuild_stac_from_catalog(
             )
 
     logger.info("Items written: %d/%d", ok, len(df))
-    write_stac_collection(df, output_root, polarization=polarization)
+    _cid = df["collection_id"].iloc[0] if "collection_id" in df.columns and len(df) > 0 else "s1grits-monthly"
+    write_stac_collection(df, output_root, _cid, polarization=polarization)
