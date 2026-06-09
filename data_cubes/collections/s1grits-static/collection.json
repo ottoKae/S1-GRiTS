@@ -23,7 +23,7 @@
     "temporal": {
       "interval": [
         [
-          "2026-01-01T00:00:00Z",
+          null,
           null
         ]
       ]
@@ -44,8 +44,8 @@
       "type": "temporal",
       "step": "P1M",
       "extent": [
-        "2026-01-01T00:00:00Z",
-        "2026-01-01T00:00:00Z"
+        null,
+        null
       ]
     },
     "spectral": {
@@ -75,7 +75,6 @@
     "s1:band_count": 4,
     "s1:glcm_enabled": false,
     "s1:output_types": [
-      "monthly",
       "static"
     ]
   },
@@ -83,18 +82,6 @@
     {
       "rel": "self",
       "href": "./collection.json"
-    },
-    {
-      "rel": "item",
-      "href": "../../46SEG/items/monthly_DESCENDING_ARDC/46SEG_DESCENDING_2026-01.json",
-      "type": "application/geo+json",
-      "title": "46SEG_DESCENDING_2026-01"
-    },
-    {
-      "rel": "item",
-      "href": "../../46SEG/items/static_DESCENDING/46SEG_DESCENDING_TK77_N10_static.json",
-      "type": "application/geo+json",
-      "title": "46SEG_DESCENDING_TK77_N10_static"
     },
     {
       "rel": "item",

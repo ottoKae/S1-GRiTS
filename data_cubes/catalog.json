@@ -3,7 +3,7 @@
   "type": "Catalog",
   "id": "s1-grits-root",
   "title": "S1-GRiTS DataCube",
-  "description": "Sentinel-1 analysis-ready data: 3 records",
+  "description": "Sentinel-1 analysis-ready data: 2 records",
   "links": [
     {
       "rel": "self",
