@@ -41,6 +41,14 @@ SCHEMA_VERSION = 3
 GRID_ID_VERSION = 1       # bump when make_grid_id hash algorithm changes
 _GRID_ROUND_PRECISION = 9  # decimal places for transform/resolution rounding
 
+# Collection ↔ Product Type Mapping (P1 optimization)
+COLLECTION_PRODUCT_MAPPING = {
+    's1grits-monthly': 'monthly',
+    's1grits-scenes': 'scenes',
+    's1grits-smonthly': 'smonthly',
+    's1grits-static': 'static'
+}
+
 # ---------------------------------------------------------------------------
 # Canonical column list (order is the write-order in parquet)
 # ---------------------------------------------------------------------------
@@ -161,6 +169,27 @@ def normalize_catalog_record(record: dict[str, Any], status: str = "complete") -
     _pvj = out.get("processing_variant_json")
     if _pvj is not None and not isinstance(_pvj, str):
         out["processing_variant_json"] = _json.dumps(_pvj, sort_keys=True, ensure_ascii=False)
+
+    # Auto-compute item_path if not provided (for monthly workflow)
+    if not out.get("item_path"):
+        _item_id = out.get("item_id")
+        _product_label = out.get("product_label")
+        _tile_id = out.get("tile_id")
+
+        if _tile_id and _product_label and _item_id:
+            out["item_path"] = f"items/{_product_label}/{_item_id}.json"
+            logger.debug(
+                "Auto-computed item_path for item_id=%s: %s",
+                _item_id, out["item_path"],
+            )
+        elif not _item_id:
+            logger.debug(
+                "Cannot auto-compute item_path: item_id is None "
+                "(product_type=%s, tile_id=%s). "
+                "Workflows with product-type-specific item generation "
+                "should compute this manually.",
+                out.get("product_type"), _tile_id,
+            )
 
     return out
 
@@ -365,3 +394,66 @@ def find_virtual_stack(
                 )
 
     return (_same_grid.reset_index(drop=True), _virtual.reset_index(drop=True))
+
+
+# ---------------------------------------------------------------------------
+# Collection ID validation
+# ---------------------------------------------------------------------------
+
+def validate_collection_mapping(
+    df: pd.DataFrame,
+    raise_on_error: bool = True,
+) -> list[tuple[str, str, list[str]]]:
+    """
+    Validate product_type <-> collection_id mapping consistency.
+
+    Checks that all records with a given product_type use the correct
+    collection_id according to COLLECTION_PRODUCT_MAPPING.
+
+    Args:
+        df: Catalog DataFrame with 'product_type' and 'collection_id' columns.
+        raise_on_error: If True, raise ValueError on first violation.
+                       If False, collect all errors and return list.
+
+    Returns:
+        List of error tuples: [(product_type, expected_cid, [actual_cids]), ...]
+        Empty list if no violations found.
+
+    Raises:
+        ValueError: If raise_on_error=True and violations are detected.
+    """
+    if "product_type" not in df.columns or "collection_id" not in df.columns:
+        return []
+
+    errors: list[tuple[str, str, list[str]]] = []
+
+    # Build reverse mapping: product_type -> collection_id
+    reverse_map = {v: k for k, v in COLLECTION_PRODUCT_MAPPING.items()}
+
+    for product_type, expected_cid in reverse_map.items():
+        subset = df[df["product_type"] == product_type]
+        if subset.empty:
+            continue
+
+        # Find records with wrong collection_id
+        wrong = subset[subset["collection_id"] != expected_cid]
+        if not wrong.empty:
+            bad_cids = sorted(wrong["collection_id"].dropna().unique().tolist())
+            errors.append((product_type, expected_cid, bad_cids))
+
+            if raise_on_error:
+                raise ValueError(
+                    f"Collection mapping violation detected:\n"
+                    f"  product_type='{product_type}' expects collection_id='{expected_cid}'\n"
+                    f"  but found: {bad_cids}\n"
+                    f"  Affected rows: {len(wrong)}"
+                )
+
+    if not raise_on_error:
+        for product_type, expected_cid, bad_cids in errors:
+            logger.warning(
+                "Collection mapping violation: product_type='%s' expected '%s' but found %s",
+                product_type, expected_cid, bad_cids,
+            )
+
+    return errors

@@ -153,6 +153,16 @@ def write_stac_item(
     Returns:
         Path to the written Item JSON file.
     """
+    # Validate that item_path has been computed (either manually or via normalize_catalog_record)
+    item_path_field = record.get("item_path")
+    if not item_path_field:
+        item_id = record.get("item_id")
+        logger.warning(
+            "item_path not found in catalog record for item_id=%s. "
+            "This should have been auto-computed by normalize_catalog_record().",
+            item_id,
+        )
+
     mgrs_tile_id = record.get("tile_id") or record.get("mgrs_tile_id", "")
     flight_direction = record.get("flight_direction")
     output_type = record.get("output_type")  # 'scenes', 'monthly', or None (legacy)
@@ -407,9 +417,16 @@ def write_stac_collection(
     # Temporal extent (handle None/NaT for static products)
     _dt_col = df["datetime"].dropna()
     if len(_dt_col) > 0:
-        datetimes = pd.to_datetime(_dt_col)
-        t_start = datetimes.min().strftime("%Y-%m-%dT00:00:00Z")
-        t_end = datetimes.max().strftime("%Y-%m-%dT00:00:00Z")
+        try:
+            # Convert to datetime with UTC awareness to handle tz-aware datetimes
+            datetimes = pd.to_datetime(_dt_col, utc=True)
+            # Strip timezone for STAC (use naive UTC timestamps)
+            datetimes = datetimes.dt.tz_localize(None)
+            t_start = datetimes.min().strftime("%Y-%m-%dT00:00:00Z")
+            t_end = datetimes.max().strftime("%Y-%m-%dT00:00:00Z")
+        except Exception as dt_err:
+            logger.debug("Could not compute temporal extent: %s", dt_err)
+            t_start = t_end = None
     else:
         t_start = t_end = None
 

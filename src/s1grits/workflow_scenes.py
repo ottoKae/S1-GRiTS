@@ -73,7 +73,10 @@ from s1grits.stac_builder import (
     STAC_VERSION,
     DATACUBE_EXTENSION_URI,
 )
-from s1grits.canonical_catalog_schema import normalize_catalog_record
+from s1grits.canonical_catalog_schema import (
+    normalize_catalog_record,
+    validate_collection_mapping,
+)
 from s1grits.product_instance import (
     resolve_variant_values, make_processing_signature,
     make_product_variant, derive_actual_bands,
@@ -172,13 +175,13 @@ def _init_zarr_2band(
     g.attrs['transform'] = list(transform)[:6]
     g.attrs['processing_level'] = processing_level
     # Grid identity and metadata for cross-product alignment
-    from s1grits.canonical_catalog_schema import make_grid_id
+    from s1grits.canonical_catalog_schema import make_grid_id, _format_grid_name
     _tile_from_path = zarr_path.parent.parent.parent.name if zarr_path.parent.parent.parent.name else 'UNKNOWN'
     _tfm = list(transform)[:6]
     _w, _h = len(x_coords), len(y_coords)
     _gid = make_grid_id(_tile_from_path, str(target_crs), _tfm, _w, _h)
     g.attrs['grid_id'] = _gid
-    g.attrs['grid_name'] = f"{_tile_from_path}_native_{int(abs(float(_tfm[0])))}m"
+    g.attrs['grid_name'] = _format_grid_name(_tile_from_path, _tfm, str(target_crs))
     g.attrs['grid_version'] = 1
     g.attrs['width'] = _w
     g.attrs['height'] = _h
@@ -972,6 +975,7 @@ def _write_scenes_output(
             'product_variant': _scenes_variant,
             'processing_signature': _scenes_sig,
             'processing_variant_json': json.dumps(_scenes_variant_vals),
+            'item_path': f"items/{product_label}/{mgrs_tile_id}_{direction_label}_TK{_track_tok}_N{n_bursts:02d}.json",
         })
         catalog_records.append(_rec)
 
@@ -2013,6 +2017,9 @@ def run_scenes_workflow(config_path: str | Path) -> dict[str, dict]:
                     "Global catalog dedup: %d → %d rows (%d dropped)",
                     _g_before, len(df_global), _g_dropped,
                 )
+        # Validate collection_id mapping before writing
+        validate_collection_mapping(df_global, raise_on_error=True)
+
         df_global = (
             df_global
             .sort_values(
