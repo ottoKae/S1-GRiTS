@@ -32,7 +32,9 @@
 > This repository is the **open-source implementation of the manuscript** below. This section lets reviewers (1) confirm that every key technique described in the paper is actually implemented, and (2) reproduce the reported figures and tables.
 
 **Manuscript:** *Sentinel-1 Gridded Time Series (S1-GRiTS): Geometry-traceable SAR Data Cubes for decadal vegetation monitoring in cloud-prone regions* — Rao et al., 2026 (under review).
+
 **Software:** `s1grits` — [GitHub](https://github.com/ottoKae/S1-GRiTS) · [PyPI](https://pypi.org/project/s1grits/) (`pip install s1grits`).
+
 **Validation testbed:** mainland Ecuador, MGRS tile **17MPU**, 2017–2025.
 
 ### Key technique → implementation map
@@ -79,7 +81,7 @@ s1grits process_scenes --config config/s1grits_scenes.yaml      # edit: manual_m
 s1grits process_static  --config config/s1grits_static.yaml     # edit: manual_mgrs_tiles: ["17MPU"]
 
 # 3. Quantify cross-orbit ASC–DESC offsets (paper Table 3 / Fig. 7)
-python manuscript_analysis_scripts/c05_t03_evaluation_orbit_paris_offsets.py
+python manuscript_analysis_scripts/c01_f5a_gridded_composites_17MPU.py
 ```
 
 ---
@@ -116,7 +118,7 @@ S1-GRiTS is designed for researchers and practitioners who need **large-scale, l
 **Figure 1.** Burst-first MGRS-grid mosaic over mainland Ecuador, demonstrating spatial consistency and tile-edge-free seamless stitching after despeckling (paper Fig. 5a).
 
 ![Tile Composite](notebooks/S1-GRiTS-f12-tile.png)
-**Figure 2.** Monthly gamma0 composite product for MGRS tile 17MPU, Ecuador (paper study tile).
+**Figure 2.** Monthly gamma0 composite product for MGRS tile 17MPU, Ecuador (paper Fig. 5a).
 
 ![Time Series](notebooks/S1-GRiTS-f2-TS-exmaple.png)
 **Figure 3.** Near-decadal (2017–2025) Sentinel-1 backscatter time series for representative crops (banana, oil palm, teak, cereals) over tile 17MPU (paper Fig. 6).
@@ -176,7 +178,7 @@ python -m ipykernel install --user --name py312_s1grits --display-name "Python (
 jupyter lab
 ```
 
-#### Optional: Streamlit GUI
+#### Optional: Streamlit GUI (under test)
 
 ```bash
 pip install "s1grits[gui]"
