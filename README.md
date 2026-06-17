@@ -117,10 +117,10 @@ S1-GRiTS is designed for researchers and practitioners who need **large-scale, l
 ![MGRS Mosaic Example](notebooks/S1-GRiTS-f1-exmaple.png)
 **Figure 1.**  Burst-first MGRS-grid mosaic over Wuhan.
 
-![Tile Composite](notebooks/S1-GRiTS-f12-tile.pdf)
+![Tile Composite](notebooks/S1-GRiTS-f12-tile.jpg)
 **Figure 2.**  Burst-first MGRS-grid mosaic over mainland Ecuador and its 17MPU title, demonstrating spatial consistency and tile-edge-free seamless stitching after despeckling (paper Fig. 5a).
 
-![Time Series](notebooks/S1-GRiTS-f2-TS-exmaple.pdf)
+![Time Series](notebooks/S1-GRiTS-f2-TS-exmaple.jpg)
 **Figure 3.** Near-decadal (2017–2025) Sentinel-1 backscatter time series for representative objects.
 
 ---
