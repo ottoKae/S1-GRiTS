@@ -115,7 +115,7 @@ S1-GRiTS is designed for researchers and practitioners who need **large-scale, l
 - Land use / land cover mapping
 
 ![MGRS Mosaic Example](notebooks/S1-GRiTS-f1-exmaple.png)
-**Figure 1.**  Burst-first MGRS-grid mosaic over Wuhan.
+**Figure 1.**  Burst-first MGRS-grid mosaic over Wuhan, China.
 
 ![Tile Composite](notebooks/S1-GRiTS-f12-tile.jpg)
 **Figure 2.**  Burst-first MGRS-grid mosaic over mainland Ecuador and its 17MPU title, demonstrating spatial consistency and tile-edge-free seamless stitching after despeckling (paper Fig. 5a).
