@@ -4,12 +4,13 @@
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.0-orange.svg)](https://github.com/ottoKae/S1-GRiTS-V100)
+[![Version](https://img.shields.io/badge/version-2.1.0-orange.svg)](https://github.com/ottoKae/S1-GRiTS)
 
 ---
 
 ## Table of Contents
 
+- [For Reviewers — Paper ↔ Code](#for-reviewers--paper--code)
 - [Features](#features)
 - [Quick Start](#quick-start)
 - [Architecture](#architecture)
@@ -23,6 +24,65 @@
 - [FAQ](#faq)
 - [License & Citation](#license--citation)
 - [Acknowledgements](#acknowledgements)
+
+---
+
+## For Reviewers — Paper ↔ Code
+
+> This repository is the **open-source implementation of the manuscript** below. This section lets reviewers (1) confirm that every key technique described in the paper is actually implemented, and (2) reproduce the reported figures and tables.
+
+**Manuscript:** *Sentinel-1 Gridded Time Series (S1-GRiTS): Geometry-traceable SAR Data Cubes for decadal vegetation monitoring in cloud-prone regions* — Rao et al., 2026 (under review).
+
+**Software:** `s1grits` — [GitHub](https://github.com/ottoKae/S1-GRiTS) · [PyPI](https://pypi.org/project/s1grits/) (`pip install s1grits`).
+
+**Validation testbed:** mainland Ecuador, MGRS tile **17MPU**, 2017–2025.
+
+### Key technique → implementation map
+
+Each row links a core methodological claim in the paper to the module/function and the CLI entry point that runs it.
+
+| Paper technique (section) | Implemented in | Run via |
+|---|---|---|
+| **Burst-first deterministic acquisition grouping** by `(mgrs_tile_id, acq_group_id_within_mgrs_tile, pass_id)` + `track_token`, `pass_id` 6-day cycle (§3.1, Table 2) | `asf_tiles.py` (`extract_pass_id`, group/`track_token` build), `dist_enum.py` | `s1grits process_scenes` |
+| **First-valid-pixel mosaicking** (source control, *not* radiometric fusion) (§3.1) | `asf_output_writing.py` → `_mosaic_align()` ("first burst covering each pixel wins") | all `process*` commands |
+| **Orbit-direction separation + one Zarr per acquisition group** (§3.2) | `workflow_scenes.py`, `asf_output_writing.py` → `merge_acq_group_zarrs()` | `s1grits process_scenes` |
+| **Cloud-native S3 streaming, zero-disk, in-memory virtual file → rasterio → float32** (§3.3) | `asf_io.py` (`rasterio.io.MemoryFile`), `rtc_s1_io.py` (streaming HTTP session) | all `process*` commands |
+| **Adaptive temporal batching + memory-bounded parallelism** (Eq. 1–2, §3.3) | `memory_manager.py` (`detect_system_memory` via psutil, `select_batch_strategy`/`chunk_time_by_strategy`: yearly/quarterly/monthly) | `parallel` / `memory` config blocks |
+| **Temporal median compositing + TV-Bregman despeckle before tile-clip** (§3.2) | `asf_io.py` → `load_and_despeckle_rtc_strict` (`tv_bregman`), `asf_array_processing.despeckle_2d` | `s1grits process` |
+| **Incremental, appendable Zarr cube + STAC 1.1.0 + Parquet catalogs** (§3.2) | `stac_builder.py` (`STAC_VERSION = "1.1.0"`, datacube ext v2.3.0), `catalog_sync.py`, `canonical_catalog_schema.py` | `s1grits catalog inspect` |
+| **Static acquisition-geometry layers** (LIA, inc. angle, layover/shadow, looks, ANF β0/σ0) (§2.2, §4.1) | `workflow_static.py` (`local_inc_angle`, `inc_angle`, `ls_map`, `number_of_looks`, `rtc_anf_beta0`, `rtc_anf_sigma0`) | `s1grits process_static` |
+| **Cross-orbit (ASC–DESC) backscatter offset quantification vs. LIA/ANF** (§3.4, §4.3, Table 3) | `manuscript_analysis_scripts/c05_t03_*`, `c05_f07_*` | run scripts (see below) |
+
+### Reproducing the paper's figures & tables
+
+The `manuscript_analysis_scripts/` directory contains the exact scripts used to produce the published results:
+
+| Script | Reproduces |
+|---|---|
+| `c01_f5a_gridded_composites_mosaics_ECU.py`, `c01_f5a_gridded_composites_17MPU.py` | **Fig. 5a** — Ecuador mosaic & tile 17MPU composite |
+| `c04_f08_gridded_composites_mosaics_DEU.py` | **Fig. 8** — multi-region scalability (Bayern / Sahel / GBA / New Britain) |
+| `c05_f07_evaluation_cross_orbit_offsets_LIA_ANF.py` | **Fig. 7** — cross-orbit offset spatial maps & LIA/ANF heatmaps |
+| `c05_t03_evaluation_orbit_paris_offsets.py` | **Table 3** — ASC–DESC vs. within-orbit offset statistics |
+
+**Published data products (Zenodo, no login/embargo):**
+- Ecuador monthly DESC composites & mosaic (Jan 2026) — [10.5281/zenodo.20607389](https://doi.org/10.5281/zenodo.20607389)
+- Tile 17MPU ASC gridded time series 2017–2025 — [10.5281/zenodo.20589543](https://doi.org/10.5281/zenodo.20589543)
+- Tile 17MPU DESC gridded time series 2017–2025 — [10.5281/zenodo.20607919](https://doi.org/10.5281/zenodo.20607919)
+- Multi-region scalability composites — [10.5281/zenodo.20604391](https://doi.org/10.5281/zenodo.20604391)
+- Pixel-level orbit-pair statistics & static geometry — [10.5281/zenodo.20607604](https://doi.org/10.5281/zenodo.20607604)
+
+### Reproduce the headline result in 3 commands
+
+```bash
+# 1. Generate the geometry-consistent gridded time series for the paper's study tile
+s1grits process_scenes --config config/s1grits_scenes.yaml      # edit: manual_mgrs_tiles: ["17MPU"]
+
+# 2. Generate the static acquisition-geometry layers (LIA, ANF β0) used in the offset analysis
+s1grits process_static  --config config/s1grits_static.yaml     # edit: manual_mgrs_tiles: ["17MPU"]
+
+# 3. Quantify cross-orbit ASC–DESC offsets (paper Table 3 / Fig. 7)
+python manuscript_analysis_scripts/c01_f5a_gridded_composites_17MPU.py
+```
 
 ---
 
@@ -55,13 +115,13 @@ S1-GRiTS is designed for researchers and practitioners who need **large-scale, l
 - Land use / land cover mapping
 
 ![MGRS Mosaic Example](notebooks/S1-GRiTS-f1-exmaple.png)
-**Figure 1.** MGRS-grid mosaic demonstrating spatial consistency and multi-tile seamless stitching.
+**Figure 1.**  Burst-first MGRS-grid mosaic over Wuhan.
 
-![Tile Composite](notebooks/S1-GRiTS-f12-tile.png)
-**Figure 2.** Monthly composite product for MGRS tile 50RKV.
+![Tile Composite](notebooks/S1-GRiTS-f12-tile.pdf)
+**Figure 2.**  Burst-first MGRS-grid mosaic over mainland Ecuador and its 17MPU title, demonstrating spatial consistency and tile-edge-free seamless stitching after despeckling (paper Fig. 5a).
 
-![Time Series](notebooks/S1-GRiTS-f2-TS-exmaple.png)
-**Figure 3.** 2016-2025 time series with CUSUM-based deforestation detection.
+![Time Series](notebooks/S1-GRiTS-f2-TS-exmaple.pdf)
+**Figure 3.** Near-decadal (2017–2025) Sentinel-1 backscatter time series for representative objects.
 
 ---
 
@@ -98,8 +158,8 @@ pip install s1grits
 
 ```bash
 # Clone repository
-git clone https://github.com/ottoKae/S1-GRiTS-V100.git
-cd S1-GRiTS-V100
+git clone https://github.com/ottoKae/S1-GRiTS.git
+cd S1-GRiTS
 
 # Create conda environment
 conda install -n base conda-libmamba-solver
@@ -118,7 +178,7 @@ python -m ipykernel install --user --name py312_s1grits --display-name "Python (
 jupyter lab
 ```
 
-#### Optional: Streamlit GUI
+#### Optional: Streamlit GUI (under test)
 
 ```bash
 pip install "s1grits[gui]"
@@ -163,9 +223,9 @@ session.trust_env = True  # Allow reading .netrc
 
 Choose a workflow and edit the corresponding config file:
 
-**Monthly Composites:** `config/s1grits_config_smonthly_en.yaml`
-**Per-Scene Processing:** `config/s1grits_config_scenes_en.yaml`
-**Static Layers:** `config/s1grits_config_static_en.yaml`
+**Monthly Composites:** `config/s1grits_monthly.yaml`
+**Per-Scene Processing:** `config/s1grits_scenes.yaml`
+**Static Layers:** `config/s1grits_static.yaml`
 
 **Minimal config example** (monthly workflow):
 
@@ -194,13 +254,13 @@ output:
 
 ```bash
 # Monthly composites workflow
-s1grits process --config config/s1grits_config_smonthly_en.yaml
+s1grits process --config config/s1grits_monthly.yaml
 
 # Per-scene workflow
-s1grits process_scenes --config config/s1grits_config_scenes_en.yaml
+s1grits process_scenes --config config/s1grits_scenes.yaml
 
 # Static layers workflow
-s1grits process_static --config config/s1grits_config_static_en.yaml
+s1grits process_static --config config/s1grits_static.yaml
 ```
 
 **What happens:**
@@ -286,7 +346,7 @@ S1-GRiTS provides three specialized workflows for different analysis needs:
 | **Primary Use Case** | Seasonal trends, multi-year analysis | Rapid change, disaster response | Incidence angle correction, masking |
 | **Output Zarr** | One per tile-direction | One per acquisition group | One per acquisition group |
 | **CLI Command** | `s1grits process` | `s1grits process_scenes` | `s1grits process_static` |
-| **Config Template** | `s1grits_config_smonthly_en.yaml` | `s1grits_config_scenes_en.yaml` | `s1grits_config_static_en.yaml` |
+| **Config Template** | `s1grits_monthly.yaml` | `s1grits_scenes.yaml` | `s1grits_static.yaml` |
 | **STAC Collection** | `s1grits-monthly` | `s1grits-scenes` | `s1grits-static` |
 | **Typical Data Volume** | ~500 MB/tile/year (Zarr) | ~2-3 GB/tile/year (Zarr) | ~50 MB/tile (one-time) |
 | **Processing Time** | Fast (monthly aggregation) | Moderate (per-scene outputs) | Fast (static, no time series) |
@@ -343,7 +403,7 @@ Create temporally consistent monthly composite time series suitable for:
 #### CLI Command
 
 ```bash
-s1grits process --config config/s1grits_config_smonthly_en.yaml
+s1grits process --config config/s1grits_monthly.yaml
 ```
 
 #### Key Configuration
@@ -432,7 +492,7 @@ Produce per-acquisition scene outputs suitable for:
 #### CLI Command
 
 ```bash
-s1grits process_scenes --config config/s1grits_config_scenes_en.yaml
+s1grits process_scenes --config config/s1grits_scenes.yaml
 ```
 
 #### Key Configuration
@@ -519,7 +579,7 @@ Produce static reference layers suitable for:
 #### CLI Command
 
 ```bash
-s1grits process_static --config config/s1grits_config_static_en.yaml
+s1grits process_static --config config/s1grits_static.yaml
 ```
 
 #### Key Configuration
@@ -975,9 +1035,9 @@ S1-GRiTS workflows are configured via YAML files in the `config/` directory.
 
 | File | Workflow | Description |
 |------|----------|-------------|
-| `s1grits_config_smonthly_en.yaml` | Monthly composites | Long-term time series at monthly resolution |
-| `s1grits_config_scenes_en.yaml` | Per-scene processing | High-temporal-resolution outputs |
-| `s1grits_config_static_en.yaml` | Static layers | Time-invariant reference layers |
+| `s1grits_monthly.yaml` | Monthly composites | Long-term time series at monthly resolution |
+| `s1grits_scenes.yaml` | Per-scene processing | High-temporal-resolution outputs |
+| `s1grits_static.yaml` | Static layers | Time-invariant reference layers |
 
 ### ROI Configuration
 
@@ -1301,14 +1361,12 @@ S1-GRiTS provides **10+ commands** covering the full workflow: processing, catal
 
 | Command | Purpose | Workflow |
 |---------|---------|----------|
-| `s1grits process` | Monthly composite time series | Monthly |
+| `s1grits process` (alias `s1grits process_monthly`) | Monthly composite time series | Monthly |
 | `s1grits process_scenes` | Per-acquisition scene outputs | Scenes |
 | `s1grits process_static` | Time-invariant static layers | Static |
-| `s1grits process_ablation` | Scenes + monthly in one pass (research) | Scenes + Monthly |
-| `s1grits process_normal40` | Angular normalization per-scene | Scenes |
-| `s1grits process_normal40_monthly` | Block-wise LIA normalization | Monthly |
-| `s1grits catalog rebuild` | Rebuild catalog from COG files | All |
-| `s1grits catalog validate` | Validate catalog schema | All |
+| `s1grits catalog resync` | Rebuild catalog + STAC from filesystem (no re-processing) | All |
+| `s1grits catalog doctor` | Check catalog/STAC/Zarr consistency (`--strict` to fail on warnings) | All |
+| `s1grits catalog validate` | Validate catalog schema & STAC Item alignment | All |
 | `s1grits catalog inspect` | Global coverage summary | All |
 | `s1grits tile inspect` | Single-tile temporal completeness | All |
 | `s1grits mosaic` | Multi-tile monthly mosaic | Monthly |
@@ -1332,7 +1390,7 @@ s1grits mosaic --help
 Generate monthly composite time series.
 
 ```bash
-s1grits process --config config/s1grits_config_smonthly_en.yaml
+s1grits process --config config/s1grits_monthly.yaml
 ```
 
 **What it does:**
@@ -1353,7 +1411,7 @@ s1grits process --config config/s1grits_config_smonthly_en.yaml
 Generate per-acquisition scene outputs with optional monthly compositing.
 
 ```bash
-s1grits process_scenes --config config/s1grits_config_scenes_en.yaml
+s1grits process_scenes --config config/s1grits_scenes.yaml
 ```
 
 **What it does:**
@@ -1379,7 +1437,7 @@ s1grits process_scenes --config config/s1grits_config_scenes_en.yaml
 Generate time-invariant reference layers.
 
 ```bash
-s1grits process_static --config config/s1grits_config_static_en.yaml
+s1grits process_static --config config/s1grits_static.yaml
 ```
 
 **What it does:**
@@ -1401,52 +1459,14 @@ s1grits process_static --config config/s1grits_config_static_en.yaml
 
 ---
 
-#### Ablation Study Workflow (Research)
-
-Process scenes + monthly composites in one pass with controlled despeckle options.
-
-```bash
-s1grits process_ablation --config config/s1grits_config_ablation.yaml
-```
-
-**Purpose:** Experimental workflow for ablation studies comparing:
-- Per-scene outputs with/without spatial despeckle
-- Monthly composites derived from scenes vs direct monthly processing
-
-**Output:** Both scenes and monthly products in same directory structure.
-
----
-
-#### Angular Normalization Workflows (Research)
-
-Normalize backscatter to 40° reference incidence angle.
-
-**Per-Scene Normalization:**
-```bash
-s1grits process_normal40 --config config/s1grits_config_normal40.yaml
-```
-
-Applies local incidence angle (LIA) normalization to each scene individually.
-
-**Monthly Block-Wise Normalization:**
-```bash
-s1grits process_normal40_monthly --config config/s1grits_config_normal40_monthly.yaml
-```
-
-Two-stage process:
-1. **Calibrate stage:** Derive LIA-backscatter relationship per block
-2. **Apply stage:** Normalize all scenes to 40° reference
-
----
-
 ### Catalog Management
 
-#### Rebuild Catalog
+#### Resync Catalog
 
-Rebuild `catalog.parquet` from COG metadata and sync STAC Items.
+Rebuild `catalog.parquet` and STAC Items from the filesystem (no re-processing).
 
 ```bash
-s1grits catalog rebuild --output-dir ./output
+s1grits catalog resync --output-dir ./output
 ```
 
 **When to use:**
@@ -1540,12 +1560,12 @@ ASCENDING
 
   Missing months (2):
     - 2024-03  (no source data)
-    - 2025-08  (COG exists but missing from catalog -- run rebuild)
+    - 2025-08  (COG exists but missing from catalog -- run resync)
 ```
 
 **Interpretation:**
 - **no source data:** ASF has no RTC-S1 data for this month
-- **COG exists but missing from catalog:** Run `catalog rebuild` to fix
+- **COG exists but missing from catalog:** Run `catalog resync` to fix
 - **Zarr exists but no COG:** COG generation was disabled or failed
 
 ---
@@ -1675,10 +1695,10 @@ s1grits process_scenes --config config/scenes_ascending.yaml
 s1grits process_scenes --config config/scenes_descending.yaml
 ```
 
-#### Rebuild Catalog After Interrupted Run
+#### Resync Catalog After Interrupted Run
 
 ```bash
-s1grits catalog rebuild --output-dir ./output
+s1grits catalog resync --output-dir ./output
 s1grits catalog validate --output-dir ./output
 s1grits catalog inspect --output-dir ./output
 ```
@@ -2860,7 +2880,7 @@ widgets.interact(plot_month, time_index=time_slider)
 ---
 ## Jupyter Notebooks
 
-S1-GRiTS provides 6 tutorial notebooks covering data discovery, workflows, and analysis.
+S1-GRiTS provides 5 tutorial notebooks covering data discovery, workflows, and analysis.
 
 ### Getting Started
 
@@ -2884,9 +2904,8 @@ jupyter notebook
 | `Tutorial_A01_asf_search_basics.ipynb` | Data Discovery | ASF search basics, metadata queries, burst enumeration |
 | `Tutorial_A02_S1-GRiTS_Guideline.ipynb` | Workflow Guide | Complete workflow walkthrough (config → run → outputs) |
 | `Tutorial_A03_shapefile_wkt_query_en.ipynb` | ROI Setup | Convert shapefiles to WKT polygons for config |
-| `Tutorial_B01_S1-GRiTS_mosaicVisual_Fig3.ipynb` | Visualization | Monthly composite visualization and false-color composites |
-| `Tutorial_B02_S1-GRiTS_mosaicVisual_Fig4.ipynb` | Regional Mosaic | Multi-tile mosaic creation and figure generation |
-| `Tutorial_B03_S1-GRiTS_timeseries_Fig5.ipynb` | Time Series | Time series extraction, plotting, and statistical analysis |
+| `Tutorial_B01_S1-GRiTS_mosaicVisual_byYear(Henan).ipynb` | Mosaic Visualization | Per-year multi-tile mosaic & false-color composites (additional demo region) |
+| `Tutorial_B02_S1-GRiTS_timeseries_Fig5.ipynb` | Time Series | Pixel/region time-series extraction, plotting, statistics (reproduces paper Fig. 6) |
 
 ### Notebook Topics Overview
 
@@ -2896,9 +2915,8 @@ jupyter notebook
 - A03: Create WKT polygons from shapefiles for ROI configuration
 
 **B-Series: Analysis & Visualization**
-- B01: Load Zarr/COG outputs, create visualizations, false-color composites
-- B02: Multi-tile mosaicking, regional analysis, figure generation for publications
-- B03: Extract pixel/region time series, compute statistics, detect outliers, trend analysis
+- B01: Multi-tile mosaicking and false-color composites, per-year visualization (uses an additional demo region beyond the paper's Ecuador testbed)
+- B02: Extract pixel/region time series, compute statistics, detect outliers — reproduces the near-decadal crop trajectories in the paper
 
 ---
 
@@ -3152,9 +3170,9 @@ Also check logs for specific burst IDs that failed, and verify ASF has data for 
 
 **Q: How do I rebuild the catalog after an interrupted run?**
 
-A: Run catalog rebuild command:
+A: Run catalog resync command:
 ```bash
-s1grits catalog rebuild --output-dir ./output
+s1grits catalog resync --output-dir ./output
 s1grits catalog validate --output-dir ./output
 s1grits catalog inspect --output-dir ./output
 ```
@@ -3187,23 +3205,40 @@ Licensed under the **Apache License, Version 2.0**. See [LICENSE](LICENSE) for f
 
 ### Citation
 
-If you use S1-GRiTS in your research, please cite this repository:
+If you use S1-GRiTS in your research, please cite both the paper and the software.
+
+**Paper (under review):**
 
 ```text
-KaeRao. (2026). S1-GRiTS: Sentinel-1 Gridded RTC Time Series Data Cube (Version 2.0.0).
-GitHub: https://github.com/ottoKae/S1-GRiTS-V100
+Rao, K., Lei, L., Dong, S., Alvarez, C. I., Zou, L., Hu, Z., & Wu, Z. (2026).
+Sentinel-1 Gridded Time Series (S1-GRiTS): Geometry-traceable SAR Data Cubes
+for decadal vegetation monitoring in cloud-prone regions. (under review).
+```
 
-A companion paper is under review and will be published upon acceptance.
+**Software:**
+
+```text
+KaeRao. (2026). S1-GRiTS: Sentinel-1 Gridded RTC Time Series Data Cube (Version 2.1.0).
+GitHub: https://github.com/ottoKae/S1-GRiTS
 ```
 
 **BibTeX:**
 ```bibtex
+@article{rao2026s1grits,
+  author  = {Rao, Keyi and Lei, Lei and Dong, Shixin and Alvarez, Cesar Ivan
+             and Zou, Linxin and Hu, Zhongwen and Wu, Zhaocong},
+  title   = {Sentinel-1 Gridded Time Series (S1-GRiTS): Geometry-traceable SAR
+             Data Cubes for decadal vegetation monitoring in cloud-prone regions},
+  year    = {2026},
+  note    = {under review}
+}
+
 @software{s1grits2026,
   author       = {KaeRao},
   title        = {S1-GRiTS: Sentinel-1 Gridded RTC Time Series Data Cube},
   year         = {2026},
-  version      = {2.0.0},
-  url          = {https://github.com/ottoKae/S1-GRiTS-V100},
+  version      = {2.1.0},
+  url          = {https://github.com/ottoKae/S1-GRiTS},
   note         = {A companion paper is under review}
 }
 ```
@@ -3230,8 +3265,8 @@ S1-GRiTS is currently under active development. Contributions, bug reports, and 
 
 ```bash
 # Clone repository
-git clone https://github.com/ottoKae/S1-GRiTS-V100.git
-cd S1-GRiTS-V100
+git clone https://github.com/ottoKae/S1-GRiTS.git
+cd S1-GRiTS
 
 # Create development environment
 conda env create -f environment.yml
@@ -3263,8 +3298,8 @@ ruff check . --fix
 
 **Questions? Issues? Feature Requests?**
 
-Open an issue on GitHub: https://github.com/ottoKae/S1-GRiTS-V100/issues
+Open an issue on GitHub: https://github.com/ottoKae/S1-GRiTS/issues
 
 ---
 
-*README last updated: 2026-06-10 | Version 2.0.0*
+*README last updated: 2026-06-17 | Version 2.1.0*
