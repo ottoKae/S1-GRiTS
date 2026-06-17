@@ -404,6 +404,7 @@ def process_single_mgrs_tile(
                 processing_signature=_monthly_sig,
                 product_variant=_monthly_variant,
                 processing_variant_json=json.dumps(_monthly_variant_vals),
+                layout_mode=output_config.get('layout_mode', 'stac'),
             )
 
             batch_months = res.get('written_months', [])
@@ -669,17 +670,37 @@ def run_multi_mgrs_monthly_workflow(config_path: str | Path) -> dict[str, dict]:
             result = process_single_mgrs_tile(mgrs_tile_id, time_ranges, config)
             results[mgrs_tile_id] = result
 
-    # 6. Merge all tile catalogs
+    # 6. Merge all tile catalogs and build STAC ecosystem
     from s1grits.asf_output_writing import merge_tile_catalogs
+    from s1grits.catalog_sync import update_root_catalog
+    from s1grits.stac_builder import write_stac_collection
+    import pandas as pd
 
     output_root = str(config.get('output', {}).get('base_dir', '.'))
+    polarization = config.get('roi', {}).get('polarization', 'VV+VH')
+
     try:
+        # Merge all tile catalogs
         catalog_path = merge_tile_catalogs(output_root)
         logger.info("Global catalog: %s", catalog_path)
-        from s1grits.catalog_sync import update_root_catalog
-        update_root_catalog(output_root)
+
+        # Read and filter monthly records
+        df_global = pd.read_parquet(catalog_path)
+        df_monthly = df_global[df_global['product_type'] == 'monthly'] if 'product_type' in df_global.columns else df_global
+
+        # Create collection
+        if not df_monthly.empty:
+            try:
+                write_stac_collection(df_monthly, output_root, "s1grits-monthly", polarization)
+                logger.info("Collection written: s1grits-monthly")
+            except Exception as e:
+                logger.warning("Collection write failed: %s", e)
+
+        # Update root catalog
+        update_root_catalog(output_root, df_global)
+
     except Exception as e:
-        logger.warning("Catalog merge failed: %s", e)
+        logger.warning("Catalog/STAC failed: %s", e)
 
     # 7. Final coverage summary report
     n_total   = len(results)

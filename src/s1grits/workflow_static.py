@@ -48,7 +48,10 @@ from s1grits.workflow import (
 from s1grits.asf_io import read_asf_rtc_image_data, NODATA_SENTINEL, _mgrs_to_utm_epsg
 from s1grits.asf_output_writing import _mosaic_align, _build_grid_from_mgrs_tile
 from s1grits.mgrs_burst_data import get_lut_by_mgrs_tile_ids
-from s1grits.canonical_catalog_schema import normalize_catalog_record
+from s1grits.canonical_catalog_schema import (
+    normalize_catalog_record,
+    validate_collection_mapping,
+)
 from s1grits.product_instance import (
     resolve_variant_values, make_processing_signature,
     make_product_variant, derive_actual_bands,
@@ -220,13 +223,13 @@ def _init_zarr_static(
     g.attrs['crs'] = str(target_crs)
     g.attrs['transform'] = list(transform)[:6]
     g.attrs['processing_level'] = 'static'
-    from s1grits.canonical_catalog_schema import make_grid_id
+    from s1grits.canonical_catalog_schema import make_grid_id, _format_grid_name
     _tile_from_path = zarr_path.parent.parent.parent.name if zarr_path.parent.parent.parent.name else 'UNKNOWN'
     _tfm = list(transform)[:6]
     _w, _h = len(x_coords), len(y_coords)
     _gid = make_grid_id(_tile_from_path, str(target_crs), _tfm, _w, _h)
     g.attrs['grid_id'] = _gid
-    g.attrs['grid_name'] = f"{_tile_from_path}_native_{int(abs(float(_tfm[0])))}m"
+    g.attrs['grid_name'] = _format_grid_name(_tile_from_path, _tfm, str(target_crs))
     g.attrs['grid_version'] = 1
     g.attrs['width'] = _w
     g.attrs['height'] = _h
@@ -672,13 +675,29 @@ def _write_static_stac_item(
     target_res: float,
     band_names: list[str],
     product_label: str,
+    master_transform: list[float],
+    width: int,
+    height: int,
+    target_crs: str,
     cog_path: Path | None = None,
 ) -> str:
     """
     Write one STAC Item per static Zarr store (per track group).
     Zarr is the primary asset; COG is optional.
     """
-    import json, os
+    # Compute spatial extent and resolution from transform
+    pixel_size_x = abs(float(master_transform[0]))
+    pixel_size_y = abs(float(master_transform[4]))
+
+    x_min = float(master_transform[2])
+    y_max = float(master_transform[5])
+    x_max = x_min + width * pixel_size_x
+    y_min = y_max - height * pixel_size_y  # GeoTIFF origin at top-left
+
+    # Extract CRS string for reference_system
+    crs_str = str(target_crs)
+
+    # Build item ID from tile, direction, track, and burst count
     item_id = f"{mgrs_tile_id}_{direction_label}_TK{track_token_safe}_N{n_bursts:02d}_static"
 
     item = {
@@ -708,9 +727,24 @@ def _write_static_stac_item(
             "s1grits:array_dims": ["y", "x"],
             "s1grits:bands": band_names,
             "cube:dimensions": {
-                "x": {"type": "spatial", "axis": "x"},
-                "y": {"type": "spatial", "axis": "y"},
-                "spectral": {"type": "bands", "values": band_names},
+                "x": {
+                    "type": "spatial",
+                    "axis": "x",
+                    "step": pixel_size_x,
+                    "extent": [x_min, x_max],
+                    "reference_system": crs_str,
+                },
+                "y": {
+                    "type": "spatial",
+                    "axis": "y",
+                    "step": pixel_size_y,
+                    "extent": [min(y_min, y_max), max(y_min, y_max)],
+                    "reference_system": crs_str,
+                },
+                "spectral": {
+                    "type": "bands",
+                    "values": band_names,
+                },
             },
         },
         "assets": {},
@@ -950,6 +984,10 @@ def process_static_for_tile(
                 target_res=target_res,
                 band_names=layers,
                 product_label=product_label,
+                master_transform=master_transform,
+                width=width,
+                height=height,
+                target_crs=target_crs,
                 cog_path=Path(cog_rel) if cog_rel else None,
             )
 
@@ -989,6 +1027,7 @@ def process_static_for_tile(
                 'product_variant': _prod_var,
                 'processing_signature': _proc_sig,
                 'processing_variant_json': _json.dumps(_variant_vals),
+                'item_path': f"items/{product_label}/{mgrs_tile_id}_{direction_label}_TK{tk_safe}_N{n_b:02d}_static.json",
             })
             catalog_records.append(_rec)
 
@@ -1130,6 +1169,10 @@ def run_static_layer_workflow(config_path: str | Path) -> dict[str, dict]:
                           if k in df_global.columns]
             if dedup_keys:
                 df_global = df_global.drop_duplicates(subset=dedup_keys, keep='last')
+
+            # Validate collection_id mapping before writing
+            validate_collection_mapping(df_global, raise_on_error=True)
+
             from s1grits.atomic_write import atomic_write_parquet as _awp
             _awp(df_global, _global_catalog_path)
             logger.info("[Static] Global catalog: %s (%d rows)", _global_catalog_path, len(df_global))
