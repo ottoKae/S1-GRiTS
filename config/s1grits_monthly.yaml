@@ -64,7 +64,7 @@ time:
 # OUTPUT CONFIGURATION
 # =============================================================================
 output:
-  base_dir: "G:/raokeyi/s1grits_dataset/s1grits0615_stac2"
+  base_dir: "./data_cubes"
   overwrite: false
 
   formats:
