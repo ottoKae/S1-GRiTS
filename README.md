@@ -115,13 +115,13 @@ S1-GRiTS is designed for researchers and practitioners who need **large-scale, l
 - Land use / land cover mapping
 
 ![MGRS Mosaic Example](notebooks/S1-GRiTS-f1-exmaple.png)
-**Figure 1.**  Burst-first MGRS-grid mosaic over Wuhan..
+**Figure 1.**  Burst-first MGRS-grid mosaic over Wuhan.
 
-![Tile Composite](notebooks/S1-GRiTS-f12-tile.png)
-**Figure 2.**  Burst-first MGRS-grid mosaic over mainland Ecuador, demonstrating spatial consistency and tile-edge-free seamless stitching after despeckling (paper Fig. 5a).
+![Tile Composite](notebooks/S1-GRiTS-f12-tile.pdf)
+**Figure 2.**  Burst-first MGRS-grid mosaic over mainland Ecuador and its 17MPU title, demonstrating spatial consistency and tile-edge-free seamless stitching after despeckling (paper Fig. 5a).
 
-![Time Series](notebooks/S1-GRiTS-f2-TS-exmaple.png)
-**Figure 3.** Near-decadal (2017–2025) Sentinel-1 backscatter time series for representative crops (banana, oil palm, teak, cereals) over tile 17MPU (paper Fig. 6).
+![Time Series](notebooks/S1-GRiTS-f2-TS-exmaple.pdf)
+**Figure 3.** Near-decadal (2017–2025) Sentinel-1 backscatter time series for representative objects.
 
 ---
 
