@@ -3275,27 +3275,7 @@ conda activate py312_s1grits_v100
 # Install in editable mode
 pip install -e .
 
-# Install development extras
-pip install -e ".[dev]"
 ```
-
-### Running Tests
-
-```bash
-pytest tests/
-pytest --cov=s1grits tests/   # With coverage
-```
-
-### Code Style
-
-S1-GRiTS follows PEP 8 style guidelines. Format code with:
-```bash
-ruff format .
-ruff check . --fix
-```
-
----
-
 **Questions? Issues? Feature Requests?**
 
 Open an issue on GitHub: https://github.com/ottoKae/S1-GRiTS/issues
