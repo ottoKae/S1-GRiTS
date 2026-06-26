@@ -1,4 +1,4 @@
-name: py312_s1grits_v100
+name: py312_s1grits
 channels:
   - conda-forge
 
