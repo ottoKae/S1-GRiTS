@@ -43,7 +43,7 @@ roi:
 # OUTPUT CONFIGURATION
 # =============================================================================
 output:
-  base_dir: "G:/raokeyi/s1grits_dataset/s1grits0615_stac2"
+  base_dir: "../outputs"
   overwrite: true
 
   # ========================================================================
