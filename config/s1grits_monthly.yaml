@@ -42,12 +42,26 @@ roi:
 
   # --- Mode B: Manual tile list ---
   manual_mgrs_tiles:
-    # - "17MPU"
-    - "46SEG"
+    - "17MPU"
+    # - "46SEG"
     # - "17MQV"
 
   flight_direction: "DESCENDING"
   polarization: "VV+VH"
+
+  # Tile-coverage filter (query stage): drop whole acquisition tracks whose
+  # burst footprint covers less than this fraction of the MGRS tile. 0.0
+  # disables; 0.10 (= 10%) is recommended.
+  min_tile_coverage_frac: 0.10
+
+# =============================================================================
+# QUERY ROBUSTNESS (ASF CMR metadata search)
+#   ASF's CMR endpoint can be slow/flaky (especially behind a VPN).
+# =============================================================================
+query:
+  cmr_timeout_seconds: 90      # per-request timeout (asf_search default is 30)
+  max_retries: 3               # retry each time-range chunk this many times
+  retry_backoff_seconds: 5     # base backoff; waits 5s, 10s, 20s, … between tries
 
 # =============================================================================
 # TIME CONFIGURATION
@@ -57,14 +71,26 @@ time:
   # full: 2026
 
   # --- Mode B: Specific years ---
-  years: [2026]
-  months: [1]
+  years: [2025]
+  months: [9]
 
 # =============================================================================
 # OUTPUT CONFIGURATION
 # =============================================================================
 output:
-  base_dir: "./data_cubes"
+  base_dir: "G:/raokeyi/s1grits_dataset/s1grits0615_stac2"
+
+  # ========================================================================
+  # STAC generation
+  # ========================================================================
+  # Workflows are CATALOG-ONLY: they write catalog.parquet + data (Zarr/COG/
+  # Preview) and NEVER write STAC. Generate STAC afterwards with:
+  #     s1grits catalog resync --output-dir <output.base_dir>
+  # which builds stac-geoparquet (one collections/{id}/items.parquet for ALL
+  # products at once) — a single, consistent STAC representation.
+  # ========================================================================
+
+  layout_mode: "stac"  # Options: "stac" (new STAC ecosystem) or "legacy" (backward compatible)
   overwrite: false
 
   formats:

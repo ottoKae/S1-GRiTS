@@ -13,13 +13,12 @@
 #       scenes_{DESPECKLE}_{BANDS}/zarr/s1grits_scenes_{TILE}_{DIR}_TK{tk}_N{nn}.zarr
 #       scenes_{DESPECKLE}_{BANDS}/cog/{TILE}_{DIR}_{ACQDT}.tif
 #       scenes_{DESPECKLE}_{BANDS}/preview/{TILE}_{DIR}_{ACQDT}.png
-#       scenes_{DESPECKLE}_{BANDS}/items/{TILE}_{DIR}_{ACQDT}.json
 #       smonthly_{DESPECKLE}_{BANDS}/                                       (if monthly.enabled)
-#         zarr/s1grits_smonthly_{TILE}_{DIR}_monthly.zarr
-#         cog/{TILE}_S1_Monthly_{DIR}_{YYYY-MM}.tif
-#         preview/{TILE}_S1_Monthly_{DIR}_{YYYY-MM}.png
-#         items/{TILE}_{DIR}_{YYYY-MM}.json
+#         zarr/s1grits_smonthly_{TILE}_{DIR}_TK{tk}_N{nn}.zarr   (one per track)
+#         cog/s1grits_smonthly_{TILE}_{DIR}_TK{tk}_N{nn}_{YYYY-MM}.tif
+#         preview/s1grits_smonthly_{TILE}_{DIR}_TK{tk}_N{nn}_{YYYY-MM}.png
 #   catalog.parquet
+#   (STAC is produced only by `s1grits catalog resync`, under collections/)
 # =============================================================================
 
 # Workflow type (validated by CLI)
@@ -46,19 +45,49 @@ metadata:
 roi:
   # --- Mode A: WKT polygon (EPSG:4326) ---
   # wkt: "POLYGON((...))"
+  # BGA 粤港澳大湾区 - ASC
+  wkt: "POLYGON((112.3586 21.4611,113.9688 21.8093,114.3066 22.0441,115.0278 22.5527,115.0934 22.6332,115.4216 23.2375,115.4192 23.2462,115.3899 23.2907,115.303 23.3625,114.265 23.9628,112.2853 24.3922,111.8728 24.2319,111.4818 23.6292,111.3944 23.4718,111.3877 23.4507,111.3584 23.3429,111.3567 23.3327,111.3573 23.3263,112.3574 21.4618,112.3586 21.4611))"
+  # wkt: "POLYGON((111.6374 19.6549,116.294 19.6549,116.294 22.8761,111.6374 22.8761,111.6374 19.6549))"
+  # wkt: "POLYGON((114.3235 20.2452,114.8903 20.522,115.2216 20.8431,115.497 21.1673,115.4731 21.5502,115.4611 22.6337,115.4212 22.8399,115.4216 23.2375,115.4192 23.2462,115.3899 23.2907,115.303 23.3625,114.265 23.9628,112.2853 24.3922,111.8728 24.2319,111.4818 23.6292,111.3944 23.4718,111.3877 23.4507,111.3584 23.3429,111.3567 23.3327,111.5693 20.3687,112.1281 20.3013,112.9903 20.1852,114.3235 20.2452))"
+  # wkt: "POLYGON ((116.294 22.8761, 116.294 19.6549, 111.6374 19.6549, 111.6374 20.36048607730852, 111.5693 20.3687, 111.3567 23.3327, 111.3584 23.3429, 111.3877 23.4507, 111.3944 23.4718, 111.4818 23.6292, 111.8728 24.2319, 112.2853 24.3922, 114.265 23.9628, 115.303 23.3625, 115.3899 23.2907, 115.4192 23.2462, 115.4216 23.2375, 115.42123641851107 22.8761, 116.294 22.8761))"
+ 
 
   # --- Mode B: Manual tile list ---
-  manual_mgrs_tiles:
+  # manual_mgrs_tiles:
     # - "50RKV"
     # - "17MPU"
-    - "46SEG"
+    # - "46SEG"
     # - "17MQV"
 
   # Orbit direction (process one direction at a time)
-  flight_direction: "DESCENDING"
-  # flight_direction: "ASCENDING"
+  # flight_direction: "DESCENDING"
+  flight_direction: "ASCENDING"
 
   polarization: "VV+VH"
+
+  # Tile-coverage filter (query stage): drop whole acquisition tracks whose
+  # burst footprint covers less than this fraction of the MGRS tile. Saves
+  # download + compute on tracks that only clip a small corner of the tile.
+  # 0.0 disables the filter. 0.20 (= 20%) recommended for OPERA RTC-S1.
+  min_tile_coverage_frac: 0.20
+
+# =============================================================================
+# QUERY ROBUSTNESS (ASF CMR metadata search)
+#   ASF's CMR endpoint can be slow/flaky (especially behind a VPN). These make
+#   the metadata query more tolerant of timeouts.
+# =============================================================================
+query:
+  cmr_timeout_seconds: 90      # per-request timeout (asf_search default is 30)
+  max_retries: 3               # retry each time-range chunk this many times
+  retry_backoff_seconds: 5     # base backoff; waits 5s, 10s, 20s, … between tries
+  # Look back this many months (metadata only, no download) to establish each
+  # track's TRUE burst footprint, so interior-gap detection works even when the
+  # processed window is short (e.g. a single month). 0 disables.
+  footprint_lookback_months: 6
+  # The look-back result is cached on disk per tile (.footprint_lookback.json).
+  # A re-run over the same window within this many days reuses the cache and
+  # skips the extra ASF metadata query. Set 0 to always re-query.
+  footprint_cache_ttl_days: 7
 
 # =============================================================================
 # TIME CONFIGURATION
@@ -73,18 +102,28 @@ time:
 
   # --- Mode B: Specific years ---
   years: [2026]
-  months: [1]
+  months: [6]
 
 # =============================================================================
 # OUTPUT CONFIGURATION
 # =============================================================================
 output:
-  base_dir: "./data_cubes"
-  # Whether to overwrite existing outputs (false = incremental-safe skip mode)
+  base_dir: "G:/raokeyi/s1grits_dataset/BGA_wkt_test"
+   # Whether to overwrite existing outputs (false = incremental-safe skip mode)
   overwrite: false
 
   # On time conflict: "skip" (keep existing) or "overwrite" (replace)
   on_time_conflict: "skip"
+
+  # ========================================================================
+  # STAC generation
+  # ========================================================================
+  # Workflows are CATALOG-ONLY: they write catalog.parquet + data (Zarr/COG/
+  # Preview) and NEVER write STAC. Generate STAC afterwards with:
+  #     s1grits catalog resync --output-dir <output.base_dir>
+  # which builds stac-geoparquet (one collections/{id}/items.parquet for ALL
+  # products at once) — a single, consistent STAC representation.
+  # ========================================================================
 
   # Output format toggles (Zarr is always generated — it is the primary Data Cube product)
   formats:
@@ -126,7 +165,7 @@ processing:
   spatial_despeckle: false
 
   # Optional derived bands (default: false — 2-band VV_dB + VH_dB only)
-  features_ratio: true         # Ratio = VH/VV
+  features_ratio: false         # Ratio = VH/VV
   features_rvi: false          # RVI = 4*VH/(VV+VH)
   features_glcm: false         # GLCM texture bands
 
@@ -152,6 +191,23 @@ processing:
 
   # On time conflict: "skip" or "overwrite"
   on_time_conflict: "skip"
+
+  # Incomplete-acquisition policy. Normal "edge truncation" (a data-take ending
+  # a burst or two short along-track) is ALWAYS kept — only an INTERIOR NoData
+  # hole (a burst missing in the middle of the tile, enclosed by data) is acted
+  # on:
+  #   "skip"  (default) — do NOT write that acquisition's tile; record it in
+  #                       {TILE}/processing_report.json with a cause label
+  #                       (NETWORK / ASF_MISSING_RECENT / ASF_MISSING_STALE) and
+  #                       a recoverability note. The next incremental run
+  #                       (overwrite=false) re-attempts it.
+  #   "write"           — write the scene anyway (keeps the hole).
+  #   "abort"           — raise and stop the run.
+  incomplete_acquisition: "skip"
+
+  # An interior NoData hole is flagged when it exceeds this fraction of the tile
+  # (filters out tiny speckle gaps; a missing burst is far larger).
+  interior_hole_max_frac: 0.005
 
   # ===========================================================================
   # Monthly compositing (optional)

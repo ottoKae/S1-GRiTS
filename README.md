@@ -1,10 +1,34 @@
-# S1-GRiTS: Sentinel-1 Gridded RTC Time Series Data Cube
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo/logo-dark.png">
+    <img src="assets/logo/logo.png" width="200" alt="S1-GRiTS logo">
+  </picture>
+</p>
 
-**S1-GRiTS** is a production-ready Python package for generating **analysis-ready Sentinel-1 SAR time series data cubes** from ASF OPERA RTC-S1 products. It automates the complete pipeline from burst-level data discovery to MGRS-aligned, temporally consistent Zarr/COG outputs.
+<!-- <h1 align="center">S1-GRiTS: Sentinel-1 Gridded RTC Time Series Data Cube</h1> -->
 
-[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.1.0-orange.svg)](https://github.com/ottoKae/S1-GRiTS)
+
+<p align="center">
+  <em>S1-GRiTS: Sentinel-1 Gridded RTC Time Series Data Cube</em>
+  <em>Each pixel knows where it came from. Geometry is not erased.</em>
+</p>
+
+<p align="center">
+  S1-GRiTS is a Python package for generating analysis-ready Sentinel-1 SAR time series data cubes from ASF OPERA RTC-S1 products.
+  It converts burst-level observations into MGRS-aligned, temporally consistent Zarr/COG data cubes.
+</p>
+
+<p align="center">
+  <a href="https://www.python.org/downloads/">
+    <img src="https://img.shields.io/badge/python-3.12+-blue.svg" />
+  </a>
+  <a href="LICENSE">
+    <img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" />
+  </a>
+  <a href="https://github.com/ottoKae/S1-GRiTS">
+    <img src="https://img.shields.io/badge/version-2.1.0-orange.svg" />
+  </a>
+</p>
 
 ---
 

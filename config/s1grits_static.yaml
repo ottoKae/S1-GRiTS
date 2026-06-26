@@ -14,8 +14,8 @@
 #       catalog.parquet
 #       static_{DIR}/zarr/s1grits_static_{TILE}_{DIR}_TK{tk}_N{nn}.zarr
 #       static_{DIR}/cog/*.tif
-#       static_{DIR}/items/{TILE}_{DIR}_TK{tk}_N{nn}_static.json
 #   catalog.parquet
+#   (STAC is produced only by `s1grits catalog resync`, under collections/)
 # =============================================================================
 
 # Workflow type (validated by CLI)
@@ -33,7 +33,8 @@ metadata:
 roi:
   manual_mgrs_tiles:
     # - "50RKV"
-    - "46SEG"
+    # - "46SEG"
+    - "17MPU"
     # - "17MQV"
 
   flight_direction: "DESCENDING"
@@ -42,8 +43,18 @@ roi:
 # OUTPUT CONFIGURATION
 # =============================================================================
 output:
-  base_dir: "./data_cubes"
+  base_dir: "G:/raokeyi/s1grits_dataset/s1grits0615_stac2"
   overwrite: true
+
+  # ========================================================================
+  # STAC generation
+  # ========================================================================
+  # Workflows are CATALOG-ONLY: they write catalog.parquet + data (Zarr/COG/
+  # Preview) and NEVER write STAC. Generate STAC afterwards with:
+  #     s1grits catalog resync --output-dir <output.base_dir>
+  # which builds stac-geoparquet (one collections/{id}/items.parquet for ALL
+  # products at once) — a single, consistent STAC representation.
+  # ========================================================================
 
   formats:
     cog: false
