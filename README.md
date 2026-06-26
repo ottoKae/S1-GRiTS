@@ -185,7 +185,7 @@ cd S1-GRiTS
 # Create conda environment
 conda install -n base conda-libmamba-solver
 conda env create -f environment.yml --solver=libmamba
-conda activate py312_s1grits_v100
+conda activate py312_s1grits
 
 # Install package
 pip install .
