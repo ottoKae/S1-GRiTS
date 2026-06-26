@@ -246,7 +246,7 @@ class CLIRunner:
         Captured (False) for:
         - --help, --version (short info)
         - validate, inspect (quick checks)
-        - catalog rebuild (unless very large)
+        - catalog resync (unless very large)
         """
         # Check for help/version flags
         if any(arg in cmd_list for arg in ['--help', '-h', '--version', '-v']):
@@ -257,7 +257,7 @@ class CLIRunner:
             subcommand = cmd_list[1] if cmd_list[0] in ['s1grits', 'python'] else cmd_list[0]
             if subcommand in ['process', 'mosaic', 'export']:
                 return True
-            if subcommand == 'catalog' and 'rebuild' in cmd_list:
+            if subcommand == 'catalog' and 'resync' in cmd_list:
                 return True
 
         # Default to captured for short commands
@@ -436,7 +436,7 @@ def s1grits(*args, **kwargs) -> subprocess.CompletedProcess:
     Run s1grits CLI command
 
     Args:
-        *args: Command arguments (e.g., 'catalog', 'rebuild', '--output-dir', './output')
+        *args: Command arguments (e.g., 'catalog', 'resync', '--output-dir', './output')
         **kwargs: Additional arguments passed to CLIRunner.run()
 
     Returns:
@@ -444,7 +444,7 @@ def s1grits(*args, **kwargs) -> subprocess.CompletedProcess:
 
     Examples:
         >>> s1grits('--help')
-        >>> s1grits('catalog', 'rebuild', '--output-dir', './output')
+        >>> s1grits('catalog', 'resync', '--output-dir', './output')
         >>> s1grits('process', '--config', 'config.yaml')
     """
     runner = CLIRunner()
@@ -457,9 +457,13 @@ def process(config_path: str, **kwargs) -> subprocess.CompletedProcess:
     return s1grits('process', '--config', config_path, **kwargs)
 
 
-def catalog_rebuild(output_dir: str = './output', **kwargs) -> subprocess.CompletedProcess:
-    """Rebuild global catalog"""
-    return s1grits('catalog', 'rebuild', '--output-dir', output_dir, **kwargs)
+def catalog_resync(output_dir: str = './output', **kwargs) -> subprocess.CompletedProcess:
+    """Resync catalog + STAC from the filesystem ('s1grits catalog resync')."""
+    return s1grits('catalog', 'resync', '--output-dir', output_dir, **kwargs)
+
+
+# Backward-compatible alias (the CLI subcommand is 'resync', not 'rebuild').
+catalog_rebuild = catalog_resync
 
 
 def catalog_validate(output_dir: str = './output', **kwargs) -> subprocess.CompletedProcess:

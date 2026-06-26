@@ -31,6 +31,7 @@ _ALL_COLLECTIONS: dict[str, str] = {
 def update_root_catalog(
     output_root: str | Path,
     df_global: pd.DataFrame | None = None,
+    prune: bool = False,
 ) -> None:
     """
     Write or update the root STAC Catalog at ``{output_root}/catalog.json``.
@@ -46,7 +47,18 @@ def update_root_catalog(
     Args:
         output_root: DataCube root directory.
         df_global: The merged global catalog DataFrame (may be None).
+        prune: When True, the root catalog lists EXACTLY the collections
+            present in ``df_global`` — child links for collections that are
+            no longer present are dropped instead of preserved. This is the
+            authoritative-reconcile mode used by ``catalog resync`` so the
+            catalog mirrors what is actually on disk. The default (False)
+            keeps the additive workflow behaviour: links added by other
+            workflows survive even if this run did not produce them.
     """
+    from s1grits.stac_builder import stac_output_enabled
+    if not stac_output_enabled():
+        return
+
     output_root = Path(output_root)
     root_path = output_root / "catalog.json"
 
@@ -67,7 +79,14 @@ def update_root_catalog(
     children = []
     for cid, title in _ALL_COLLECTIONS.items():
         href = f"./collections/{cid}/collection.json"
-        if not present_ids or cid in present_ids:
+        if prune:
+            # Authoritative reconcile: only collections actually present survive.
+            if cid in present_ids:
+                children.append({
+                    "rel": "child", "href": href,
+                    "type": "application/json", "title": title,
+                })
+        elif not present_ids or cid in present_ids:
             children.append({
                 "rel": "child", "href": href,
                 "type": "application/json", "title": title,

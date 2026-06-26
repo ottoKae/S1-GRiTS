@@ -545,28 +545,71 @@ def get_catalog_statistics(catalog_path: Union[str, Path]) -> Dict[str, Any]:
 # Filesystem resync — rebuild catalog + STAC from actual Zarr/COG data
 # ---------------------------------------------------------------------------
 
-def resync_catalog_from_filesystem(output_dir: Union[str, Path]) -> Dict[str, Any]:
+def resync_catalog_from_filesystem(
+    output_dir: Union[str, Path],
+    write_stac: bool = True,
+    stac_format: str = "geoparquet",
+) -> Dict[str, Any]:
     """
     Scan the filesystem and rebuild per-tile + global catalog and STAC.
+
+    Authoritative reconcile: the catalog (and, unless ``write_stac`` is
+    False, the STAC tree) is made to mirror EXACTLY what is on disk. Records
+    whose Zarr store no longer exists are dropped (the catalog is rebuilt
+    from the surviving stores), and stale STAC artifacts — orphaned item
+    JSONs, collection directories no longer backed by data, and dangling
+    root-catalog child links — are pruned.
 
     Does NOT re-run any workflow — only reads existing Zarr stores, COG
     files, and product directories to reconstruct metadata.
 
     Args:
         output_dir: Path to the DataCube root directory.
+        write_stac: When True (default), rebuild the STAC tree (items,
+            per-collection collection.json, root catalog) and prune stale
+            STAC. When False, reconcile only ``catalog.parquet`` and DELETE
+            every STAC artifact (root catalog.json, collections/, and each
+            tile's items/) — a catalog-only datacube.
+
+        stac_format: STAC item serialization when write_stac is True.
+            'geoparquet' (default) writes one stac-geoparquet file per
+            collection (collections/{cid}/items.parquet) and NO per-item JSON —
+            zero small files, queryable by DuckDB/pyarrow. 'json' writes the
+            classic one-JSON-file-per-item static catalog.
 
     Returns:
         dict with keys: success, message, total_records, tile_count, tiles.
     """
-    import json as _json
-    from s1grits.canonical_catalog_schema import normalize_catalog_record
-    from s1grits.stac_builder import write_stac_item, write_stac_collection
+    from s1grits.file_lock import output_lock
 
     output_root = Path(output_dir)
     if not output_root.exists():
         return {'success': False, 'message': f'Directory not found: {output_root}'}
 
+    if stac_format not in ("geoparquet", "json"):
+        return {'success': False, 'message': f"Invalid stac_format: {stac_format!r} (use 'geoparquet' or 'json')"}
+
     _skip_dirs = ('catalog.json', 'collection.json', 'collections', '.s1grits.lock')
+    with output_lock(output_root):
+        return _resync_locked(output_root, _skip_dirs, write_stac, stac_format)
+
+
+def _resync_locked(output_root, _skip_dirs, write_stac, stac_format) -> Dict[str, Any]:
+    """Body of resync, run while holding the output lock."""
+    import json as _json  # noqa: F401  (kept for parity / future use)
+    import shutil as _shutil
+    from s1grits.canonical_catalog_schema import normalize_catalog_record
+    from s1grits.stac_builder import (
+        write_stac_item, write_stac_collection, build_stac_item_dict,
+        set_stac_output_enabled,
+    )
+    from s1grits.catalog_sync import update_root_catalog
+
+    # resync is the ONLY place that writes STAC. Workflows always leave the
+    # process-level switch OFF, so enable it here when write_stac is requested
+    # (the STAC file writers are gated on this switch).
+    set_stac_output_enabled(write_stac)
+
     tile_dirs = sorted(d for d in output_root.iterdir()
                        if d.is_dir() and not d.name.startswith('.')
                        and d.name not in _skip_dirs)
@@ -612,8 +655,13 @@ def resync_catalog_from_filesystem(output_dir: Union[str, Path]) -> Dict[str, An
                     logger.warning("Cannot open Zarr %s: %s", zarr_p, _e)
                     continue
 
-                # Extract metadata from Zarr
-                bands = [k for k in g.keys() if k not in ('x', 'y', 'time')]
+                # Extract metadata from Zarr. zarr.keys() iteration order is NOT
+                # insertion order, so canonicalize: VV/VH (or HH/HV) lead, then
+                # Ratio/RVI, then the rest — a stable, deterministic band order.
+                from s1grits.stac_builder import _canonical_band_order
+                bands = _canonical_band_order(
+                    [k for k in g.keys() if k not in ('x', 'y', 'time')]
+                )
                 has_time = 'time' in g
 
                 # Read variant metadata from Zarr attrs (written by v3 workflows)
@@ -687,11 +735,8 @@ def resync_catalog_from_filesystem(output_dir: Union[str, Path]) -> Dict[str, An
                 record['output_type'] = product_type
                 catalog_records.append(record)
 
-                # Write/update STAC item
-                try:
-                    write_stac_item(record, str(output_root), tile_dir_override=tile_id)
-                except Exception as _se:
-                    logger.warning("STAC item failed for %s: %s", item_id, _se)
+                # STAC items are emitted after the full catalog is built (from
+                # df_global), so the scan loop only reconstructs the catalog.
 
         # Write per-tile catalog
         if catalog_records:
@@ -709,33 +754,132 @@ def resync_catalog_from_filesystem(output_dir: Union[str, Path]) -> Dict[str, An
     global_path = output_root / 'catalog.parquet'
     df_global.to_parquet(global_path, index=False)
 
-    # Write root catalog.json
-    _root_cat = output_root / 'catalog.json'
-    if not _root_cat.exists():
-        _cat = {
-            "stac_version": "1.1.0", "type": "Catalog",
-            "id": "s1-grits-root", "title": "S1-GRiTS DataCube",
-            "description": f"Sentinel-1 analysis-ready data: {len(df_global)} records",
-            "links": [
-                {"rel": "self", "href": "./catalog.json"},
-                {"rel": "child", "href": "./collection.json",
-                 "type": "application/json", "title": "S1-GRiTS Collection"},
-            ],
-        }
-        _root_cat.write_text(_json.dumps(_cat, indent=2, ensure_ascii=False))
+    present_cids = (
+        set(df_global["collection_id"].dropna().unique())
+        if "collection_id" in df_global.columns else set()
+    )
 
-    # Write STAC collection
-    try:
-        _cid = df_global["collection_id"].iloc[0] if "collection_id" in df_global.columns and len(df_global) > 0 else "s1grits-scenes"
-        write_stac_collection(df_global, str(output_root), _cid)
-    except Exception as _ce:
-        logger.warning("STAC collection failed: %s", _ce)
+    if not write_stac:
+        # Catalog-only datacube: delete every STAC artifact.
+        _delete_all_stac(output_root, tile_dirs, _shutil)
+    elif stac_format == "geoparquet":
+        from s1grits.stac_geoparquet_io import write_items_geoparquet
+        for _cid in sorted(present_cids):
+            _df_sub = df_global[df_global["collection_id"] == _cid]
+            if _df_sub.empty:
+                continue
+            coll_dir = output_root / "collections" / str(_cid)
+            coll_dir.mkdir(parents=True, exist_ok=True)
+            item_dicts = []
+            for _, _row in _df_sub.iterrows():
+                _rec = _row.to_dict()
+                try:
+                    _item, _ = build_stac_item_dict(
+                        _rec, str(output_root),
+                        tile_dir_override=_rec.get("tile_id"),
+                        relative_to=str(coll_dir),
+                    )
+                    item_dicts.append(_item)
+                except Exception as _ie:
+                    logger.warning("STAC item build failed for %s: %s", _rec.get("item_id"), _ie)
+            try:
+                write_items_geoparquet(item_dicts, coll_dir / "items.parquet")
+                write_stac_collection(_df_sub, str(output_root), str(_cid), items_parquet="items.parquet")
+            except Exception as _ce:
+                logger.warning("STAC geoparquet failed for %s: %s", _cid, _ce)
+
+        update_root_catalog(output_root, df_global, prune=True)
+        # geoparquet has no per-item JSON: drop any tile items/ dirs entirely,
+        # plus collection dirs no longer backed by data.
+        for _td in tile_dirs:
+            _shutil.rmtree(_td / "items", ignore_errors=True)
+        _prune_orphan_collections(output_root, present_cids, _shutil)
+    else:  # stac_format == "json"
+        written_item_abs: set = set()
+        for _, _row in df_global.iterrows():
+            _rec = _row.to_dict()
+            try:
+                _p = write_stac_item(_rec, str(output_root), tile_dir_override=_rec.get("tile_id"))
+                written_item_abs.add(str(Path(_p).resolve()))
+            except Exception as _ie:
+                logger.warning("STAC item failed for %s: %s", _rec.get("item_id"), _ie)
+        for _cid in sorted(present_cids):
+            _df_sub = df_global[df_global["collection_id"] == _cid]
+            if _df_sub.empty:
+                continue
+            try:
+                write_stac_collection(_df_sub, str(output_root), str(_cid))
+            except Exception as _ce:
+                logger.warning("STAC collection failed for %s: %s", _cid, _ce)
+            # drop a stale items.parquet left by a previous geoparquet run
+            _stale_pq = output_root / "collections" / str(_cid) / "items.parquet"
+            try:
+                _stale_pq.unlink(missing_ok=True)
+            except OSError:
+                pass
+        update_root_catalog(output_root, df_global, prune=True)
+        _prune_orphan_items(tile_dirs, written_item_abs)
+        _prune_orphan_collections(output_root, present_cids, _shutil)
 
     return {
         'success': True,
-        'message': f'Resynced {len(df_global)} records from {len(all_catalogs)} tile(s)',
+        'message': (
+            f'Resynced {len(df_global)} records from {len(all_catalogs)} tile(s)'
+            + ('' if write_stac else ' (catalog-only: STAC removed)')
+            + (f' [STAC: {stac_format}]' if write_stac else '')
+        ),
         'catalog_path': str(global_path),
         'total_records': len(df_global),
         'tile_count': len(all_catalogs),
+        'stac': write_stac,
+        'stac_format': stac_format if write_stac else None,
+        'collections': sorted(present_cids),
+        'collection_counts': {
+            str(_cid): int((df_global["collection_id"] == _cid).sum())
+            for _cid in sorted(present_cids)
+        } if "collection_id" in df_global.columns else {},
         'tiles': sorted(d.name for d in tile_dirs if any(d.iterdir())),
     }
+
+
+def _prune_orphan_items(tile_dirs, written_item_abs: set) -> None:
+    """Delete item JSONs under any ``{tile}/items/`` that this resync did not
+    (re)write — i.e. items whose backing Zarr no longer exists."""
+    for tile_dir in tile_dirs:
+        items_root = tile_dir / 'items'
+        if not items_root.is_dir():
+            continue
+        for item_json in items_root.rglob('*.json'):
+            if str(item_json.resolve()) not in written_item_abs:
+                try:
+                    item_json.unlink()
+                    logger.info("Pruned orphan STAC item: %s", item_json)
+                except OSError as _e:
+                    logger.warning("Could not prune %s: %s", item_json, _e)
+
+
+def _prune_orphan_collections(output_root, present_cids: set, _shutil) -> None:
+    """Remove ``collections/{cid}`` dirs not backed by any present record."""
+    collections_root = output_root / 'collections'
+    if not collections_root.is_dir():
+        return
+    for coll_dir in collections_root.iterdir():
+        if coll_dir.is_dir() and coll_dir.name not in present_cids:
+            try:
+                _shutil.rmtree(coll_dir)
+                logger.info("Pruned orphan STAC collection: %s", coll_dir)
+            except OSError as _e:
+                logger.warning("Could not prune %s: %s", coll_dir, _e)
+
+
+def _delete_all_stac(output_root, tile_dirs, _shutil) -> None:
+    """Remove every STAC artifact, leaving catalog.parquet and data intact."""
+    root_cat = output_root / 'catalog.json'
+    try:
+        root_cat.unlink(missing_ok=True)
+    except OSError as _e:
+        logger.warning("Could not remove %s: %s", root_cat, _e)
+    _shutil.rmtree(output_root / 'collections', ignore_errors=True)
+    for tile_dir in tile_dirs:
+        _shutil.rmtree(tile_dir / 'items', ignore_errors=True)
+    logger.info("catalog-only mode: removed all STAC artifacts under %s", output_root)

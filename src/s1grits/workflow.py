@@ -85,6 +85,11 @@ def load_config(config_path: str | Path) -> dict[str, Any]:
     return config
 
 
+# Re-exported from the lightweight config_overrides module so workflow callers
+# (and `from s1grits.workflow import apply_output_overrides_and_stac`) keep working.
+from s1grits.config_overrides import deep_merge_config, apply_output_overrides_and_stac  # noqa: E402,F401
+
+
 def enumerate_mgrs_tiles(config: dict) -> list[str]:
     """
     Get MGRS tiles list from config (auto-detect or manual specification)
@@ -126,6 +131,78 @@ def enumerate_mgrs_tiles(config: dict) -> list[str]:
     return mgrs_tile_ids
 
 
+def _filter_low_coverage_tracks(
+    df_rtc_ts: "gpd.GeoDataFrame", mgrs_tile_id: str, min_frac: float,
+) -> "gpd.GeoDataFrame":
+    """Drop whole acquisition-group tracks (``track_token``) whose burst
+    footprint covers less than ``min_frac`` of the MGRS tile.
+
+    Coverage is the area of (union of the track's distinct burst footprints) ∩
+    tile, divided by the tile area, computed in the tile's UTM CRS. Tracks that
+    only clip a small corner of the tile (e.g. <10%) produce a mostly-empty
+    product and waste download/compute, so they are removed before download.
+
+    No-op when ``min_frac`` <= 0, the frame is empty, or required columns are
+    missing. Returns the filtered frame.
+    """
+    if min_frac <= 0 or df_rtc_ts is None or df_rtc_ts.empty:
+        return df_rtc_ts
+    if 'track_token' not in df_rtc_ts.columns or 'geometry' not in df_rtc_ts.columns:
+        return df_rtc_ts
+
+    import pyproj
+    from shapely.ops import transform as _shp_transform, unary_union
+    from s1grits.asf_io import _mgrs_to_utm_epsg
+    from s1grits.asf_output_writing import _get_mgrs_tile_geometry_wkt
+
+    try:
+        tile_geom = shapely_wkt.loads(_get_mgrs_tile_geometry_wkt(mgrs_tile_id))
+        utm = _mgrs_to_utm_epsg(mgrs_tile_id)
+        to_utm = pyproj.Transformer.from_crs(
+            pyproj.CRS.from_epsg(4326), pyproj.CRS.from_user_input(utm),
+            always_xy=True,
+        ).transform
+        tile_utm = _shp_transform(to_utm, tile_geom)
+        tile_area = tile_utm.area
+    except Exception as _e:
+        logger.warning("Coverage filter skipped for %s (tile geom error): %s", mgrs_tile_id, _e)
+        return df_rtc_ts
+    if not tile_area:
+        return df_rtc_ts
+
+    keep_tokens, dropped = [], []
+    for _tok, _g in df_rtc_ts.groupby('track_token'):
+        try:
+            _geoms = _g.drop_duplicates('jpl_burst_id').geometry.tolist()
+            _union_utm = _shp_transform(to_utm, unary_union(_geoms))
+            _frac = _union_utm.intersection(tile_utm).area / tile_area
+        except Exception:
+            keep_tokens.append(_tok)  # never drop on a computation error
+            continue
+        if _frac < min_frac:
+            dropped.append((_tok, _frac))
+        else:
+            keep_tokens.append(_tok)
+
+    if dropped:
+        for _tok, _frac in sorted(dropped, key=lambda x: x[1]):
+            logger.info(
+                "  [Coverage] dropping track TK%s for %s: %.1f%% < %.1f%% of tile",
+                str(_tok).replace('_', '-'), mgrs_tile_id, _frac * 100, min_frac * 100,
+            )
+        df_rtc_ts = df_rtc_ts[df_rtc_ts['track_token'].isin(keep_tokens)].reset_index(drop=True)
+    # Record the drops on the frame so callers (run in quiet worker processes)
+    # can surface a summary to the user even when worker logs aren't visible.
+    try:
+        df_rtc_ts.attrs['coverage_dropped'] = [
+            {"track_token": str(_tok), "coverage_frac": round(float(_frac), 4)}
+            for _tok, _frac in sorted(dropped, key=lambda x: x[1])
+        ]
+    except Exception:
+        pass
+    return df_rtc_ts
+
+
 def query_rtc_metadata_for_tile(
     mgrs_tile_id: str,
     time_ranges: list[tuple[str, str]],
@@ -145,29 +222,57 @@ def query_rtc_metadata_for_tile(
     roi_config = config.get('roi', {})
     polarization = roi_config.get('polarization', 'VV+VH')
 
+    # Query robustness: ASF's CMR endpoint can be slow/flaky (especially behind a
+    # VPN). Raise the per-request timeout and retry each time-range chunk with
+    # exponential backoff before giving up. All configurable under `query:`.
+    query_cfg = config.get('query', {}) or {}
+    cmr_timeout = int(query_cfg.get('cmr_timeout_seconds', 90))
+    max_retries = int(query_cfg.get('max_retries', 3))
+    backoff = float(query_cfg.get('retry_backoff_seconds', 5))
+    try:
+        import asf_search
+        asf_search.constants.INTERNAL.CMR_TIMEOUT = cmr_timeout
+    except Exception as _te:
+        logger.debug("Could not set CMR_TIMEOUT: %s", _te)
+
     all_metadata = []
 
     for start_date, end_date in time_ranges:
         logger.info("  Querying %s ~ %s...", start_date, end_date)
 
-        try:
-            df_chunk = get_rtc_s1_ts_metadata_from_mgrs_tiles(
-                [mgrs_tile_id],
-                track_numbers=None,  # Get all tracks
-                start_acq_dt=start_date,
-                stop_acq_dt=end_date,
-                polarizations=polarization
-            )
+        df_chunk = None
+        for _attempt in range(max_retries + 1):
+            try:
+                df_chunk = get_rtc_s1_ts_metadata_from_mgrs_tiles(
+                    [mgrs_tile_id],
+                    track_numbers=None,  # Get all tracks
+                    start_acq_dt=start_date,
+                    stop_acq_dt=end_date,
+                    polarizations=polarization
+                )
+                break
+            except Exception as e:
+                if _attempt < max_retries:
+                    _wait = backoff * (2 ** _attempt)
+                    logger.warning(
+                        "Query %s (%s ~ %s) attempt %d/%d failed: %s. Retrying in %.0fs…",
+                        mgrs_tile_id, start_date, end_date,
+                        _attempt + 1, max_retries + 1, e, _wait,
+                    )
+                    time.sleep(_wait)
+                else:
+                    logger.warning(
+                        "Query failed for %s (%s ~ %s) after %d attempts: %s",
+                        mgrs_tile_id, start_date, end_date, max_retries + 1, e,
+                    )
 
-            if not df_chunk.empty:
-                all_metadata.append(df_chunk)
-                logger.info("    Found %d scenes", len(df_chunk))
-            else:
-                logger.warning("No data for %s (%s ~ %s)", mgrs_tile_id, start_date, end_date)
-
-        except Exception as e:
-            logger.warning("Query failed for %s (%s ~ %s): %s", mgrs_tile_id, start_date, end_date, e)
+        if df_chunk is None:
             continue
+        if not df_chunk.empty:
+            all_metadata.append(df_chunk)
+            logger.info("    Found %d scenes", len(df_chunk))
+        else:
+            logger.warning("No data for %s (%s ~ %s)", mgrs_tile_id, start_date, end_date)
 
     if not all_metadata:
         warn(f"No RTC-S1 data found for tile: {mgrs_tile_id}")
@@ -180,6 +285,16 @@ def query_rtc_metadata_for_tile(
     if 'opera_id' in df_rtc_ts.columns:
         df_rtc_ts = df_rtc_ts.drop_duplicates(subset=['opera_id']).reset_index(drop=True)
 
+    # Drop tracks that barely clip the tile (saves download + compute).
+    _min_cov = float(roi_config.get('min_tile_coverage_frac', 0.0) or 0.0)
+    _n_before = len(df_rtc_ts)
+    df_rtc_ts = _filter_low_coverage_tracks(df_rtc_ts, mgrs_tile_id, _min_cov)
+    if len(df_rtc_ts) != _n_before:
+        logger.info(
+            "Coverage filter (<%.0f%%): %d -> %d bursts for %s",
+            _min_cov * 100, _n_before, len(df_rtc_ts), mgrs_tile_id,
+        )
+
     logger.info("Total: %d scenes for %s", len(df_rtc_ts), mgrs_tile_id)
     return df_rtc_ts
 
@@ -187,7 +302,8 @@ def query_rtc_metadata_for_tile(
 def process_single_mgrs_tile(
     mgrs_tile_id: str,
     time_ranges: list[tuple[str, str]],
-    config: dict
+    config: dict,
+    quiet: bool = False,
 ) -> dict[str, Any]:
     """
     Process a single MGRS tile
@@ -210,13 +326,25 @@ def process_single_mgrs_tile(
     logger.info("=" * 60)
     logger.info("Processing MGRS tile: %s", mgrs_tile_id)
     logger.info("=" * 60)
-    _console = Console()
+    # Workflows NEVER write STAC — STAC is produced only by `catalog resync`.
+    # This must be set per-tile because ProcessPoolExecutor workers (spawn)
+    # re-import stac_builder fresh with the default ON and never call the entry
+    # point, so without this they would write the legacy items/ JSON tree.
+    from s1grits.stac_builder import set_stac_output_enabled
+    set_stac_output_enabled(False)
+
+    _console = Console(quiet=quiet)
     _console.print(f"\n[bold cyan]Tile: {mgrs_tile_id}[/bold cyan]")
 
     try:
-        # 1. Query metadata
-        _console.print("[dim]  [1/4] Querying ASF metadata...[/dim]")
-        df_rtc_ts = query_rtc_metadata_for_tile(mgrs_tile_id, time_ranges, config)
+        # 1. Query metadata (spinner while ASF responds — the query is a single
+        # blocking call with no intrinsic progress; skipped when quiet so
+        # parallel workers don't open competing live displays)
+        if quiet:
+            df_rtc_ts = query_rtc_metadata_for_tile(mgrs_tile_id, time_ranges, config)
+        else:
+            with _console.status("[dim]  [1/4] Querying ASF metadata…[/dim]", spinner="dots"):
+                df_rtc_ts = query_rtc_metadata_for_tile(mgrs_tile_id, time_ranges, config)
 
         if df_rtc_ts.empty:
             return {
@@ -532,6 +660,14 @@ def _process_tile_with_memory_budget(
     Returns:
         dict: Processing result
     """
+    # Run quietly: many workers share one terminal, so per-tile prints, status
+    # spinners and tqdm bars would garble each other and the parent progress
+    # bar. Silence them in this worker process (per-tile detail still goes to
+    # the log file); the parent progress bar is the single live display.
+    import os
+    os.environ['TQDM_DISABLE'] = '1'
+    console.quiet = True
+
     # Deep copy config and update memory configuration (preserve other fields)
     import copy
     config_copy = copy.deepcopy(config)
@@ -544,10 +680,12 @@ def _process_tile_with_memory_budget(
     config_copy['memory']['batch_strategy'] = 'auto'
     # Preserve other fields (max_download_workers, clear_cache_per_batch, etc.)
 
-    return process_single_mgrs_tile(mgrs_tile_id, time_ranges, config_copy)
+    return process_single_mgrs_tile(mgrs_tile_id, time_ranges, config_copy, quiet=True)
 
 
-def run_multi_mgrs_monthly_workflow(config_path: str | Path) -> dict[str, dict]:
+def run_multi_mgrs_monthly_workflow(
+    config_path: str | Path, overrides: dict | None = None,
+) -> dict[str, dict]:
     """
     Main workflow: WKT → MGRS Tiles → Process by tile → Zarr/COG output
 
@@ -565,8 +703,9 @@ def run_multi_mgrs_monthly_workflow(config_path: str | Path) -> dict[str, dict]:
             }
         }
     """
-    # 1. Load configuration
+    # 1. Load configuration (+ apply CLI output overrides, set STAC switch)
     config = load_config(config_path)
+    config = apply_output_overrides_and_stac(config, overrides)
 
     # 2. Enumerate MGRS tiles
     mgrs_tile_ids = enumerate_mgrs_tiles(config)
@@ -640,28 +779,41 @@ def run_multi_mgrs_monthly_workflow(config_path: str | Path) -> dict[str, dict]:
                 TimeElapsedColumn(),
                 console=console
             ) as progress:
+                _n = len(future_to_tile)
                 task_id = progress.add_task(
-                    f"Processing {len(mgrs_tile_ids)} MGRS tiles",
-                    total=len(future_to_tile)
+                    f"Processing {_n} MGRS tiles", total=_n,
                 )
 
+                _done = _ok = _fail = 0
                 for future in as_completed(future_to_tile):
                     tile_id = future_to_tile[future]
                     try:
                         results[tile_id] = future.result()
                         status = results[tile_id]['status']
                         if status == 'success':
+                            _ok += 1
                             logger.info("Completed: %s", tile_id)
                         else:
+                            _fail += 1
                             logger.warning("Failed: %s - %s", tile_id, results[tile_id]['error'])
                     except Exception as e:
+                        _fail += 1
                         results[tile_id] = {
                             'status': 'failed',
                             'error': str(e)
                         }
                         logger.error("Exception in %s: %s", tile_id, e, exc_info=True)
 
-                    progress.update(task_id, advance=1)
+                    _done += 1
+                    progress.update(
+                        task_id, advance=1,
+                        description=(
+                            f"Tiles {_done}/{_n}  "
+                            f"[green]{_ok} ok[/green] "
+                            f"[red]{_fail} failed[/red]  "
+                            f"(last: {tile_id})"
+                        ),
+                    )
     else:
         # Serial processing (original logic)
         logger.info("Serial processing mode")

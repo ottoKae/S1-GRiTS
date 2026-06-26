@@ -47,6 +47,7 @@ from s1grits.workflow import (
 )
 from s1grits.asf_io import read_asf_rtc_image_data, NODATA_SENTINEL, _mgrs_to_utm_epsg
 from s1grits.asf_output_writing import _mosaic_align, _build_grid_from_mgrs_tile
+from s1grits.stac_builder import ITEM_STAC_EXTENSION_URIS
 from s1grits.mgrs_burst_data import get_lut_by_mgrs_tile_ids
 from s1grits.canonical_catalog_schema import (
     normalize_catalog_record,
@@ -153,8 +154,10 @@ def _build_static_cog(
     }
 
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    with rasterio.open(out_path, 'w', **profile) as dst:
-        dst.write(arr_out[np.newaxis, :, :])
+    from s1grits.atomic_write import atomic_path
+    with atomic_path(out_path) as _tmp:
+        with rasterio.open(_tmp, 'w', **profile) as dst:
+            dst.write(arr_out[np.newaxis, :, :])
 
 
 # ---------------------------------------------------------------------------
@@ -430,6 +433,21 @@ def _group_static_by_acq(df_merged: pd.DataFrame) -> list[dict]:
 # Per-group processing
 # ---------------------------------------------------------------------------
 
+def _burst_time_range(rows: pd.DataFrame) -> tuple[str | None, str | None]:
+    """Return (start_iso, end_iso) RFC3339-UTC strings from a group's ``acq_dt``.
+
+    Returns (None, None) when no usable burst timestamps are present so the
+    caller can fall back to a datetime-less item.
+    """
+    if 'acq_dt' not in rows.columns:
+        return None, None
+    _dt = pd.to_datetime(rows['acq_dt'], errors='coerce', utc=True).dropna()
+    if _dt.empty:
+        return None, None
+    _fmt = lambda t: t.strftime('%Y-%m-%dT%H:%M:%SZ')
+    return _fmt(_dt.min()), _fmt(_dt.max())
+
+
 def _process_one_static_group(
     rows: pd.DataFrame,
     layers: list[str],
@@ -489,6 +507,11 @@ def _process_one_static_group(
         f"s1grits_static_{mgrs_tile_id}_{direction_label}_TK{track_token_safe}_N{n_bursts:02d}"
     )
 
+    # Temporal range of the contributing bursts. Static layers are
+    # time-invariant, but the bursts they derive from span an acquisition
+    # window; surface it as the item's start/end_datetime (RFC3339, UTC).
+    _start_iso, _end_iso = _burst_time_range(rows)
+
     cog_dir = static_dir / 'cog'
 
     # Skip-if-exists check
@@ -516,6 +539,8 @@ def _process_one_static_group(
                 'track_token': track_token,
                 'layers_written': {layer: str(p) for layer, p in expected.items()},
                 'zarr_path': str(_zarr_check_path) if generate_zarr else None,
+                'start_datetime': _start_iso,
+                'end_datetime': _end_iso,
             }
 
     _console.print(
@@ -658,6 +683,8 @@ def _process_one_static_group(
         'track_token': track_token,
         'layers_written': layers_written,
         'zarr_path': str(zarr_path) if zarr_path else None,
+        'start_datetime': _start_iso,
+        'end_datetime': _end_iso,
     }
 
 
@@ -680,11 +707,17 @@ def _write_static_stac_item(
     height: int,
     target_crs: str,
     cog_path: Path | None = None,
+    start_datetime: str | None = None,
+    end_datetime: str | None = None,
 ) -> str:
     """
     Write one STAC Item per static Zarr store (per track group).
-    Zarr is the primary asset; COG is optional.
+    Zarr is the primary asset; COG is optional. No-op (returns None) when STAC
+    output is disabled (catalog-only build).
     """
+    from s1grits.stac_builder import stac_output_enabled
+    if not stac_output_enabled():
+        return None
     # Compute spatial extent and resolution from transform
     pixel_size_x = abs(float(master_transform[0]))
     pixel_size_y = abs(float(master_transform[4]))
@@ -702,23 +735,26 @@ def _write_static_stac_item(
 
     item = {
         "stac_version": "1.1.0",
-        "stac_extensions": [
-            "https://stac-extensions.github.io/datacube/v2.3.0/schema.json",
-            "https://stac-extensions.github.io/projection/v2.0.0/schema.json",
-        ],
+        "stac_extensions": list(ITEM_STAC_EXTENSION_URIS),
         "type": "Feature",
         "id": item_id,
         "collection": "s1grits-static",
         "geometry": None,
         "bbox": None,
         "properties": {
-            "datetime": None,
-            "start_datetime": None,
-            "end_datetime": None,
+            # Static layers are time-invariant, but the contributing bursts span
+            # an acquisition window: expose it as a range with 'datetime' set to
+            # the start instant (STAC requires a non-null datetime OR a
+            # start/end pair; we provide both for maximum reader compatibility).
+            "datetime": start_datetime,
+            "start_datetime": start_datetime,
+            "end_datetime": end_datetime,
             "s1grits:time_type": "static",
             "s1grits:product_type": "static",
             "s1grits:tile_id": mgrs_tile_id,
             "s1grits:flight_direction": direction_label,
+            "sat:orbit_state": direction_label.lower() if direction_label else None,
+            "sat:relative_orbit": int(track_token_safe.replace('-', '_')) if track_token_safe.replace('-', '_').isdigit() else None,
             "s1grits:track": int(track_token_safe.replace('-', '_')) if track_token_safe.replace('-', '_').isdigit() else None,
             "s1grits:n_bursts": n_bursts,
             "s1grits:geometry_group_id": f"{mgrs_tile_id}_{direction_label}_TK{track_token_safe}_N{n_bursts:02d}",
@@ -778,13 +814,23 @@ def _write_static_stac_item(
             "type": "image/tiff; application=geotiff; profile=cloud-optimized",
             "roles": ["data", "visual", "cog"],
             "title": "Static layer multi-band COG",
+            "eo:bands": [{"name": b} for b in band_names],
         }
 
     item_path = items_dir / f"{item_id}.json"
     from s1grits.atomic_write import atomic_write_json
     atomic_write_json(item, item_path)
 
-    logger.info("[Static] STAC Item: %s", item_path)
+    if start_datetime:
+        logger.info(
+            "[Static] STAC Item: %s  [time range %s .. %s]",
+            item_path, start_datetime, end_datetime,
+        )
+    else:
+        logger.warning(
+            "[Static] STAC Item: %s  (datetime=null — no burst startTime found)",
+            item_path,
+        )
     return item_id
 
 
@@ -823,6 +869,12 @@ def process_static_for_tile(
             groups_written:  list of per-group result dicts
     """
     try:
+        # Workflows NEVER write STAC — STAC is produced only by `catalog resync`.
+        # Set per-tile so this holds even if static is ever run in worker
+        # processes (which re-import stac_builder with the default ON).
+        from s1grits.stac_builder import set_stac_output_enabled
+        set_stac_output_enabled(False)
+
         flight_direction = config.get('roi', {}).get('flight_direction', '').upper()
         direction_label = flight_direction if flight_direction else 'UNKNOWN'
 
@@ -847,6 +899,9 @@ def process_static_for_tile(
         #    Use burst IDs from the LUT to avoid a second LUT read.
         if df_static is None:
             _lut_burst_ids = df_lut['jpl_burst_id'].unique().tolist()
+            console.print(
+                f"  [dim]Querying RTC-STATIC metadata for {len(_lut_burst_ids)} burst(s)…[/dim]"
+            )
             df_static = _query_static_metadata_for_tile(_lut_burst_ids, config)
         if df_static.empty:
             return {
@@ -989,6 +1044,8 @@ def process_static_for_tile(
                 height=height,
                 target_crs=target_crs,
                 cog_path=Path(cog_rel) if cog_rel else None,
+                start_datetime=g.get('start_datetime'),
+                end_datetime=g.get('end_datetime'),
             )
 
             # Catalog record (normalized to canonical schema)
@@ -1078,7 +1135,7 @@ def process_static_for_tile(
 # Workflow entry point
 # ---------------------------------------------------------------------------
 
-def run_static_layer_workflow(config_path: str | Path) -> dict[str, dict]:
+def run_static_layer_workflow(config_path: str | Path, overrides: dict | None = None) -> dict[str, dict]:
     """
     Main static layer workflow: YAML config -> per-acq-group static COG files.
 
@@ -1093,7 +1150,9 @@ def run_static_layer_workflow(config_path: str | Path) -> dict[str, dict]:
         dict[mgrs_tile_id, result_dict] where each result_dict has keys:
             status, error, tile_dir, groups_written.
     """
+    from s1grits.workflow import apply_output_overrides_and_stac
     config = load_config(config_path)
+    config = apply_output_overrides_and_stac(config, overrides)
 
     layers = _get_enabled_layers(config)
     if not layers:

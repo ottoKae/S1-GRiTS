@@ -177,6 +177,14 @@ def validate_catalog_integrity(
                     f"item.collection={_item_coll}, catalog.collection_id={_cat_coll}"
                 )
                 result.errors.append(msg) if strict else result.warnings.append(msg)
+            # ---- Check 4c: asset hrefs resolve to real files ----
+            for _akey, _asset in (_item.get("assets") or {}).items():
+                _href = _asset.get("href")
+                if not _href:
+                    continue
+                if not (_item_full.parent / _href).exists():
+                    msg = f"Asset '{_akey}' missing in {_ip}: href -> {_href}"
+                    result.errors.append(msg) if strict else result.warnings.append(msg)
         except Exception as _e:
             result.errors.append(f"Cannot parse STAC item {_ip}: {_e}") if strict else None
 

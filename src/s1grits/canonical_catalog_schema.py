@@ -1,7 +1,7 @@
 """
 canonical_catalog_schema.py
 ===========================
-Shared canonical schema (34 columns) for all S1-GRiTS catalog records.
+Shared canonical schema (41 columns) for all S1-GRiTS catalog records.
 
 ALL workflows must normalise their catalog records through
 ``normalize_catalog_record()`` before writing to catalog.parquet.
@@ -25,11 +25,13 @@ Usage:
 
 import hashlib as _hashlib
 import json as _json
+from datetime import datetime as _datetime, timezone as _timezone
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
+from s1grits.__version__ import __version__ as _SOFTWARE_VERSION
 from s1grits.logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -37,7 +39,7 @@ logger = get_logger(__name__)
 # ---------------------------------------------------------------------------
 # Schema version — bump when columns are added, removed, or renamed
 # ---------------------------------------------------------------------------
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 6
 GRID_ID_VERSION = 1       # bump when make_grid_id hash algorithm changes
 _GRID_ROUND_PRECISION = 9  # decimal places for transform/resolution rounding
 
@@ -77,13 +79,20 @@ CANONICAL_CATALOG_COLUMNS: list[str] = [
     "datetime",             # timestamp or null (static = null)
     "start_datetime",       # timestamp or null (static = null)
     "end_datetime",         # timestamp or null (static = null)
-    "month",                # str: YYYY-MM or null (scenes = null)
+    "month",                # str: YYYY-MM or null (static = null; scenes use acq month)
 
     # ---- Grouping ----
     "geometry_group_id",    # str: {TILE}_{DIR}_TK{tk}_N{nn} | null
     "track",                # int or null (monthly = null)
     "n_bursts",             # int or null (monthly = null)
     "n_scenes",             # int or null (only smonthly/monthly)
+
+    # ---- Provenance ----
+    "jpl_burst_ids",        # list[str]: JPL burst IDs composing the scene/month | null
+    "opera_ids",            # list[str]: OPERA granule IDs | null
+    "pass_id",              # int: absolute orbit pass id | null
+    "primary_track",        # int: base track of the smonthly priority mosaic | null
+    "track_coverage_json",  # str: JSON [{track, valid_px, fraction}, ...] | null
 
     # ---- Assets ----
     "zarr_path",            # str: relative path from tile_dir, or null
@@ -100,6 +109,10 @@ CANONICAL_CATALOG_COLUMNS: list[str] = [
 
     # ---- Status ----
     "status",               # str: "complete" | "partial" | "empty" | "failed" | "deprecated"
+
+    # ---- Bookkeeping ----
+    "created_at",           # str: UTC ISO-8601 timestamp when the record was normalised
+    "software_version",     # str: s1grits package version that produced the record
 ]
 
 
@@ -129,6 +142,13 @@ def normalize_catalog_record(record: dict[str, Any], status: str = "complete") -
         out[col] = record.get(col, None)
     out["schema_version"] = SCHEMA_VERSION
     out["status"] = status
+
+    # Bookkeeping provenance: preserve an explicitly supplied created_at
+    # (e.g. when re-normalising an existing record) but otherwise stamp now.
+    out["created_at"] = record.get("created_at") or _datetime.now(
+        _timezone.utc
+    ).isoformat()
+    out["software_version"] = record.get("software_version") or _SOFTWARE_VERSION
 
     # Auto-compute grid_id from spatial params if available
     _tid = out["tile_id"] or record.get("mgrs_tile_id")
@@ -192,6 +212,55 @@ def normalize_catalog_record(record: dict[str, Any], status: str = "complete") -
             )
 
     return out
+
+
+# ---------------------------------------------------------------------------
+# Path rebasing (per-tile -> global catalog)
+# ---------------------------------------------------------------------------
+
+# Catalog columns that hold filesystem-relative paths to assets / STAC items.
+CATALOG_PATH_COLUMNS: tuple[str, ...] = (
+    "zarr_path", "cog_path", "preview_path", "item_path",
+)
+
+
+def rebase_catalog_paths(df: "pd.DataFrame", tile_prefix: str) -> "pd.DataFrame":
+    """Rebase a per-tile catalog's asset/item paths to be output-root-relative.
+
+    Per-tile catalogs are written with paths relative to their own tile
+    directory (scenes / smonthly / static), while the legacy monthly workflow
+    already writes paths relative to the output root.  The global catalog
+    (consumed by :class:`s1grits.resolver`) must resolve every path against the
+    output root, so when merging per-tile catalogs each record is rebased by
+    prepending the tile directory's path *relative to the output root*
+    (``tile_prefix``, e.g. ``"49QGF"`` or ``"49QGF/merged"``).
+
+    The prefix is prepended only when a value does not already start with it,
+    so catalogs in either convention normalise to a single output-root-relative
+    form without double-prefixing.  This relies on the output layout in which a
+    per-tile product subdirectory (``scenes_*``, ``monthly``, ``items``, ...)
+    never shares the leading ``tile_prefix`` segment, making the
+    "already prefixed" test unambiguous.
+
+    The DataFrame is modified in place and also returned.
+    """
+    tile_prefix = str(tile_prefix).replace("\\", "/").strip("/")
+    if not tile_prefix or tile_prefix == ".":
+        return df
+    _lead = tile_prefix + "/"
+
+    def _rebase(v: Any) -> Any:
+        if not isinstance(v, str) or not v:
+            return v
+        p = v.replace("\\", "/")
+        if p == tile_prefix or p.startswith(_lead):
+            return p
+        return _lead + p.lstrip("/")
+
+    for col in CATALOG_PATH_COLUMNS:
+        if col in df.columns:
+            df[col] = df[col].map(_rebase)
+    return df
 
 
 # ---------------------------------------------------------------------------

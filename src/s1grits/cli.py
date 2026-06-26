@@ -6,7 +6,7 @@ Provides a professional CLI interface with subcommands:
 - s1grits process_ablation --config config_experience/s1grits_ablation_template.yaml
 - s1grits process_static   --config config.yaml
 - s1grits process_normal40 --config config_experience/s1grits_normal_config.yaml
-- s1grits catalog  rebuild  --output-dir ./output
+- s1grits catalog  resync   --output-dir ./output
 - s1grits catalog  validate --output-dir ./output
 - s1grits catalog  inspect  --output-dir ./output
 - s1grits tile     inspect  --tile 50RKV --output-dir ./output
@@ -100,7 +100,68 @@ def print_summary(results: dict):
         detail_table.add_row(mgrs_id, status_icon, months_count, size_str, path_info)
 
     console.print(detail_table)
+
+    # Quality summary: tracks dropped by the coverage filter and acquisitions
+    # skipped/flagged for missing bursts. Worker processes run quietly in
+    # parallel mode, so this is where these events become visible (full detail
+    # is in each tile's processing_report.json).
+    _cov_rows, _inc_rows = [], []
+    for _mid, _r in sorted(results.items()):
+        for _d in (_r.get('dropped_tracks') or []):
+            _cov_rows.append((_mid, _d.get('track_token', '?'), _d.get('coverage_frac')))
+        for _a in (_r.get('incomplete_acquisitions') or []):
+            _inc_rows.append((
+                _mid, _a.get('track_token', '?'), _a.get('date', '?'),
+                _a.get('loaded_bursts'),
+                _a.get('footprint_bursts', _a.get('expected_bursts')),
+                _a.get('cause', ''),
+            ))
+    if _cov_rows or _inc_rows:
+        console.print(
+            f"\n[yellow]Data quality:[/yellow] "
+            f"{len(_cov_rows)} track(s) dropped (<coverage threshold), "
+            f"{len(_inc_rows)} acquisition(s) incomplete (missing bursts). "
+            f"See each tile's processing_report.json."
+        )
+        for _mid, _tok, _frac in _cov_rows[:20]:
+            console.print(
+                f"  [dim]drop  {_mid} TK{str(_tok).replace('_','-')}: "
+                f"{(_frac or 0)*100:.1f}% of tile[/dim]"
+            )
+        for _mid, _tok, _dt, _ld, _ex, _cause in _inc_rows[:20]:
+            console.print(
+                f"  [dim]incomplete {_mid} TK{str(_tok).replace('_','-')} {_dt}: "
+                f"{_ld}/{_ex} bursts ({_cause})[/dim]"
+            )
+
     console.rule(style="blue")
+
+
+def _add_output_flags(parser):
+    """Register the shared output-control flags on a workflow subparser.
+
+    Note: workflows NEVER write STAC (that is `catalog resync`'s job), so there
+    is no per-workflow STAC flag — only data-format control.
+    """
+    parser.add_argument(
+        '--zarr-only', dest='zarr_only', action='store_true',
+        help='Produce only the Zarr time-series store: skip COG and PNG preview '
+             'generation (overrides output.formats.cog/preview). Saves storage; '
+             'the Zarr asset is self-describing for the ML pipeline.',
+    )
+
+
+def _workflow_overrides(args) -> dict | None:
+    """Build a config-overrides dict from the shared output flags (or None)."""
+    overrides: dict = {}
+    if getattr(args, 'zarr_only', False):
+        overrides.setdefault('output', {}).setdefault('formats', {}).update(
+            {'cog': False, 'preview': False}
+        )
+        overrides.setdefault('processing', {}).setdefault('monthly', {}).update(
+            {'generate_cog': False, 'generate_preview': False}
+        )
+    return overrides or None
 
 
 def cmd_process(args):
@@ -139,7 +200,7 @@ def cmd_process(args):
     start_time = pd.Timestamp.now()
 
     console.print("[dim]Processing...[/dim]")
-    results = run_multi_mgrs_monthly_workflow(config_path)
+    results = run_multi_mgrs_monthly_workflow(config_path, overrides=_workflow_overrides(args))
 
     end_time = pd.Timestamp.now()
     duration = end_time - start_time
@@ -197,7 +258,7 @@ def cmd_process_static(args):
     _products = load_product_registry(workflow_config=config)
     logger_inst.info("Product registry: %s", _products.config_path or "built-in defaults")
     start_time = pd.Timestamp.now()
-    results = run_static_layer_workflow(config_path)
+    results = run_static_layer_workflow(config_path, overrides=_workflow_overrides(args))
     duration = pd.Timestamp.now() - start_time
 
     console.print(f"\nTotal time: [bold]{duration}[/bold]")
@@ -255,7 +316,7 @@ def cmd_catalog_validate(args):
                 result.setdefault('warnings', [])
                 result['warnings'].append(
                     f"{len(stac_missing)} STAC Item JSON(s) missing on disk — "
-                    "run 's1grits catalog rebuild' to resync."
+                    "run 's1grits catalog resync'."
                 )
                 for item_id in stac_missing[:5]:
                     result['warnings'].append(f"  Missing: {item_id}.json")
@@ -305,15 +366,28 @@ def cmd_catalog_resync(args):
     from s1grits.analysis.catalog import resync_catalog_from_filesystem
 
     output_dir = args.output_dir
+    write_stac = getattr(args, 'write_stac', True)
+    stac_format = getattr(args, 'stac_format', 'geoparquet')
     console.rule("[bold cyan]Catalog Resync[/bold cyan]", style="cyan")
-    console.print(f"[dim]Scanning: {output_dir}[/dim]\n")
+    console.print(f"[dim]Scanning: {output_dir}[/dim]")
+    _mode = (
+        f'catalog + STAC ({stac_format})' if write_stac
+        else 'catalog-only (STAC removed)'
+    )
+    console.print(f"[dim]Mode: {_mode}[/dim]\n")
 
-    result = resync_catalog_from_filesystem(output_dir)
+    result = resync_catalog_from_filesystem(
+        output_dir, write_stac=write_stac, stac_format=stac_format,
+    )
 
     if result['success']:
+        _counts = result.get('collection_counts') or {}
+        if _counts:
+            for _cid, _n in _counts.items():
+                console.print(f"  [cyan]{_cid}[/cyan]: {_n} item(s)")
         console.print(f"[green]OK[/green] {result['message']}")
-        for tile in result.get('tiles', []):
-            console.print(f"  [dim]{tile}[/dim]")
+        _tiles = result.get('tiles', [])
+        console.print(f"  [dim]tiles: {', '.join(_tiles)}[/dim]")
         sys.exit(0)
     else:
         console.print(f"[red]FAIL[/red] {result['message']}")
@@ -396,7 +470,7 @@ def cmd_tile_inspect(args):
     catalog_path = output_dir / 'catalog.parquet'
     if not catalog_path.exists():
         console.print(f"[red]ERROR  Catalog not found: {catalog_path}[/red]")
-        console.print(f"[dim]       Run: s1grits catalog rebuild --output-dir {output_dir}[/dim]")
+        console.print(f"[dim]       Run: s1grits catalog resync --output-dir {output_dir}[/dim]")
         sys.exit(1)
 
     catalog = pd.read_parquet(catalog_path)
@@ -452,7 +526,7 @@ def cmd_tile_inspect(args):
                     if cog_path.exists():
                         lines.append(
                             f"    - {month_str}"
-                            f"  (COG exists but missing from catalog -- run rebuild)"
+                            f"  (COG exists but missing from catalog -- run resync)"
                         )
                     else:
                         lines.append(f"    - {month_str}  (no source data)")
@@ -572,7 +646,7 @@ def cmd_process_scenes(args):
     )
     start_time = pd.Timestamp.now()
 
-    results = run_scenes_workflow(config_path)
+    results = run_scenes_workflow(config_path, overrides=_workflow_overrides(args))
 
     duration = pd.Timestamp.now() - start_time
     print_summary(results)
@@ -760,8 +834,8 @@ Examples:
   s1grits process_normal40 --config config_experience/s1grits_normal_config.yaml
   s1grits process_scenes   --config config_scenes.yaml
 
-  # Catalog management (rebuild also resyncs STAC Items + collection.json)
-  s1grits catalog rebuild  --output-dir ./output
+  # Catalog management (resync rebuilds catalog.parquet + STAC from disk)
+  s1grits catalog resync   --output-dir ./output
   s1grits catalog validate --output-dir ./output
   s1grits catalog inspect  --output-dir ./output
 
@@ -792,6 +866,7 @@ Examples:
         help='Run the full processing workflow from a YAML config'
     )
     parser_process.add_argument('--config', required=True, help='Path to YAML config file')
+    _add_output_flags(parser_process)
     parser_process.set_defaults(func=cmd_process)
 
     # ── process_monthly (alias for process) ─────────────────────────────────
@@ -800,6 +875,7 @@ Examples:
         help='Run the legacy monthly composite workflow (alias for process)'
     )
     parser_monthly.add_argument('--config', required=True, help='Path to YAML config file')
+    _add_output_flags(parser_monthly)
     parser_monthly.set_defaults(func=cmd_process)
 
     # ── process_static ───────────────────────────────────────────────────────
@@ -808,6 +884,7 @@ Examples:
         help='Generate static layers (DEM, incidence angle, layover/shadow mask) per MGRS tile'
     )
     parser_static.add_argument('--config', required=True, help='Path to YAML config file')
+    _add_output_flags(parser_static)
     parser_static.set_defaults(func=cmd_process_static)
 
     # ── catalog ───────────────────────────────────────────────────────────────
@@ -828,6 +905,19 @@ Examples:
         help='Resync catalog + STAC from filesystem (no re-processing)'
     )
     p.add_argument('--output-dir', required=True, help='Output root directory')
+    p.add_argument(
+        '--stac', dest='write_stac', default=True,
+        action=argparse.BooleanOptionalAction,
+        help='Rebuild the STAC tree (default). Use --no-stac to reconcile only '
+             'catalog.parquet and delete all STAC artifacts (catalog-only).',
+    )
+    p.add_argument(
+        '--stac-format', dest='stac_format', choices=['geoparquet', 'json'],
+        default='geoparquet',
+        help='STAC item serialization: geoparquet (default; one parquet per '
+             'collection, zero per-item files, DuckDB/pyarrow queryable) or '
+             'json (classic one-file-per-item static catalog).',
+    )
     p.set_defaults(func=cmd_catalog_resync)
 
     # catalog doctor
@@ -911,6 +1001,7 @@ Examples:
     parser_scenes.add_argument(
         '--config', required=True, help='Path to YAML config file'
     )
+    _add_output_flags(parser_scenes)
     parser_scenes.set_defaults(func=cmd_process_scenes)
 
     # ── mosaic_scenes ─────────────────────────────────────────────────────────
@@ -955,6 +1046,13 @@ Examples:
 
     # ── dispatch ──────────────────────────────────────────────────────────────
     args = parser.parse_args()
+
+    # Keep the console clean: silence noisy third-party logging up front. The
+    # process_* commands additionally call setup_logging (file + concise
+    # console); the catalog/tile/mosaic commands rely on this quieting + their
+    # own rich console output.
+    from s1grits.logger_config import quiet_noisy_loggers
+    quiet_noisy_loggers()
 
     if not hasattr(args, 'func'):
         parser.print_help()

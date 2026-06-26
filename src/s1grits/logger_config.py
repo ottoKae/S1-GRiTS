@@ -91,6 +91,11 @@ def setup_logging(config: dict) -> tuple[str, logging.Logger]:
             'PIL',
             'matplotlib',
             'numba',
+            'stac_geoparquet',
+            'pyproj',
+            'aiobotocore',
+            'aiohttp',
+            'py.warnings',
         ]
 
         # Add suppression filter to console
@@ -105,6 +110,11 @@ def setup_logging(config: dict) -> tuple[str, logging.Logger]:
     logging.getLogger('urllib3.connectionpool').setLevel(logging.ERROR)
     logging.getLogger('rasterio._env').setLevel(logging.ERROR)
 
+    # Route Python warnings (e.g. pandas FutureWarning) through logging so they
+    # land in the log file but are filtered off the console (py.warnings is in
+    # the console suppress list) instead of cluttering stdout.
+    logging.captureWarnings(True)
+
     # Create application logger
     app_logger = logging.getLogger('s1_processor')
     app_logger.setLevel(logging.DEBUG)
@@ -115,6 +125,35 @@ def setup_logging(config: dict) -> tuple[str, logging.Logger]:
     app_logger.info(f"  - Console level: {console_level}")
 
     return str(log_file), app_logger
+
+
+_NOISY_LIBS = (
+    'urllib3', 'requests', 'rasterio', 'fiona', 'botocore', 'boto3',
+    's3transfer', 'PIL', 'matplotlib', 'numba', 'stac_geoparquet', 'pyproj',
+    'aiobotocore', 'aiohttp', 'asyncio',
+)
+
+
+def quiet_noisy_loggers() -> None:
+    """Keep the console clean for commands that do NOT call ``setup_logging``
+    (e.g. ``catalog resync``/``inspect``, ``tile``, ``mosaic``).
+
+    A third-party import can install a root StreamHandler via
+    ``logging.basicConfig`` and leak INFO spam (rasterio GDAL notes,
+    stac-geoparquet progress) to stdout. This removes stray root handlers,
+    lowers the noisy libraries to WARNING (rasterio._env to ERROR), and routes
+    Python warnings through logging. App output for these commands is printed
+    explicitly via the rich console, so no console log handler is added.
+    """
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.addHandler(logging.NullHandler())
+    root.setLevel(logging.WARNING)
+    for lib in _NOISY_LIBS:
+        logging.getLogger(lib).setLevel(logging.WARNING)
+    logging.getLogger('rasterio._env').setLevel(logging.ERROR)
+    logging.getLogger('urllib3.connectionpool').setLevel(logging.ERROR)
+    logging.captureWarnings(True)
 
 
 def get_logger(name: str = None) -> logging.Logger:

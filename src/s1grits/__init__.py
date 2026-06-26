@@ -1,5 +1,5 @@
 """
-S1MGRIDTS: Sentinel-1 Monthly Grid Time Series Processor
+S1-GRiTS: Sentinel-1 Monthly Grid Time Series Processor
 
 Generate monthly COG/Zarr time series from ASF RTC products with
 MGRS tile-based processing and intelligent memory management.

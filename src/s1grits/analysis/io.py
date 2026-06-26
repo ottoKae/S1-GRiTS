@@ -183,7 +183,7 @@ def load_catalog(output_dir: str = "./output") -> pd.DataFrame:
     if not catalog_path.exists():
         raise FileNotFoundError(
             f"Catalog not found: {catalog_path}\n"
-            f"Run rebuild_catalog.py to generate it"
+            f"Run 's1grits catalog resync --output-dir {output_dir}' to generate it"
         )
 
     cat = pd.read_parquet(catalog_path)

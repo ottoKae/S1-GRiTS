@@ -424,6 +424,7 @@ def query_rtc_static_metadata_by_burst_ids(
             all_records.append({
                 'jpl_burst_id':        p.get('operaBurstID', '').upper().replace('-', '_'),
                 'opera_id':            p.get('sceneName', ''),
+                'acq_dt':              p.get('startTime'),
                 'url_local_inc_angle': layer_urls.get('local_inc_angle'),
                 'url_inc_angle':       layer_urls.get('inc_angle'),
                 'url_ls_map':          layer_urls.get('ls_map'),
@@ -444,13 +445,15 @@ def query_rtc_static_metadata_by_burst_ids(
         )
         import pandas as _pd
         return _pd.DataFrame(columns=[
-            'jpl_burst_id', 'opera_id',
+            'jpl_burst_id', 'opera_id', 'acq_dt',
             'url_dem', 'url_inc_map', 'url_ls_map',
             'flight_direction', 'path_number',
         ])
 
     import pandas as _pd
     df = _pd.DataFrame(all_records)
+    # Burst sensing time (UTC) — used to set the static item's temporal range.
+    df['acq_dt'] = _pd.to_datetime(df['acq_dt'], errors='coerce', utc=True)
     # One RTC-STATIC granule per burst — keep unique burst IDs (latest opera_id if duplicates)
     df = df.sort_values('opera_id').drop_duplicates(subset=['jpl_burst_id'], keep='last')
     df = df.reset_index(drop=True)

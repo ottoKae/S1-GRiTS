@@ -11,10 +11,39 @@ Usage:
 import json as _json
 import os as _os
 import shutil as _shutil
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+
+
+@contextmanager
+def atomic_path(path: str | Path):
+    """Yield a temp path to write into; atomically move it onto ``path`` on success.
+
+    Crash-safe binary writes (COG GeoTIFFs, preview PNGs): a crash or exception
+    leaves any pre-existing file at ``path`` intact and removes the temp file.
+
+    Usage::
+
+        with atomic_path(cog_path) as tmp:
+            with rasterio.open(tmp, "w", **profile) as dst:
+                ...
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        yield tmp
+        _os.replace(str(tmp), str(path))
+    except BaseException:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def atomic_write_parquet(df: pd.DataFrame, path: str | Path) -> None:
