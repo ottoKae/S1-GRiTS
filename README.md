@@ -2907,7 +2907,7 @@ S1-GRiTS provides 5 tutorial notebooks covering data discovery, workflows, and a
 
 ```bash
 # Activate environment
-conda activate py312_s1grits_v100
+conda activate py312_s1grits
 
 # Install notebook support (if not already installed)
 pip install "s1grits[notebook]"
@@ -3290,8 +3290,8 @@ git clone https://github.com/ottoKae/S1-GRiTS.git
 cd S1-GRiTS
 
 # Create development environment
-conda env create -f environment.yml
-conda activate py312_s1grits_v100
+conda env create -f environment.yml --solver=libmamba
+conda activate py312_s1grits
 
 # Install in editable mode
 pip install -e .

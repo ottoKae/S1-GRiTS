@@ -6,7 +6,7 @@ dependencies:
   - python=3.12
   - pip
 
-  # Geospatial core (conda-forge binary wheels — do NOT use pip for these)
+  # Geospatial core (conda-forge binaries; do not use pip for these)
   - rasterio
   - geopandas
   - rioxarray
@@ -42,10 +42,15 @@ dependencies:
   # Image processing
   - scikit-image
   - pillow
+  - matplotlib
 
   # Notebook support (optional but convenient)
   - ipykernel
   - ipywidgets
+
+  # PyPI package names needed by pyproject.toml.
+  - pip:
+      - opencv-python>=4.10.0.84
 
   # NOTE: After creating this environment, install s1grits manually:
   #   pip install -e .   (editable mode, run from project root)
