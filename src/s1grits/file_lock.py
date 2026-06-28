@@ -56,7 +56,8 @@ else:
     import fcntl
 
     def _lock_file(fp) -> None:
-        fcntl.flock(fp.fileno(), fcntl.LOCK_EX)
+        """Acquire exclusive lock (non-blocking). Raises OSError if held."""
+        fcntl.flock(fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
 
     def _unlock_file(fp) -> None:
         try:

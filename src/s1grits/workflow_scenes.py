@@ -2008,12 +2008,11 @@ def process_single_scenes_tile(
         _tile_cat = tile_dir / 'catalog.parquet'
         _any_zarr = list(tile_dir.glob('scenes_*/zarr/*.zarr')) + list(tile_dir.glob('smonthly_*/zarr/*.zarr'))
         if _any_zarr and not _tile_cat.exists():
-            logger.warning("[Recovery] Zarr found but catalog missing for %s — rebuilding", mgrs_tile_id)
-            try:
-                from s1grits.analysis.catalog import resync_catalog_from_filesystem
-                resync_catalog_from_filesystem(str(output_root))
-            except Exception as _re:
-                logger.warning("[Recovery] Auto-rebuild failed: %s", _re)
+            logger.warning("[Recovery] Zarr found but catalog missing for %s", mgrs_tile_id)
+            logger.warning(
+                "[Recovery] Deferring catalog resync until after the workflow "
+                "exits to avoid recursive output-root lock acquisition"
+            )
 
         overwrite = config.get('output', {}).get('overwrite', False)
 
