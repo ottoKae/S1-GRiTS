@@ -4086,7 +4086,14 @@ def process_single_scenes_tile(
         _spatial_filters_for_strategy = _spatial_filters_enabled(
             _processing_for_strategy
         )
-        batch_strategy = get_memory_strategy_from_config(config, n_scenes)
+        # The blockwise smonthly writer is active when no spatial-neighbourhood
+        # filter forces the legacy full-tile path; its peak memory scales with
+        # the burst footprint, not a full-tile stack, so use the blockwise-aware
+        # estimate for the 'auto' batch strategy.
+        _blockwise_active = not _spatial_filters_for_strategy
+        batch_strategy = get_memory_strategy_from_config(
+            config, n_scenes, blockwise=_blockwise_active
+        )
         batch_strategy = _cap_batch_strategy_for_spatial_filters(
             batch_strategy, _spatial_filters_for_strategy
         )

@@ -21,6 +21,37 @@ MEM_THRESHOLD_MEDIUM_GB: float = 16.0  # RAM threshold for quarterly batch strat
 MEM_THRESHOLD_LARGE_SCENES: int = 500  # Scene count threshold for yearly strategy
 MEM_THRESHOLD_MEDIUM_SCENES: int = 200 # Scene count threshold for quarterly strategy
 
+# Fraction of a full tile that one downloaded burst-native scene occupies.
+# The legacy full-tile path reprojects every scene to the full tile and stacks
+# them, so its peak scales with the full tile per scene (fraction 1.0). The
+# blockwise path keeps the raw burst-sized arrays plus a bounded per-block
+# working set, so its peak scales with the burst footprint. Real runs show
+# ~85 MB/scene downloaded vs ~354 MB/scene for a full-tile plane
+# (7180x6166 float32 x2 pol), i.e. ~0.24; 0.25 is a slightly conservative model.
+BLOCKWISE_SCENE_FRACTION: float = 0.25
+
+
+def estimate_memory_demand_gb(
+    n_scenes: int,
+    tile_size: tuple[int, int] = (6930, 6162),
+    *,
+    blockwise: bool = False,
+    safety: float = 1.5,
+) -> float:
+    """Estimate peak working-set memory (GB) for a batch of ``n_scenes``.
+
+    ``blockwise=False`` models the legacy full-tile path: every scene is
+    reprojected to the full tile and stacked (full tile per scene).
+    ``blockwise=True`` models the blockwise smonthly path, whose peak is the
+    downloaded burst-sized arrays plus a bounded block working set — roughly
+    ``BLOCKWISE_SCENE_FRACTION`` of the full-tile figure per scene.
+    """
+    height, width = tile_size
+    single_scene_mb = (height * width * 4 * 2) / (1024 ** 2)  # VV+VH, float32
+    if blockwise:
+        single_scene_mb *= BLOCKWISE_SCENE_FRACTION
+    return (single_scene_mb * n_scenes * safety) / 1024
+
 try:
     import psutil
     PSUTIL_AVAILABLE = True
@@ -56,7 +87,9 @@ def detect_system_memory() -> float:
 def select_batch_strategy(
     available_memory_gb: float,
     n_scenes: int,
-    tile_size: tuple[int, int] = (6930, 6162)
+    tile_size: tuple[int, int] = (6930, 6162),
+    *,
+    blockwise: bool = False,
 ) -> str:
     """
     Automatically select batch strategy based on memory and data volume
@@ -65,6 +98,10 @@ def select_batch_strategy(
         available_memory_gb: Available memory (GB)
         n_scenes: Number of scenes
         tile_size: Dimension of a single tile (height, width), defaults to Guayas basin size
+        blockwise: When True, use the blockwise-aware memory estimate (peak
+            scales with burst footprint, not a full-tile stack per scene). This
+            only affects the estimated-demand downgrade check; the scene/RAM
+            threshold rules are unchanged.
 
     Returns:
         'yearly' | 'quarterly' | 'monthly'
@@ -74,18 +111,17 @@ def select_batch_strategy(
     - memory >= 16 GB and n_scenes < 200: 'quarterly'
     - others: 'monthly'
 
-    Memory estimation:
-    - single scene memory = height * width * 4 bytes (float32) * 2 (VV+VH)
-    - total memory = single scene memory * n_scenes * safety factor (1.5)
+    Memory estimation: see estimate_memory_demand_gb (blockwise-aware).
     """
-    # Estimate single scene memory occupancy (MB)
-    height, width = tile_size
-    single_scene_mb = (height * width * 4 * 2) / (1024**2)  # VV+VH, float32
+    # Estimate total memory requirement (GB), including safety factor
+    estimated_gb = estimate_memory_demand_gb(
+        n_scenes, tile_size, blockwise=blockwise
+    )
 
-    # Estimate total memory requirement (GB), including 1.5 safety factor
-    estimated_gb = (single_scene_mb * n_scenes * 1.5) / 1024
-
-    logger.info("Estimated memory demand: %.2f GB (based on %d scenes)", estimated_gb, n_scenes)
+    logger.info(
+        "Estimated memory demand: %.2f GB (based on %d scenes, %s path)",
+        estimated_gb, n_scenes, "blockwise" if blockwise else "full-tile",
+    )
 
     # Strategy selection logic
     if available_memory_gb >= MEM_THRESHOLD_LARGE_GB and n_scenes < MEM_THRESHOLD_LARGE_SCENES:
@@ -177,13 +213,18 @@ def chunk_time_by_strategy(
     return batches
 
 
-def get_memory_strategy_from_config(config: dict, n_scenes: int = 100) -> str:
+def get_memory_strategy_from_config(
+    config: dict, n_scenes: int = 100, *, blockwise: bool = False
+) -> str:
     """
     Get or automatically select memory strategy from configuration file
 
     Args:
         config: Configuration dictionary
         n_scenes: Number of scenes (for automatic selection)
+        blockwise: When True, use the blockwise-aware memory estimate for the
+            'auto' path (the blockwise smonthly writer never builds a full-tile
+            stack, so it can sustain a coarser batch strategy at the same RAM).
 
     Returns:
         'yearly' | 'quarterly' | 'monthly'
@@ -201,7 +242,7 @@ def get_memory_strategy_from_config(config: dict, n_scenes: int = 100) -> str:
             available_mem = float(max_memory_gb)
             logger.info("Using configured memory limit: %.1f GB", available_mem)
 
-        strategy = select_batch_strategy(available_mem, n_scenes)
+        strategy = select_batch_strategy(available_mem, n_scenes, blockwise=blockwise)
     else:
         # Use manually configured strategy
         strategy = batch_strategy
