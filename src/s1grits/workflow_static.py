@@ -155,9 +155,12 @@ def _build_static_cog(
 
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     from s1grits.atomic_write import atomic_path
+    from s1grits.runtime_limits import rasterio_env_kwargs
+
     with atomic_path(out_path) as _tmp:
-        with rasterio.open(_tmp, 'w', **profile) as dst:
-            dst.write(arr_out[np.newaxis, :, :])
+        with rasterio.Env(**rasterio_env_kwargs()):
+            with rasterio.open(_tmp, 'w', **profile) as dst:
+                dst.write(arr_out[np.newaxis, :, :])
 
 
 # ---------------------------------------------------------------------------
@@ -1151,8 +1154,21 @@ def run_static_layer_workflow(config_path: str | Path, overrides: dict | None = 
             status, error, tile_dir, groups_written.
     """
     from s1grits.workflow import apply_output_overrides_and_stac
+    from s1grits.runtime_limits import (
+        apply_runtime_limits,
+        runtime_limits_from_config,
+    )
     config = load_config(config_path)
     config = apply_output_overrides_and_stac(config, overrides)
+    runtime_limits = runtime_limits_from_config(config)
+    applied_runtime_env = apply_runtime_limits(runtime_limits)
+    if applied_runtime_env:
+        logger.info(
+            "[Static] Runtime limits applied: %s",
+            ", ".join(f"{k}={v}" for k, v in sorted(applied_runtime_env.items())),
+        )
+    else:
+        logger.info("[Static] Runtime limits disabled")
 
     layers = _get_enabled_layers(config)
     if not layers:

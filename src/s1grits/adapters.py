@@ -46,6 +46,8 @@ def adapt_enumerator_to_distmetrics(df_rtc_ts: gpd.GeoDataFrame) -> pd.DataFrame
 
     # Create output DataFrame
     df_output = df_rtc_ts[required_cols].copy()
+    if '_source_row' in df_rtc_ts.columns:
+        df_output['_source_row'] = df_rtc_ts['_source_row'].to_numpy()
 
     # Convert time field name: acq_dt → acq_datetime
     if 'acq_dt' in df_rtc_ts.columns:

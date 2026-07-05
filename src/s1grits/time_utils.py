@@ -132,19 +132,6 @@ def parse_time_range_config(
     # ── Mode A: Full archive ──────────────────────────────────────────────────
     if mode == 'full':
         polarization = config['roi'].get('polarization', 'VV+VH')
-        logger.info("Auto-detecting earliest available RTC-S1 data...")
-
-        manual_tiles = config['roi'].get('manual_mgrs_tiles')
-        if manual_tiles:
-            earliest_date = detect_earliest_available_date_from_mgrs_tiles(
-                manual_tiles, polarization
-            )
-        else:
-            earliest_date = detect_earliest_available_date(wkt, polarization)
-
-        if earliest_date is None:
-            warn("Unable to detect earliest available data; defaulting to 2014-01-01.")
-            earliest_date = "2014-01-01"
 
         # Clip end date to the last fully completed month so we never request
         # data for the current (incomplete) month or any future month.
@@ -166,6 +153,20 @@ def parse_time_range_config(
             end_date = effective_end.isoformat()
         else:
             end_date = f"{end_year}-12-31"
+
+        logger.info("Auto-detecting earliest available RTC-S1 data...")
+
+        manual_tiles = config['roi'].get('manual_mgrs_tiles')
+        if manual_tiles:
+            earliest_date = detect_earliest_available_date_from_mgrs_tiles(
+                manual_tiles, polarization, end_date=end_date
+            )
+        else:
+            earliest_date = detect_earliest_available_date(wkt, polarization)
+
+        if earliest_date is None:
+            warn("Unable to detect earliest available data; defaulting to 2014-01-01.")
+            earliest_date = "2014-01-01"
 
         logger.info("Time range: %s to %s", earliest_date, end_date)
         return [(earliest_date, end_date)]
@@ -297,43 +298,100 @@ def detect_earliest_available_date(wkt: str, polarization: str = 'VV+VH') -> str
 def detect_earliest_available_date_from_mgrs_tiles(
     mgrs_tile_ids: list[str],
     polarization: str = 'VV+VH',
+    end_date: str | None = None,
 ) -> str | None:
     """
     Get the earliest available RTC-S1 data date for the specified MGRS tiles
     by querying burst-level metadata from ASF.
 
-    More precise than WKT-based search: queries exactly the bursts that overlap
-    the target tiles using the local LUT, then finds the minimum acquisition date.
+    This is a fast lower-bound detector for full-archive mode. It queries the
+    exact burst IDs from the local LUT, but scans short year/month windows and
+    asks ASF for only a small result sample. Returning the first day of the
+    first non-empty month is intentionally conservative: it may include a few
+    extra empty days, but it cannot skip available RTC-S1 data.
 
     Args:
         mgrs_tile_ids: List of MGRS tile IDs (e.g. ['18MUD', '18MUE'])
         polarization: Polarization mode ('VV+VH' or 'HH+HV')
+        end_date: Last date to search through (YYYY-MM-DD). Defaults to today.
 
     Returns:
-        Earliest available data date string (YYYY-MM-DD), or None if query fails
+        Safe earliest data lower-bound string (YYYY-MM-DD), or None if no
+        matching products are found.
     """
     try:
         from s1grits.mgrs_burst_data import get_burst_ids_in_mgrs_tiles
-        from s1grits.asf_tiles import get_rtc_s1_ts_metadata_by_burst_ids
 
-        burst_ids = get_burst_ids_in_mgrs_tiles(mgrs_tile_ids)
+        burst_ids = [
+            bid.upper().replace('-', '_')
+            for bid in get_burst_ids_in_mgrs_tiles(mgrs_tile_ids)
+        ]
         if not burst_ids:
             warn(f"No burst IDs found for MGRS tiles: {mgrs_tile_ids}")
             return None
 
-        df = get_rtc_s1_ts_metadata_by_burst_ids(
-            burst_ids,
-            start_acq_dt='2014-01-01',
-            stop_acq_dt=None,
-            polarizations=polarization,
-        )
+        end_ts = pd.to_datetime(end_date or _date.today().isoformat()).date()
+        first_year = 2014
+        last_year = end_ts.year
 
-        if df.empty:
+        def _has_rtc_data(start_day: _date, stop_day: _date, max_results: int = 250) -> bool:
+            if stop_day < start_day:
+                return False
+            try:
+                resp = asf.geo_search(
+                    operaBurstID=burst_ids,
+                    processingLevel='RTC',
+                    start=start_day.isoformat(),
+                    end=stop_day.isoformat(),
+                    maxResults=max_results,
+                )
+            except Exception as _qe:
+                warn(
+                    f"Search failed for MGRS tiles {mgrs_tile_ids} "
+                    f"({start_day} to {stop_day}): {_qe}"
+                )
+                return False
+            if not resp:
+                return False
+
+            # Do not require an exact polarization match here. This function is
+            # only choosing a safe lower bound for the later exact metadata
+            # query, which still applies the requested polarization filter.
+            return True
+
+        found_year: int | None = None
+        for year in range(first_year, last_year + 1):
+            year_start = _date(year, 1, 1)
+            year_stop = min(_date(year, 12, 31), end_ts)
+            if _has_rtc_data(year_start, year_stop):
+                found_year = year
+                break
+
+        if found_year is None:
             warn(f"No RTC-S1 data found for MGRS tiles: {mgrs_tile_ids}")
             return None
 
-        earliest = pd.to_datetime(df['acq_dt'].min()).strftime('%Y-%m-%d')
-        logger.info("Detected earliest available data: %s", earliest)
+        for month in range(1, 13):
+            month_start = _date(found_year, month, 1)
+            if month_start > end_ts:
+                break
+            last_day = calendar.monthrange(found_year, month)[1]
+            month_stop = min(_date(found_year, month, last_day), end_ts)
+            if _has_rtc_data(month_start, month_stop):
+                earliest = month_start.isoformat()
+                logger.info(
+                    "Detected earliest available data lower bound: %s "
+                    "(tiles=%s, polarization=%s)",
+                    earliest, mgrs_tile_ids, polarization,
+                )
+                return earliest
+
+        earliest = _date(found_year, 1, 1).isoformat()
+        logger.info(
+            "Detected earliest available data lower bound: %s "
+            "(year-level fallback, tiles=%s, polarization=%s)",
+            earliest, mgrs_tile_ids, polarization,
+        )
         return earliest
 
     except Exception as e:

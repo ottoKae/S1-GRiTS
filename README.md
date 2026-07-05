@@ -1193,6 +1193,23 @@ memory:
   scene_max_retries: 3
 ```
 
+The scenes workflow also supports per-worker runtime limits. These are applied
+in the parent process before the process pool is created, then re-applied by
+each worker initializer before task work begins.
+
+```yaml
+runtime:
+  enabled: true
+  gdal_cachemax_mb: 512       # Per-process GDAL cache cap
+  gdal_num_threads: 1         # GDAL internal threads per worker
+  omp_num_threads: 1          # OpenMP-backed kernels
+  openblas_num_threads: 1     # OpenBLAS-backed NumPy/SciPy kernels
+  mkl_num_threads: 1          # MKL-backed NumPy/SciPy kernels
+  blis_num_threads: 1
+  veclib_maximum_threads: 1
+  numexpr_num_threads: 1
+```
+
 ### Processing Configuration
 
 #### Common Processing Options (All Workflows)
@@ -1440,7 +1457,7 @@ s1grits process_scenes --config config/s1grits_scenes.yaml
 2. Group bursts by acquisition geometry (orbit, track, frame)
 3. Process each acquisition group independently
 4. Write per-track Zarr stores (accumulate time steps)
-5. Optionally generate monthly composites from scenes
+5. Optionally generate monthly composites from QC-passing acquisitions
 6. Write COG + preview per scene
 7. Generate STAC Items per scene
 
@@ -1450,6 +1467,13 @@ s1grits process_scenes --config config/s1grits_scenes.yaml
 - One Zarr store **per acquisition group** (not per tile)
 - Higher temporal resolution (6-12 day revisit)
 - Optional monthly compositing via `processing.monthly.enabled: true`
+
+**Monthly-only mode:**
+
+Set `processing.monthly.enabled: true` and `processing.monthly.only: true` to
+run acquisition QC and write only `smonthly_*` products. This skips `scenes_*`
+Zarr/COG/preview outputs while keeping the same interior-hole and incomplete
+acquisition filtering before monthly compositing.
 
 ---
 

@@ -51,8 +51,9 @@ roi:
   manual_mgrs_tiles:
     # - "50RKV"
     # - "17MPU"
-    - "46SEG"
-    # - "17MQV"
+    # - "46SEG"
+    - "17MQV"
+    - "17MPU"
 
   # Orbit direction (process one direction at a time)
   # flight_direction: "DESCENDING"
@@ -67,24 +68,6 @@ roi:
   min_tile_coverage_frac: 0.20
 
 # =============================================================================
-# QUERY ROBUSTNESS (ASF CMR metadata search)
-#   ASF's CMR endpoint can be slow/flaky (especially behind a VPN). These make
-#   the metadata query more tolerant of timeouts.
-# =============================================================================
-query:
-  cmr_timeout_seconds: 90      # per-request timeout (asf_search default is 30)
-  max_retries: 3               # retry each time-range chunk this many times
-  retry_backoff_seconds: 5     # base backoff; waits 5s, 10s, 20s, … between tries
-  # Look back this many months (metadata only, no download) to establish each
-  # track's TRUE burst footprint, so interior-gap detection works even when the
-  # processed window is short (e.g. a single month). 0 disables.
-  footprint_lookback_months: 6
-  # The look-back result is cached on disk per tile (.footprint_lookback.json).
-  # A re-run over the same window within this many days reuses the cache and
-  # skips the extra ASF metadata query. Set 0 to always re-query.
-  footprint_cache_ttl_days: 7
-
-# =============================================================================
 # TIME CONFIGURATION
 #   Pick one mode (comment out the other):
 #
@@ -97,7 +80,7 @@ time:
 
   # --- Mode B: Specific years ---
   years: [2026]
-  months: [6]
+  months: [1]
 
 # =============================================================================
 # OUTPUT CONFIGURATION
@@ -122,17 +105,37 @@ output:
 
   # Output format toggles (Zarr is always generated — it is the primary Data Cube product)
   formats:
-    cog: true        # Optional: per-acquisition GeoTIFF exports
-    preview: true    # Optional: PNG visualization exports
+    cog: false        # Optional: per-acquisition GeoTIFF exports
+    preview: false    # Optional: PNG visualization exports
     # zarr is NOT listed here — it is always produced regardless
 
+# =============================================================================
+# QUERY ROBUSTNESS (ASF CMR metadata search)
+#   ASF's CMR endpoint can be slow/flaky (especially behind a VPN). These make
+#   the metadata query more tolerant of timeouts.
+# =============================================================================
+query:
+  cmr_timeout_seconds: 90      # per-request timeout (asf_search default is 30)
+  max_retries: 3               # retry each time-range chunk this many times
+  retry_backoff_seconds: 5     # base backoff; waits 5s, 10s, 20s, … between tries
+  # Look back this many months (metadata only, no download) to establish each
+  # track's TRUE burst footprint, so interior-gap detection works even when the
+  # processed window is short (e.g. a single month). 0 disables.
+  footprint_lookback_months: 0  # DISABLED - reduces ASF queries, metadata complexity
+  # The look-back result is cached on disk per tile (.footprint_lookback.json).
+  # A re-run over the same window within this many days reuses the cache and
+  # skips the extra ASF metadata query. Set 0 to always re-query.
+  footprint_cache_ttl_days: 7
+
+# 
 # =============================================================================
 # PARALLEL PROCESSING
 # =============================================================================
 parallel:
   enabled: true
   # Recommended: 2 for <=16GB, 4 for 32GB, 6-8 for >=64GB
-  max_workers: 4
+  # TEMPORARY: Set to 1 to debug sanitization in serial mode
+  max_workers: 2
 
 # =============================================================================
 # MEMORY MANAGEMENT
@@ -141,14 +144,31 @@ memory:
   # Maximum memory (GB): 'auto' or a number
   max_memory_gb: 'auto'
   # Batch strategy: 'auto', 'yearly', 'quarterly', 'monthly'
-  batch_strategy: 'auto'
+  batch_strategy: 'quarterly'
   max_download_workers: 4
   clear_cache_per_batch: true
   batch_max_retries: 2
   scene_max_retries: 3
   # Maximum allowed failed scene ratio (0.0 = zero tolerance)
-  max_failed_ratio: 0.0
+  # Relaxed to 0.1 to tolerate occasional network failures
+  max_failed_ratio: 0.1
   scene_retry_timeout_seconds: 600.0
+
+# =============================================================================
+# RUNTIME RESOURCE LIMITS
+# =============================================================================
+runtime:
+  # Applies per-process GDAL cache and thread limits before worker processes
+  # start. Keep these conservative for high ProcessPoolExecutor parallelism.
+  enabled: true
+  gdal_cachemax_mb: 512
+  gdal_num_threads: 1
+  omp_num_threads: 1
+  openblas_num_threads: 1
+  mkl_num_threads: 1
+  blis_num_threads: 1
+  veclib_maximum_threads: 1
+  numexpr_num_threads: 1
 
 # =============================================================================
 # PROCESSING CONFIGURATION
@@ -172,11 +192,11 @@ processing:
 
   # Zarr chunk size (y x x pixels per chunk)
   zarr_chunks:
-    y: 512
-    x: 512
+    y: 1024
+    x: 1024
 
   # COG internal tile block size
-  cog_block_size: 256
+  cog_block_size: 512
 
   # Despeckle algorithm (only used when spatial_despeckle=true)
   despeckle:
@@ -202,29 +222,36 @@ processing:
 
   # An interior NoData hole is flagged when it exceeds this fraction of the tile
   # (filters out tiny speckle gaps; a missing burst is far larger).
-  interior_hole_max_frac: 0.005
+  interior_hole_max_frac: 0.10
 
   # ===========================================================================
   # Monthly compositing (optional)
   # Set enabled=false to produce only per-pass scenes output
   # ===========================================================================
   monthly:
-    enabled: false
+    enabled: true
+
+    # If true, run acquisition QC and write only smonthly products.
+    # scenes_*/ outputs are not written. Requires enabled=true.
+    only: true
 
     # Composite method: "nanmedian" (recommended)
     composite_method: "nanmedian"
 
     # Whether to generate COG files
-    generate_cog: true
+    # Note: With blockwise Zarr path (when features_glcm=false), COG/Preview
+    # are generated post-hoc from Zarr, allowing memory-efficient processing
+    # with full output format support.
+    generate_cog: false
 
     # Whether to generate PNG previews
-    generate_preview: true
+    generate_preview: false
 
 # =============================================================================
 # LOGGING
 # =============================================================================
 logging:
   file_level: 'DEBUG'
-  console_level: 'WARNING'
+  console_level: 'INFO'  # Changed from WARNING to see download progress
   suppress_third_party: true
   log_file: './logs/s1grits_scenes_{timestamp}.log'

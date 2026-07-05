@@ -24,6 +24,7 @@ import time
 import numpy as np
 import pandas as pd
 import requests
+import rasterio
 
 from tqdm.auto import tqdm
 from requests.adapters import HTTPAdapter
@@ -31,6 +32,7 @@ from urllib3.util.retry import Retry
 from rasterio.io import MemoryFile
 
 from s1grits.asf_array_processing import despeckle_2d
+from s1grits.runtime_limits import rasterio_env_kwargs
 
 # =========================================================
 #  Module-Level Constants
@@ -239,10 +241,11 @@ def read_one_asf(url: str, retry_timeout_seconds: float = 600.0):
     fname = url.split("/")[-1]
     try:
         data = _download_to_bytes(url, retry_timeout_seconds=retry_timeout_seconds)
-        with MemoryFile(data, filename=fname) as memfile:
-            with memfile.open() as ds:
-                arr = ds.read(1).astype(np.float32)
-                prof = ds.profile
+        with rasterio.Env(**rasterio_env_kwargs()):
+            with MemoryFile(data, filename=fname) as memfile:
+                with memfile.open() as ds:
+                    arr = ds.read(1).astype(np.float32)
+                    prof = ds.profile
         return arr, prof, None
     except FileNotFoundError as e:
         logging.warning("NOT FOUND [%s]: %s", fname, e)
@@ -348,6 +351,267 @@ def _download_with_retry(
     return arrs, profs, error_types
 
 
+def _run_paired_download_jobs(
+    jobs: list,
+    max_workers: int,
+    retry_timeout_seconds: float,
+    desc: str,
+    raw_by_label: dict,
+    prof_by_label: dict,
+    err_by_label: dict,
+) -> None:
+    """Run mixed copol/crosspol download jobs in a single shared pool."""
+    if not jobs:
+        return
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
+        fut2job = {
+            ex.submit(read_one_asf, url, retry_timeout_seconds=retry_timeout_seconds): (
+                label,
+                i,
+                url,
+                dt,
+            )
+            for label, i, url, dt in jobs
+        }
+        for fut in tqdm(
+            concurrent.futures.as_completed(fut2job),
+            total=len(jobs),
+            desc=desc,
+        ):
+            label, i, _url, dt = fut2job[fut]
+            try:
+                arr, prof, err = fut.result()
+            except Exception as exc:
+                logging.error(
+                    "[%s] Download job failed for scene %d (%s): %s",
+                    label,
+                    i,
+                    dt,
+                    exc,
+                )
+                arr, prof, err = None, None, "network_error"
+
+            raw_by_label[label][i] = arr
+            prof_by_label[label][i] = prof
+            err_by_label[label][i] = err
+
+
+def _download_paired_with_retry(
+    urls_copol: list,
+    urls_crosspol: list,
+    dates: list,
+    max_workers: int,
+    retry_timeout_seconds: float,
+    scene_max_retries: int,
+) -> tuple:
+    """
+    Download VV/VH pairs through one shared pool.
+
+    The total number of active download tasks is bounded by ``max_workers``
+    across both polarizations. This avoids the previous 2 * max_workers fan-out
+    while still allowing VV and VH jobs to progress together.
+    """
+    if not (len(urls_copol) == len(urls_crosspol) == len(dates)):
+        raise ValueError("copol, crosspol, and dates must have the same length")
+
+    labels = ("copol", "crosspol")
+    urls_by_label = {
+        "copol": urls_copol,
+        "crosspol": urls_crosspol,
+    }
+    n_items = len(dates)
+    raw_by_label = {label: [None] * n_items for label in labels}
+    prof_by_label = {label: [None] * n_items for label in labels}
+    err_by_label = {label: [None] * n_items for label in labels}
+
+    jobs = [
+        (label, i, urls_by_label[label][i], dates[i])
+        for label in labels
+        for i in range(n_items)
+    ]
+    logging.info(
+        "Downloading copol and crosspol in shared pool "
+        "(%d total download workers, %d files)...",
+        max_workers,
+        len(jobs),
+    )
+    _run_paired_download_jobs(
+        jobs,
+        max_workers,
+        retry_timeout_seconds,
+        "Downloading VV/VH",
+        raw_by_label,
+        prof_by_label,
+        err_by_label,
+    )
+
+    for retry_round in range(1, scene_max_retries):
+        retry_jobs = [
+            (label, i, urls_by_label[label][i], dates[i])
+            for label in labels
+            for i in range(n_items)
+            if err_by_label[label][i] == "network_error"
+        ]
+        if not retry_jobs:
+            break
+
+        logging.info(
+            "[paired] Scene-level retry round %d/%d: %d files",
+            retry_round,
+            scene_max_retries - 1,
+            len(retry_jobs),
+        )
+        time.sleep(2 ** retry_round)
+        _run_paired_download_jobs(
+            retry_jobs,
+            max_workers,
+            retry_timeout_seconds,
+            f"Retrying VV/VH {retry_round}",
+            raw_by_label,
+            prof_by_label,
+            err_by_label,
+        )
+
+    for label in labels:
+        arrs = raw_by_label[label]
+        error_types = err_by_label[label]
+        success_count = sum(1 for a in arrs if a is not None)
+        not_found_count = sum(1 for e in error_types if e == "not_found")
+        network_fail_count = sum(1 for e in error_types if e == "network_error")
+        logging.info(
+            "%s shared download complete: %d/%d success, %d not_found (404), "
+            "%d network errors",
+            label,
+            success_count,
+            n_items,
+            not_found_count,
+            network_fail_count,
+        )
+
+    return (
+        raw_by_label["copol"],
+        prof_by_label["copol"],
+        err_by_label["copol"],
+        raw_by_label["crosspol"],
+        prof_by_label["crosspol"],
+        err_by_label["crosspol"],
+    )
+
+
+def load_rtc_band_strict(
+    df: pd.DataFrame,
+    band: str = "copol",
+    max_workers: int = 2,
+    do_despeckle: bool = False,
+    despeckle_method: str = "tv_bregman",
+    despeckle_kwargs: dict = None,
+    scene_max_retries: int = 3,
+    max_failed_ratio: float = 0.0,
+    retry_timeout_seconds: float = 600.0,
+):
+    """
+    Strict downloader for a single RTC polarization band.
+
+    Returns:
+        (final_arr, valid_prof, valid_dates, valid_source_indices)
+
+    ``valid_source_indices`` are integer positions in the input dataframe. They
+    let callers run a cheap copol-only QC pass, then request crosspol only for
+    the rows that survived QC while keeping arrays and metadata aligned.
+    """
+    logger = logging.getLogger(__name__)
+
+    band_norm = str(band or "copol").lower()
+    if band_norm in {"copol", "vv", "hh"}:
+        url_col = "url_copol"
+        label = "copol"
+    elif band_norm in {"crosspol", "vh", "hv"}:
+        url_col = "url_crosspol"
+        label = "crosspol"
+    else:
+        raise ValueError("band must be 'copol' or 'crosspol'")
+
+    urls = df[url_col].tolist()
+    dates = df["acq_datetime"].tolist()
+    n_items = len(dates)
+
+    logger.debug("[load_rtc_band_strict] Input: %d %s scenes", n_items, label)
+    logging.info("Downloading %s only...", label)
+    raw_arr, prof_arr, err_arr = _download_with_retry(
+        urls, label, dates, max_workers, retry_timeout_seconds, scene_max_retries
+    )
+
+    valid_arr, valid_prof, valid_dates, valid_source_indices = [], [], [], []
+    not_found_indices = []
+    network_fail_indices = []
+
+    for i in range(n_items):
+        arr_ok = raw_arr[i] is not None
+        err = err_arr[i]
+        if arr_ok:
+            valid_arr.append(raw_arr[i])
+            valid_prof.append(prof_arr[i])
+            valid_dates.append(dates[i])
+            valid_source_indices.append(i)
+        elif err == "not_found":
+            not_found_indices.append(i)
+            logger.info(
+                "[Strict/%s] Scene %d (%s) skipped: 404 not_found",
+                label, i, dates[i],
+            )
+        else:
+            network_fail_indices.append(i)
+            logger.warning(
+                "[Strict/%s] Scene %d (%s) FAILED after retries: err=%s",
+                label, i, dates[i], err,
+            )
+
+    logging.info(
+        "%s summary: %d valid, %d skipped (404), %d network failures / %d total",
+        label, len(valid_dates), len(not_found_indices),
+        len(network_fail_indices), n_items,
+    )
+
+    if not valid_dates:
+        raise RuntimeError(
+            f"No valid {label} scenes found - "
+            f"{len(network_fail_indices)} network failures, "
+            f"{len(not_found_indices)} not_found (404) out of {n_items} scenes."
+        )
+
+    downloadable = n_items - len(not_found_indices)
+    if downloadable > 0 and max_failed_ratio >= 0.0:
+        actual_ratio = len(network_fail_indices) / downloadable
+        if actual_ratio > max_failed_ratio:
+            failed_summary = ", ".join(
+                f"{i}({dates[i]})" for i in network_fail_indices
+            )
+            raise RuntimeError(
+                f"{label} network failure ratio {actual_ratio:.1%} exceeds "
+                f"max_failed_ratio {max_failed_ratio:.1%} "
+                f"({len(network_fail_indices)}/{downloadable} downloadable "
+                f"scenes failed). Failed scenes: {failed_summary}. "
+                f"Consider reducing max_download_workers or increasing "
+                f"scene_max_retries."
+            )
+
+    if do_despeckle:
+        logging.info("Applying %s despeckle to %s...", despeckle_method, label)
+        dkw = despeckle_kwargs or {}
+        method_key = 'tv_kwargs' if despeckle_method == 'tv_bregman' else 'nlm_kwargs'
+        final_arr = [
+            despeckle_2d(a, method=despeckle_method, **{method_key: dkw})
+            for a in valid_arr
+        ]
+    else:
+        final_arr = [a.astype(np.float32) for a in valid_arr]
+
+    del raw_arr
+    gc.collect()
+    return final_arr, valid_prof, valid_dates, valid_source_indices
+
+
 def load_and_despeckle_rtc_strict(
     df: pd.DataFrame,
     max_workers: int = 2,
@@ -363,7 +627,7 @@ def load_and_despeckle_rtc_strict(
 
     Args:
         df: DataFrame with url_copol, url_crosspol, acq_datetime columns.
-        max_workers: Parallel download workers.
+        max_workers: Total parallel download workers shared by VV/VH.
         do_despeckle: Apply spatial despeckle after download.
         despeckle_method: Despeckle algorithm — 'tv_bregman' or 'nlm'.
         despeckle_kwargs: Extra keyword arguments forwarded to despeckle_2d
@@ -385,13 +649,20 @@ def load_and_despeckle_rtc_strict(
 
     logger.debug("[load_and_despeckle_rtc_strict] Input: %d scenes", N)
 
-    logging.info("Downloading copol (VV/HH)...")
-    raw_vv, prof_vv, err_vv = _download_with_retry(
-        urls_copol, "copol", dates, max_workers, retry_timeout_seconds, scene_max_retries
-    )
-    logging.info("Downloading crosspol (VH/HV)...")
-    raw_vh, prof_vh, err_vh = _download_with_retry(
-        urls_crosspol, "crosspol", dates, max_workers, retry_timeout_seconds, scene_max_retries
+    (
+        raw_vv,
+        prof_vv,
+        err_vv,
+        raw_vh,
+        prof_vh,
+        err_vh,
+    ) = _download_paired_with_retry(
+        urls_copol,
+        urls_crosspol,
+        dates,
+        max_workers,
+        retry_timeout_seconds,
+        scene_max_retries,
     )
 
     # Classify scenes

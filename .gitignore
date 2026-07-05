@@ -92,7 +92,6 @@ logs/
 
 # Files
 docs/
-tests/
 
 # Temporary files
 tmp/
