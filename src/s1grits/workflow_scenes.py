@@ -971,6 +971,13 @@ def _track_valid_mask_block(
     return mask
 
 
+# Auto-mode ceiling on per-tile block threads. The thread-scaling benchmark
+# (benchmarks/bench_thread_scaling.py) shows speedup plateauing at 4 threads on
+# a real tile-month (1x/1.5x/3.4x/3.4x at 1/2/4/8), so "auto" never selects
+# more than this; an explicit integer can still exceed it if a user opts in.
+BLOCKWISE_AUTO_MAX_THREADS: int = 4
+
+
 def _resolve_blockwise_threads(value, max_workers: int = 1) -> int:
     """Resolve the ``monthly.blockwise_threads`` setting to a thread count.
 
@@ -979,13 +986,13 @@ def _resolve_blockwise_threads(value, max_workers: int = 1) -> int:
     process pool (``max_workers``) so the total thread count stays near the
     core count.  BLAS/GDAL stay single-threaded via RuntimeLimits, so these
     block threads do not oversubscribe through nested parallelism.  The auto
-    value is capped at 8 (block counts are small and returns flatten past
-    ~4-8 threads) and floored at 1.  Unparseable values fall back to 1.
+    value is capped at ``BLOCKWISE_AUTO_MAX_THREADS`` (measured speedup plateau)
+    and floored at 1.  Unparseable values fall back to 1.
     """
     if isinstance(value, str) and value.strip().lower() == "auto":
         cpu = os.cpu_count() or 1
         per_worker = max(1, cpu // max(1, int(max_workers)))
-        return min(per_worker, 8)
+        return min(per_worker, BLOCKWISE_AUTO_MAX_THREADS)
     try:
         return max(1, int(value))
     except (TypeError, ValueError):

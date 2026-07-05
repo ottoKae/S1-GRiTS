@@ -253,8 +253,9 @@ processing:
     # worker (see parallel.max_workers) spawns this many block threads, so
     # the effective thread count is parallel.max_workers * blockwise_threads.
     #   1      : serial block loop (default, safest — no extra CPU contention)
-    #   4 / 8  : good on an idle box with spare cores; try 4 first
-    #   "auto" : divide CPU cores across the tile-worker pool (capped at 8)
+    #   4      : good on an idle box with spare cores (measured speedup plateau)
+    #   "auto" : divide CPU cores across the tile-worker pool (capped at 4,
+    #            the benchmarked plateau; an explicit larger int can exceed it)
     # BLAS/GDAL stay single-threaded (see runtime limits), so these threads
     # do not oversubscribe through nested parallelism.
     blockwise_threads: 1

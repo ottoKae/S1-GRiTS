@@ -686,19 +686,26 @@ def test_resolve_blockwise_threads_integers():
 
 def test_resolve_blockwise_threads_auto(monkeypatch):
     monkeypatch.setattr(ws.os, "cpu_count", lambda: 16)
-    # Divides cores across the tile-worker pool
-    assert ws._resolve_blockwise_threads("auto", max_workers=2) == 8
+    # Divides cores across the tile-worker pool, capped at the measured plateau
+    assert ws._resolve_blockwise_threads("auto", max_workers=2) == ws.BLOCKWISE_AUTO_MAX_THREADS
     assert ws._resolve_blockwise_threads("auto", max_workers=4) == 4
     assert ws._resolve_blockwise_threads("AUTO", max_workers=8) == 2
-    # Caps at 8 even with many cores and a single worker
+    # Caps at BLOCKWISE_AUTO_MAX_THREADS even with many cores and a single worker
     monkeypatch.setattr(ws.os, "cpu_count", lambda: 64)
-    assert ws._resolve_blockwise_threads("auto", max_workers=1) == 8
+    assert ws._resolve_blockwise_threads("auto", max_workers=1) == ws.BLOCKWISE_AUTO_MAX_THREADS
     # Never returns 0 when workers exceed cores
     monkeypatch.setattr(ws.os, "cpu_count", lambda: 4)
     assert ws._resolve_blockwise_threads("auto", max_workers=16) == 1
     # Unknown cpu_count degrades to 1
     monkeypatch.setattr(ws.os, "cpu_count", lambda: None)
     assert ws._resolve_blockwise_threads("auto", max_workers=2) == 1
+    # An explicit integer can still exceed the auto cap (opt-in override).
+    assert ws._resolve_blockwise_threads(8) == 8
+
+
+def test_blockwise_auto_max_threads_matches_benchmark_plateau():
+    # Documented plateau from benchmarks/bench_thread_scaling.py (4 threads).
+    assert ws.BLOCKWISE_AUTO_MAX_THREADS == 4
 
 
 if __name__ == '__main__':
