@@ -48,8 +48,13 @@ import zarr
 import yaml
 from rasterio.enums import Resampling
 from rasterio.features import rasterize
-from rasterio.transform import Affine
-from rasterio.warp import reproject
+from rasterio.transform import Affine, array_bounds
+from rasterio.warp import reproject, transform_bounds
+
+try:  # Fast C nanmedian; NumPy's masked-array path is ~50x slower on blocks
+    import bottleneck as _bn
+except ImportError:  # pragma: no cover - optional accelerator
+    _bn = None
 from rich.console import Console
 from shapely import wkt as shapely_wkt
 from shapely.geometry import mapping
@@ -605,6 +610,168 @@ def _mosaic_align_window_direct_copy(
     return out
 
 
+def _scene_dst_bounds(
+    src,
+    prof: Mapping,
+    transform: Affine,
+    target_crs: str,
+    height: int,
+    width: int,
+    *,
+    margin: int = 2,
+) -> tuple[int, int, int, int] | None:
+    """Pixel bounds ``(row0, row1, col0, col1)`` of a scene on the master grid.
+
+    Bounds are clipped to the grid, so a scene fully outside the grid yields an
+    empty range (``row1 <= row0`` or ``col1 <= col0``).  Returns ``None`` when
+    the footprint cannot be determined (missing profile), which callers must
+    treat as "may cover anything".
+    """
+    if src is None or not isinstance(prof, Mapping):
+        return None
+    src_transform = prof.get("transform")
+    src_crs = prof.get("crs")
+    if src_transform is None or src_crs is None:
+        return None
+    try:
+        h, w = np.asarray(src).shape[-2:]
+        left, bottom, right, top = array_bounds(h, w, _as_affine(src_transform))
+        if not _crs_equal(src_crs, target_crs):
+            left, bottom, right, top = transform_bounds(
+                src_crs, target_crs, left, bottom, right, top, densify_pts=21
+            )
+        inv = ~_as_affine(transform)
+        c0, r0 = inv * (left, top)
+        c1, r1 = inv * (right, bottom)
+    except Exception as exc:
+        logger.debug("Scene footprint bounds failed: %s", exc)
+        return None
+    eps = 1e-9  # tolerate float noise so exact pixel edges stay tight
+    row0 = int(np.floor(min(r0, r1) + eps)) - margin
+    row1 = int(np.ceil(max(r0, r1) - eps)) + margin
+    col0 = int(np.floor(min(c0, c1) + eps)) - margin
+    col1 = int(np.ceil(max(c0, c1) - eps)) + margin
+    return (
+        max(0, row0), min(int(height), row1),
+        max(0, col0), min(int(width), col1),
+    )
+
+
+def _compute_scene_dst_bounds(
+    final_arr: list,
+    prof_arr: list,
+    transform: Affine,
+    target_crs: str,
+    height: int,
+    width: int,
+) -> list[tuple[int, int, int, int] | None]:
+    """Per-scene master-grid pixel bounds, aligned with ``final_arr`` indices."""
+    bounds: list[tuple[int, int, int, int] | None] = []
+    for src, prof in zip(final_arr, prof_arr or []):
+        bounds.append(
+            _scene_dst_bounds(src, prof, transform, target_crs, height, width)
+        )
+    # prof_arr may be shorter than final_arr (tests, degraded inputs)
+    bounds.extend([None] * (len(final_arr) - len(bounds)))
+    return bounds
+
+
+def _bounds_intersect_block(
+    bounds: tuple[int, int, int, int],
+    y_slice: slice,
+    x_slice: slice,
+) -> bool:
+    row0, row1, col0, col1 = bounds
+    return (
+        row0 < int(y_slice.stop or 0)
+        and row1 > int(y_slice.start or 0)
+        and col0 < int(x_slice.stop or 0)
+        and col1 > int(x_slice.start or 0)
+    )
+
+
+def _prealign_scenes_to_master_grid(
+    final_arr: list,
+    prof_arr: list,
+    transform: Affine,
+    target_crs: str,
+    height: int,
+    width: int,
+) -> tuple[list, list]:
+    """Warp scenes that cannot be direct-copied onto the master grid, once.
+
+    Scenes whose grid differs from the master grid (other CRS/UTM zone,
+    non-integer pixel offset, different resolution) would otherwise hit the
+    GDAL ``reproject`` path once per spatial block — O(scenes x blocks) warps.
+    This replaces each such scene with a master-grid-aligned window covering
+    its footprint, so every later block read is a plain slice copy.
+
+    Returns shallow-copied lists; the caller's originals are not mutated (they
+    may be shared with the per-scene writers).  Memory cost is roughly one
+    extra copy of each warped scene for the lifetime of the returned lists.
+    """
+    if not final_arr or not prof_arr:
+        return final_arr, prof_arr
+    new_final = list(final_arr)
+    new_prof = list(prof_arr)
+    base_t = _as_affine(transform)
+    n_warped = 0
+    for idx in range(min(len(final_arr), len(prof_arr))):
+        src = final_arr[idx]
+        prof = prof_arr[idx]
+        if src is None or not isinstance(prof, Mapping):
+            continue
+        if prof.get("transform") is None or prof.get("crs") is None:
+            continue
+        if _direct_copy_offsets(prof, base_t, target_crs) is not None:
+            continue  # already slice-copyable for every block
+        b = _scene_dst_bounds(src, prof, base_t, target_crs, height, width)
+        if b is None:
+            continue
+        row0, row1, col0, col1 = b
+        if row1 <= row0 or col1 <= col0:
+            continue  # outside the master grid; block filtering skips it
+        dst_transform = base_t * Affine.translation(col0, row0)
+        dst = np.full((row1 - row0, col1 - col0), np.nan, dtype=np.float32)
+        try:
+            reproject(
+                source=np.asarray(src, dtype=np.float32),
+                destination=dst,
+                src_transform=prof["transform"],
+                src_crs=prof["crs"],
+                src_nodata=prof.get("nodata"),
+                dst_transform=dst_transform,
+                dst_crs=target_crs,
+                dst_nodata=np.nan,
+                resampling=Resampling.nearest,
+                num_threads=1,
+            )
+        except Exception as exc:
+            logger.debug(
+                "Pre-align warp failed for scene %d; keeping original: %s",
+                idx, exc,
+            )
+            continue
+        p = dict(prof)
+        p.update(
+            transform=dst_transform,
+            crs=target_crs,
+            nodata=np.nan,
+            height=dst.shape[0],
+            width=dst.shape[1],
+        )
+        new_final[idx] = dst
+        new_prof[idx] = p
+        n_warped += 1
+    if n_warped:
+        logger.info(
+            "Pre-aligned %d cross-grid scene(s) to the master grid "
+            "(one-time warp replaces per-block reprojection)",
+            n_warped,
+        )
+    return new_final, new_prof
+
+
 def _mosaic_align_window(
     indices: list[int],
     final_arr: list,
@@ -615,6 +782,7 @@ def _mosaic_align_window(
     target_crs: str,
     y_slice: slice,
     x_slice: slice,
+    scene_bounds: list | None = None,
 ) -> np.ndarray | None:
     """Mosaic only one destination block.
 
@@ -653,6 +821,12 @@ def _mosaic_align_window(
         prof = prof_arr[idx]
         if src is None:
             continue
+        if scene_bounds is not None and idx < len(scene_bounds):
+            sb = scene_bounds[idx]
+            # Known footprint that misses this block entirely: skip without
+            # allocating a window.  None means "footprint unknown" -> keep.
+            if sb is not None and not _bounds_intersect_block(sb, y_slice, x_slice):
+                continue
         used_source = True
         src_arr = np.asarray(src, dtype=np.float32)
         direct = _mosaic_align_window_direct_copy(
@@ -708,7 +882,13 @@ def _monthly_composite_block(
         warnings.filterwarnings('ignore', 'All-NaN slice')
         warnings.filterwarnings('ignore', 'Mean of empty slice')
         if method_norm in {"median", "nanmedian"}:
-            out = np.nanmedian(arr, axis=0)
+            if _bn is not None:
+                # bottleneck partitions ``arr`` in place, which is safe here
+                # because ``arr`` is a fresh np.stack copy.  ~50x faster than
+                # np.nanmedian's masked-array path for stack depths < 600.
+                out = _bn.nanmedian(arr, axis=0)
+            else:
+                out = np.nanmedian(arr, axis=0)
         elif method_norm in {"min", "nanmin"}:
             out = np.nanmin(arr, axis=0)
         elif method_norm in {"mean", "nanmean"}:
@@ -733,16 +913,53 @@ def _track_composite_block(
     x_slice: slice,
     composite_method: str,
     trim_fraction: float,
+    scene_bounds: list | None = None,
 ) -> np.ndarray | None:
     stack = []
     for idx in idxs:
         arr = _mosaic_align_window(
             [idx], final_arr, prof_arr, height, width,
             transform, target_crs, y_slice, x_slice,
+            scene_bounds=scene_bounds,
         )
         if arr is not None:
             stack.append(arr)
     return _monthly_composite_block(stack, composite_method, trim_fraction)
+
+
+def _track_valid_mask_block(
+    idxs: list[int],
+    final_arr: list,
+    prof_arr: list,
+    height: int,
+    width: int,
+    transform: Affine,
+    target_crs: str,
+    y_slice: slice,
+    x_slice: slice,
+    scene_bounds: list | None = None,
+) -> np.ndarray | None:
+    """Union of finite pixels across a track's aligned scenes for one block.
+
+    A pixel of a median/mean/min composite is finite iff at least one aligned
+    scene is finite there, so this mask equals the composite's finite mask
+    without computing any composite.  (``trimmed_mean`` can propagate NaN, so
+    for that method this slightly overestimates coverage; the result is only
+    used for track priority ordering.)  Returns ``None`` when no scene
+    contributes to the block.
+    """
+    mask: np.ndarray | None = None
+    for idx in idxs:
+        arr = _mosaic_align_window(
+            [idx], final_arr, prof_arr, height, width,
+            transform, target_crs, y_slice, x_slice,
+            scene_bounds=scene_bounds,
+        )
+        if arr is None:
+            continue
+        finite = np.isfinite(arr)
+        mask = finite if mask is None else np.logical_or(mask, finite, out=mask)
+    return mask
 
 
 def _begin_zarr_timestep_blockwise(
@@ -939,6 +1156,16 @@ def _write_smonthly_month_zarr_blockwise_single_track(
 
     clip_geom = _prepare_block_clip_geom(tile_clip, mgrs_tile_id, target_crs)
     track_cov: dict[int, int] = {int(track_id): 0}
+
+    # Per-scene master-grid footprints let each block skip the scenes that do
+    # not intersect it, instead of stacking one all-NaN window per scene.
+    bounds_vv = _compute_scene_dst_bounds(
+        final_vv, prof_vv, transform, target_crs, height, width
+    )
+    bounds_vh = _compute_scene_dst_bounds(
+        final_vh, prof_vh, transform, target_crs, height, width
+    )
+
     time_index, new_key = _begin_zarr_timestep_blockwise(g, dt_ns, band_names)
     logger.info("Month %s: One-pass - Writing single-track Zarr...", month_str)
 
@@ -956,19 +1183,20 @@ def _write_smonthly_month_zarr_blockwise_single_track(
                 track_indices, final_vv, prof_vv, height, width,
                 transform, target_crs, y_slice, x_slice,
                 composite_method, trim_fraction,
+                scene_bounds=bounds_vv,
             )
             if cvv is None:
                 continue
+            track_cov[int(track_id)] += int(np.isfinite(cvv).sum())
 
             cvh = _track_composite_block(
                 track_indices, final_vh, prof_vh, height, width,
                 transform, target_crs, y_slice, x_slice,
                 composite_method, trim_fraction,
+                scene_bounds=bounds_vh,
             )
             if cvh is None:
                 cvh = np.full_like(cvv, np.nan, dtype=np.float32)
-            else:
-                track_cov[int(track_id)] += int(np.isfinite(cvv).sum())
 
             block_bands = _make_smonthly_block_bands(
                 cvv, cvh,
@@ -2487,7 +2715,18 @@ def _write_smonthly_month_zarr_blockwise(
     track_cov: dict[int, int] = {int(tk): 0 for tk in idx_by_track}
     track_seen: set[int] = set()
 
-    # Pass 1: Compute track coverage
+    # Per-scene master-grid footprints let each block skip the scenes that do
+    # not intersect it, instead of stacking one all-NaN window per scene.
+    bounds_vv = _compute_scene_dst_bounds(
+        final_vv, prof_vv, transform, target_crs, height, width
+    )
+    bounds_vh = _compute_scene_dst_bounds(
+        final_vh, prof_vh, transform, target_crs, height, width
+    )
+
+    # Pass 1: Compute track coverage.  Coverage only needs the count of finite
+    # composite pixels, and that finite mask is just the union of the aligned
+    # scenes' finite masks — no composites (and no VH work) are required here.
     logger.info("Month %s: Pass 1/2 - Computing track coverage...", month_str)
     block_num = 0
     for y_slice, x_slice in _iter_spatial_blocks(height, width, chunk_y, chunk_x):
@@ -2500,23 +2739,16 @@ def _write_smonthly_month_zarr_blockwise(
                 x_slice.start or 0, x_slice.stop or 0,
             )
         for tk, tk_idxs in idx_by_track.items():
-            cvv = _track_composite_block(
+            vmask = _track_valid_mask_block(
                 tk_idxs, final_vv, prof_vv, height, width,
                 transform, target_crs, y_slice, x_slice,
-                composite_method, trim_fraction,
+                scene_bounds=bounds_vv,
             )
-            if cvv is None:
-                continue
-            cvh = _track_composite_block(
-                tk_idxs, final_vh, prof_vh, height, width,
-                transform, target_crs, y_slice, x_slice,
-                composite_method, trim_fraction,
-            )
-            if cvh is None:
+            if vmask is None:
                 continue
             track_seen.add(int(tk))
-            track_cov[int(tk)] += int(np.isfinite(cvv).sum())
-            del cvv, cvh
+            track_cov[int(tk)] += int(vmask.sum())
+            del vmask
 
     if not track_seen:
         logger.warning("Month %s: no valid acquisitions, skipping", month_str)
@@ -2556,6 +2788,7 @@ def _write_smonthly_month_zarr_blockwise(
                     tk_idxs, final_vv, prof_vv, height, width,
                     transform, target_crs, y_slice, x_slice,
                     composite_method, trim_fraction,
+                    scene_bounds=bounds_vv,
                 )
                 if cvv is None:
                     continue
@@ -2563,6 +2796,7 @@ def _write_smonthly_month_zarr_blockwise(
                     tk_idxs, final_vh, prof_vh, height, width,
                     transform, target_crs, y_slice, x_slice,
                     composite_method, trim_fraction,
+                    scene_bounds=bounds_vh,
                 )
                 if cvh is None:
                     cvh = np.full_like(cvv, np.nan, dtype=np.float32)
@@ -2981,11 +3215,24 @@ def _write_smonthly_one_track(
             "COG/Preview will be generated from Zarr if requested.",
             zarr_path,
         )
+        # Warp cross-grid scenes (other UTM zone / misaligned grid) onto the
+        # master grid once, so the block loop never calls GDAL reproject.
+        # Local rebinding only: the caller's lists stay untouched for the
+        # per-scene writers.
+        final_vv, prof_vv = _prealign_scenes_to_master_grid(
+            final_vv, prof_vv, transform, target_crs, height, width
+        )
+        final_vh, prof_vh = _prealign_scenes_to_master_grid(
+            final_vh, prof_vh, transform, target_crs, height, width
+        )
     # Helper: unified monthly compositing
     def _monthly_composite(stack, method):
         arr = np.stack(stack, axis=0)
         method_norm = str(method or 'median').lower()
         if method_norm in {'median', 'nanmedian'}:
+            # bottleneck partitions the fresh np.stack copy in place; safe.
+            if _bn is not None:
+                return _bn.nanmedian(arr, axis=0)
             return np.nanmedian(arr, axis=0)
         elif method_norm in {'min', 'nanmin'}:
             return np.nanmin(arr, axis=0)

@@ -16,6 +16,7 @@ dependencies:
   # Array / data stack
   - numpy
   - scipy
+  - bottleneck
   - pandas
   - xarray
   - zarr

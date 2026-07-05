@@ -243,7 +243,8 @@ def test_blockwise_progress_logging(tmp_path, caplog, monkeypatch):
     # Mock _track_composite_block to return simple arrays
     call_count = {"n": 0}
 
-    def fake_composite(idxs, final_arr, prof_arr, h, w, tfm, crs, y_sl, x_sl, method, trim):
+    def fake_composite(idxs, final_arr, prof_arr, h, w, tfm, crs, y_sl, x_sl,
+                       method, trim, scene_bounds=None):
         call_count["n"] += 1
         bh = (y_sl.stop or 0) - (y_sl.start or 0)
         bw = (x_sl.stop or 0) - (x_sl.start or 0)
@@ -316,14 +317,24 @@ def test_blockwise_multitrack_stops_when_block_filled(tmp_path, monkeypatch):
     g.create_array('VH_dB', shape=(0, height, width), chunks=(1, chunk_y, chunk_x), dtype='float32')
 
     call_count = {"n": 0}
+    mask_call_count = {"n": 0}
 
-    def fake_composite(idxs, final_arr, prof_arr, h, w, tfm, crs, y_sl, x_sl, method, trim):
+    def fake_composite(idxs, final_arr, prof_arr, h, w, tfm, crs, y_sl, x_sl,
+                       method, trim, scene_bounds=None):
         call_count["n"] += 1
         bh = (y_sl.stop or 0) - (y_sl.start or 0)
         bw = (x_sl.stop or 0) - (x_sl.start or 0)
         return np.ones((bh, bw), dtype=np.float32)
 
+    def fake_valid_mask(idxs, final_arr, prof_arr, h, w, tfm, crs, y_sl, x_sl,
+                        scene_bounds=None):
+        mask_call_count["n"] += 1
+        bh = (y_sl.stop or 0) - (y_sl.start or 0)
+        bw = (x_sl.stop or 0) - (x_sl.start or 0)
+        return np.ones((bh, bw), dtype=bool)
+
     monkeypatch.setattr(ws, '_track_composite_block', fake_composite)
+    monkeypatch.setattr(ws, '_track_valid_mask_block', fake_valid_mask)
 
     result = ws._write_smonthly_month_zarr_blockwise(
         g=g,
@@ -354,11 +365,162 @@ def test_blockwise_multitrack_stops_when_block_filled(tmp_path, monkeypatch):
     )
 
     assert result is not None
-    # Pass 1 still computes 4 blocks * 2 tracks * 2 bands = 16 calls.
+    # Pass 1 uses finite-mask unions instead of composites:
+    # 4 blocks * 2 tracks = 8 mask calls, 0 composite calls.
+    assert mask_call_count["n"] == 8
     # Pass 2 should compute only the first full-coverage track:
-    # 4 blocks * 1 track * 2 bands = 8 calls. Without the early break this
-    # would be 32 total calls.
-    assert call_count["n"] == 24
+    # 4 blocks * 1 track * 2 bands = 8 composite calls. Without the early
+    # break this would be 16.
+    assert call_count["n"] == 8
+
+
+def test_compute_scene_dst_bounds_same_crs():
+    """Bounds on the master grid match the scene's pixel offsets."""
+    master = Affine.translation(1000.0, 2000.0) * Affine.scale(30.0, -30.0)
+    # Scene offset by (row=4, col=6) on the same grid, 5x7 pixels
+    scene_t = master * Affine.translation(6, 4)
+    src = np.ones((5, 7), dtype=np.float32)
+    prof = {"transform": scene_t, "crs": "EPSG:32617"}
+
+    bounds = ws._compute_scene_dst_bounds(
+        [src], [prof], master, "EPSG:32617", height=100, width=100
+    )
+    assert len(bounds) == 1
+    row0, row1, col0, col1 = bounds[0]
+    # Margin of 2 pixels around [4:9, 6:13]
+    assert row0 <= 4 and row1 >= 9
+    assert col0 <= 6 and col1 >= 13
+    assert row1 - row0 <= 5 + 4 and col1 - col0 <= 7 + 4
+
+
+def test_compute_scene_dst_bounds_handles_missing_profiles():
+    """Unknown footprints (no/short prof_arr) must yield None (no filtering)."""
+    master = Affine.identity()
+    bounds = ws._compute_scene_dst_bounds(
+        [object(), object()], [], master, "EPSG:32617", height=10, width=10
+    )
+    assert bounds == [None, None]
+
+
+def test_mosaic_align_window_skips_nonoverlapping_scene(monkeypatch):
+    """A scene whose footprint misses the block returns None without work."""
+    master = Affine.translation(0.0, 0.0) * Affine.scale(30.0, -30.0)
+    scene_t = master * Affine.translation(50, 50)  # far from block [0:4, 0:4]
+    src = np.ones((4, 4), dtype=np.float32)
+    prof = {"transform": scene_t, "crs": "EPSG:32617", "nodata": np.nan}
+
+    def fail_reproject(*args, **kwargs):
+        raise AssertionError("non-overlapping scene must not be processed")
+
+    monkeypatch.setattr(ws, "reproject", fail_reproject)
+
+    bounds = ws._compute_scene_dst_bounds(
+        [src], [prof], master, "EPSG:32617", height=100, width=100
+    )
+    result = ws._mosaic_align_window(
+        [0], [src], [prof],
+        height=100, width=100, transform=master, target_crs="EPSG:32617",
+        y_slice=slice(0, 4), x_slice=slice(0, 4),
+        scene_bounds=bounds,
+    )
+    assert result is None
+
+    # The same scene IS used for a block that its footprint covers
+    result = ws._mosaic_align_window(
+        [0], [src], [prof],
+        height=100, width=100, transform=master, target_crs="EPSG:32617",
+        y_slice=slice(50, 54), x_slice=slice(50, 54),
+        scene_bounds=bounds,
+    )
+    assert result is not None
+    assert np.allclose(result, 1.0)
+
+
+def test_track_valid_mask_block_matches_composite_mask():
+    """Mask-OR coverage equals the finite mask of the median composite."""
+    master = Affine.translation(0.0, 0.0) * Affine.scale(30.0, -30.0)
+    rng = np.random.default_rng(42)
+
+    # Two scenes on the master grid with different valid regions
+    src_a = np.full((8, 8), np.nan, dtype=np.float32)
+    src_a[:5, :] = rng.random((5, 8), dtype=np.float32) + 0.1
+    src_b = np.full((8, 8), np.nan, dtype=np.float32)
+    src_b[3:, 2:] = rng.random((5, 6), dtype=np.float32) + 0.1
+    prof = {"transform": master, "crs": "EPSG:32617", "nodata": np.nan}
+    final = [src_a, src_b]
+    profs = [prof, prof]
+
+    y_sl, x_sl = slice(0, 8), slice(0, 8)
+    mask = ws._track_valid_mask_block(
+        [0, 1], final, profs, 8, 8, master, "EPSG:32617", y_sl, x_sl
+    )
+    composite = ws._track_composite_block(
+        [0, 1], final, profs, 8, 8, master, "EPSG:32617", y_sl, x_sl,
+        "median", 0.15,
+    )
+    assert mask is not None and composite is not None
+    assert np.array_equal(mask, np.isfinite(composite))
+
+
+def test_monthly_composite_block_median_matches_numpy():
+    """Accelerated nanmedian must agree with np.nanmedian (incl. NaN slices)."""
+    rng = np.random.default_rng(7)
+    stack = [rng.random((6, 6), dtype=np.float32) for _ in range(5)]
+    stack[0][:, :3] = np.nan
+    stack[1][:] = np.nan  # all-NaN layer
+
+    out = ws._monthly_composite_block(list(stack), "median", 0.15)
+    with np.errstate(all="ignore"):
+        import warnings as _w
+        with _w.catch_warnings():
+            _w.simplefilter("ignore")
+            expected = np.nanmedian(np.stack(stack, axis=0), axis=0)
+    assert out is not None
+    assert np.allclose(out, expected, equal_nan=True)
+
+
+def test_prealign_scenes_to_master_grid():
+    """Misaligned scenes get warped once; aligned scenes are left alone."""
+    master = Affine.translation(0.0, 0.0) * Affine.scale(30.0, -30.0)
+
+    # Scene A: already on the master grid (integer pixel offset)
+    src_a = np.ones((4, 4), dtype=np.float32)
+    prof_a = {"transform": master * Affine.translation(2, 2),
+              "crs": "EPSG:32617", "nodata": np.nan}
+
+    # Scene B: same CRS but half-pixel offset -> cannot direct-copy
+    src_b = np.full((4, 4), 5.0, dtype=np.float32)
+    prof_b = {"transform": Affine.translation(15.0, -15.0) * master,
+              "crs": "EPSG:32617", "nodata": np.nan}
+
+    final = [src_a, src_b]
+    profs = [prof_a, prof_b]
+    new_final, new_prof = ws._prealign_scenes_to_master_grid(
+        final, profs, master, "EPSG:32617", height=20, width=20
+    )
+
+    # Caller's lists must be untouched
+    assert final[1] is src_b and profs[1] is prof_b
+    # Aligned scene shared, misaligned scene replaced
+    assert new_final[0] is src_a and new_prof[0] is prof_a
+    assert new_final[1] is not src_b
+    # The replacement is direct-copyable on the master grid...
+    assert ws._direct_copy_offsets(new_prof[1], master, "EPSG:32617") is not None
+    # ...and carries the warped data
+    assert np.nanmax(new_final[1]) == pytest.approx(5.0)
+
+    # After pre-alignment, windows come out via direct copy (no reproject)
+    bounds = ws._compute_scene_dst_bounds(
+        new_final, new_prof, master, "EPSG:32617", height=20, width=20
+    )
+    result = ws._mosaic_align_window(
+        [1], new_final, new_prof,
+        height=20, width=20, transform=master, target_crs="EPSG:32617",
+        y_slice=slice(0, 8), x_slice=slice(0, 8),
+        scene_bounds=bounds,
+    )
+    assert result is not None
+    assert np.nanmax(result) == pytest.approx(5.0)
 
 
 if __name__ == '__main__':
