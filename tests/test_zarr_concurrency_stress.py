@@ -93,30 +93,17 @@ def test_multi_month_threaded_matches_serial(tmp_path, n_tracks):
         ), f"threaded store differs from serial for band {band}"
 
 
-def _delete_timestep_supported(g, month_str) -> bool:
-    """Probe whether _zarr_delete_timestep works with the installed zarr.
-
-    zarr-python 3.2.x rejects the list/mask indexing the compiled helper uses
-    ("unsupported selection item for basic indexing"). That is a real
-    limitation of the overwrite path under newer zarr, surfaced here rather
-    than hidden; the test skips (not fails) so it stays actionable without a
-    red suite, and re-arms automatically if the helper/zarr is fixed.
-    """
-    try:
-        ws._zarr_delete_timestep(g, month_str)
-        return True
-    except IndexError as exc:
-        if "basic indexing" in str(exc):
-            return False
-        raise
-
-
 def test_overwrite_timestep_threaded_matches_serial(tmp_path):
-    """Overwriting an existing month must be bit-identical across thread counts."""
+    """Overwriting an existing month must be bit-identical across thread counts.
+
+    Also exercises _zarr_delete_timestep, whose list-index read path was fixed
+    for zarr>=3.2 (roadmap item 1). A regression there re-raises the
+    "unsupported selection item for basic indexing" IndexError here.
+    """
     height = width = 1024
     chunk = 512
 
-    def build(tag, num_threads, probe_only=False):
+    def build(tag, num_threads):
         g = syn.init_store(tmp_path / f"{tag}.zarr", height, width, chunk)
         data = syn.build_month(
             height=height, width=width, n_scenes=40, n_tracks=2,
@@ -127,27 +114,12 @@ def test_overwrite_timestep_threaded_matches_serial(tmp_path):
         _write_month(g, "2026-01", np.datetime64("2026-01-15", "ns"),
                      (fv, pv, fh, ph, idx_by_track), master,
                      height, width, chunk, num_threads)
-        if probe_only:
-            return g, month_supported(g)
         # ...then overwrite the same timestep in place.
         ws._zarr_delete_timestep(g, "2026-01")
         _write_month(g, "2026-01", np.datetime64("2026-01-15", "ns"),
                      (fv, pv, fh, ph, idx_by_track), master,
                      height, width, chunk, num_threads)
         return g
-
-    def month_supported(g):
-        return _delete_timestep_supported(g, "2026-01")
-
-    # Probe on a throwaway store first so we skip cleanly if the installed
-    # zarr cannot support the delete-timestep path.
-    probe, supported = build("ow_probe", 1, probe_only=True)
-    if not supported:
-        pytest.skip(
-            "_zarr_delete_timestep incompatible with installed zarr "
-            "(list-indexing rejected by zarr>=3.2 basic indexing); overwrite "
-            "path needs .oindex/.vindex — flagged as a risk, not tested here"
-        )
 
     g1 = build("ow_serial", 1)
     g4 = build("ow_threaded", 4)

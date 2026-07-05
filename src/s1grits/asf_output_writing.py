@@ -1517,7 +1517,12 @@ def _zarr_delete_timestep(g, m_str: str) -> None:
     from s1grits.zarr_cf import band_data_vars
     band_vars = band_data_vars(g)
     kept_times = np.array([g["time"][i] for i in keep_idx], dtype="int64")
-    kept_bands = {v: g[v][keep_idx, :, :] for v in band_vars}
+    # Read each full band then NumPy-fancy-index the kept timesteps. zarr>=3.2
+    # basic indexing rejects a Python list on the time axis
+    # ("unsupported selection item for basic indexing"); NumPy fancy indexing
+    # on the materialised array is version-agnostic and memory-equivalent to
+    # the previous per-slice read.
+    kept_bands = {v: np.asarray(g[v][:])[keep_idx] for v in band_vars}
 
     g["time"].resize((len(keep_idx),))
     if keep_idx:
