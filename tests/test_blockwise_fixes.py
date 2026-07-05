@@ -523,5 +523,155 @@ def test_prealign_scenes_to_master_grid():
     assert np.nanmax(result) == pytest.approx(5.0)
 
 
+def test_zarr_nan_fill_value_skips_explicit_init():
+    """A NaN fill_value store reads unwritten slots as NaN via resize alone."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        g = zarr.open_group(str(Path(td) / "t.zarr"), mode="w", zarr_format=3)
+        g.create_array('x', data=np.arange(4, dtype=np.float64))
+        g.create_array('y', data=np.arange(4, dtype=np.float64))
+        g.create_array('time', shape=(0,), chunks=(1,), dtype='int64')
+        g.create_array('VV_dB', shape=(0, 4, 4), chunks=(1, 2, 2),
+                        dtype='float32', fill_value=np.nan)
+        t, _ = ws._begin_zarr_timestep_blockwise(
+            g, np.datetime64('2020-01-01', 'ns'), ['VV_dB']
+        )
+        assert np.isnan(g['VV_dB'][t]).all()
+
+
+def test_zarr_default_fill_value_still_nan_initialised():
+    """A store without fill_value=NaN must still be explicitly NaN-filled."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        g = zarr.open_group(str(Path(td) / "t.zarr"), mode="w", zarr_format=3)
+        g.create_array('x', data=np.arange(4, dtype=np.float64))
+        g.create_array('y', data=np.arange(4, dtype=np.float64))
+        g.create_array('time', shape=(0,), chunks=(1,), dtype='int64')
+        g.create_array('VV_dB', shape=(0, 4, 4), chunks=(1, 2, 2), dtype='float32')
+        t, _ = ws._begin_zarr_timestep_blockwise(
+            g, np.datetime64('2020-01-01', 'ns'), ['VV_dB']
+        )
+        assert np.isnan(g['VV_dB'][t]).all()
+
+
+def test_windowed_hole_qc_matches_full_tile_and_rejects_real_hole():
+    """Bounding-window hole fraction must equal the full-tile computation."""
+    rng = np.random.default_rng(21)
+    master = Affine.translation(0.0, 0.0) * Affine.scale(30.0, -30.0)
+    H = W = 300
+
+    src = rng.random((150, 150), dtype=np.float32) + 0.1
+    src[60:90, 60:90] = np.nan  # hole with >=60px valid margin on every side
+    prof = {"transform": master * Affine.translation(20, 20),
+            "crs": "EPSG:32617", "nodata": np.nan}
+
+    clean_dates = [pd.Timestamp("2020-02-01T00:00:00Z")]
+    df_batch = pd.DataFrame({
+        "pass_id": [1], "acq_group_id_within_mgrs_tile": [1],
+        "acq_dt": clean_dates, "track_token": ["18"], "jpl_burst_id": ["B001"],
+    })
+    incomplete = []
+    valid = ws._prepare_valid_clean_indices_for_monthly(
+        "17MNU", "ASCENDING",
+        final_vv=[src], prof_vv=[prof], final_vh=None, prof_vh=None,
+        clean_dates=clean_dates, df_rtc_ts=df_batch,
+        target_crs="EPSG:32617", transform=master, width=W, height=H,
+        tile_clip=False, track_footprint={"18": 1},
+        track_footprint_ids={"18": {"B001"}},
+        incomplete_policy="skip", incomplete_sink=incomplete,
+        interior_hole_max_frac=0.001,
+    )
+    assert valid == set()
+    assert incomplete[0]["cause"] == "RASTER_INTERIOR_NODATA"
+
+    full = np.full((H, W), np.nan, dtype=np.float32)
+    full[20:170, 20:170] = src
+    ref_frac = ws._interior_hole_fraction(np.isfinite(full), None)
+    assert incomplete[0]["interior_hole_pct"] / 100.0 == pytest.approx(ref_frac, abs=1e-9)
+
+
+def test_mosaic_align_window_adopts_first_buffer():
+    """Multi-scene merge must match the pre-optimization first-valid-pixel policy."""
+    rng = np.random.default_rng(5)
+    t = Affine.translation(1000.0, 2000.0) * Affine.scale(30.0, -30.0)
+    src_a = rng.random((6, 6), dtype=np.float32) + 0.1
+    src_a[0, :] = np.nan
+    src_b = rng.random((6, 6), dtype=np.float32) + 0.1
+    prof = {"transform": t, "crs": "EPSG:32617", "nodata": np.nan}
+
+    result = ws._mosaic_align_window(
+        [0, 1], [src_a, src_b], [prof, dict(prof)],
+        height=6, width=6, transform=t, target_crs="EPSG:32617",
+        y_slice=slice(0, 6), x_slice=slice(0, 6),
+    )
+    ref = np.full((6, 6), np.nan, dtype=np.float32)
+    for src in (src_a, src_b):
+        tmp = src.copy()
+        tmp[~np.isfinite(tmp) | (tmp <= 0)] = np.nan
+        take = np.isnan(ref) & np.isfinite(tmp)
+        ref[take] = tmp[take]
+    assert np.allclose(result, ref, equal_nan=True)
+
+    # Single-scene result must not alias the raw source array.
+    solo = ws._mosaic_align_window(
+        [0], [src_a], [prof],
+        height=6, width=6, transform=t, target_crs="EPSG:32617",
+        y_slice=slice(0, 6), x_slice=slice(0, 6),
+    )
+    assert solo is not src_a
+
+
+def test_threaded_blocks_match_serial_output(tmp_path):
+    """num_threads>1 must produce output identical to the serial path."""
+    rng = np.random.default_rng(7)
+    H = W = 512
+    CHUNK = 256  # 2x2 = 4 blocks
+    master = Affine.translation(500000.0, 9500000.0) * Affine.scale(30.0, -30.0)
+    crs = "EPSG:32617"
+
+    final_vv, prof_vv, final_vh, prof_vh = [], [], [], []
+    idx_by_track = {18: [], 40: []}
+    for i in range(8):
+        h, w = 150, 300
+        row_off = (i * 53) % (H - h)
+        col_off = (i * 37) % (W - w)
+        t = master * Affine.translation(col_off, row_off)
+        prof = {"transform": t, "crs": crs, "nodata": np.nan}
+        final_vv.append(rng.random((h, w), dtype=np.float32) + 0.05)
+        prof_vv.append(prof)
+        final_vh.append(rng.random((h, w), dtype=np.float32) * 0.3 + 0.02)
+        prof_vh.append(dict(prof))
+        idx_by_track[18 if i % 2 == 0 else 40].append(i)
+
+    def run(num_threads, name):
+        g = zarr.open_group(str(tmp_path / name), mode="w", zarr_format=3)
+        g.create_array('x', data=np.arange(W, dtype=np.float64))
+        g.create_array('y', data=np.arange(H, dtype=np.float64))
+        g.create_array('time', shape=(0,), chunks=(64,), dtype='int64')
+        for b in ('VV_dB', 'VH_dB'):
+            g.create_array(b, shape=(0, H, W), chunks=(1, CHUNK, CHUNK),
+                            dtype='float32', fill_value=np.nan)
+        res = ws._write_smonthly_month_zarr_blockwise(
+            g=g, month_str='2026-01', dt_ns=np.datetime64('2026-01-15', 'ns'),
+            idx_by_track=idx_by_track,
+            final_vv=final_vv, prof_vv=prof_vv, final_vh=final_vh, prof_vh=prof_vh,
+            height=H, width=W, transform=master, target_crs=crs,
+            chunk_y=CHUNK, chunk_x=CHUNK,
+            band_names=['VV_dB', 'VH_dB'], copol_name='VV_dB', crosspol_name='VH_dB',
+            features_ratio=False, features_rvi=False, ratio_name='Ratio', rvi_name='RVI',
+            composite_method='median', trim_fraction=0.15,
+            tile_clip=False, mgrs_tile_id='17MPU', num_threads=num_threads,
+        )
+        return res, g['VV_dB'][0], g['VH_dB'][0]
+
+    res1, vv1, vh1 = run(1, "serial.zarr")
+    res4, vv4, vh4 = run(4, "threaded.zarr")
+
+    assert res1 == res4
+    assert np.array_equal(np.isfinite(vv1), np.isfinite(vv4))
+    assert np.allclose(vv1, vv4, equal_nan=True)
+    assert np.allclose(vh1, vh4, equal_nan=True)
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

@@ -218,7 +218,11 @@ def _burst_coverage_status(loaded: int, expected: int, date_label: str, dt_str: 
     return missing, msg
 
 
-def _interior_hole_fraction(valid_mask: np.ndarray, tile_mask: np.ndarray | None = None) -> float:
+def _interior_hole_fraction(
+    valid_mask: np.ndarray,
+    tile_mask: np.ndarray | None = None,
+    denom: int | None = None,
+) -> float:
     """Fraction of the tile that is an *interior* NoData hole — NoData fully
     enclosed by valid data, as opposed to NoData at the swath/tile edge.
 
@@ -229,7 +233,11 @@ def _interior_hole_fraction(valid_mask: np.ndarray, tile_mask: np.ndarray | None
     exactly the interior holes.
 
     ``valid_mask``: True where data is finite. ``tile_mask``: True inside the
-    MGRS tile (restricts the measure to the tile interior). Pure / testable.
+    MGRS tile (restricts the measure to the tile interior). ``denom`` overrides
+    the denominator so callers may pass a *window* of the tile (containing all
+    valid pixels) while keeping the fraction relative to the full tile; interior
+    holes are window-invariant because a region enclosed by valid data is
+    enclosed in any window that contains all the valid data. Pure / testable.
     """
     if valid_mask is None or not valid_mask.any():
         return 0.0
@@ -241,8 +249,9 @@ def _interior_hole_fraction(valid_mask: np.ndarray, tile_mask: np.ndarray | None
     interior = filled & (~valid_mask)
     if tile_mask is not None:
         interior = interior & tile_mask
-        denom = int(tile_mask.sum())
-    else:
+        if denom is None:
+            denom = int(tile_mask.sum())
+    elif denom is None:
         denom = int(valid_mask.size)
     return float(int(interior.sum()) / denom) if denom else 0.0
 
@@ -426,7 +435,9 @@ def _init_zarr_2band(
     _a = g.create_array('time', shape=(0,), chunks=(1,), dtype='datetime64[ns]', overwrite=True, dimension_names=['time'])
     _a.attrs['_ARRAY_DIMENSIONS'] = ['time']
     for var in band_names:
-        _a = g.create_array(var, shape=(0, _h, _w), chunks=(1, chunk_y, chunk_x), dtype='float32', overwrite=True, dimension_names=['time', 'y', 'x'])
+        # fill_value=NaN lets blockwise appends resize without materialising
+        # all-NaN chunks: unwritten blocks read back as NaN for free.
+        _a = g.create_array(var, shape=(0, _h, _w), chunks=(1, chunk_y, chunk_x), dtype='float32', fill_value=np.nan, overwrite=True, dimension_names=['time', 'y', 'x'])
         _a.attrs['_ARRAY_DIMENSIONS'] = ['time', 'y', 'x']
 
     # CF-compliant grid_mapping so generic readers (GDAL/QGIS/rioxarray) can
@@ -812,9 +823,8 @@ def _mosaic_align_window(
             return None
         return full[y_slice, x_slice].astype(np.float32, copy=False)
 
-    out = np.full((bh, bw), np.nan, dtype=np.float32)
+    out: np.ndarray | None = None
     dst_transform = _block_transform(transform, y_slice, x_slice)
-    used_source = False
 
     for idx in indices:
         src = final_arr[idx]
@@ -827,45 +837,44 @@ def _mosaic_align_window(
             # allocating a window.  None means "footprint unknown" -> keep.
             if sb is not None and not _bounds_intersect_block(sb, y_slice, x_slice):
                 continue
-        used_source = True
         src_arr = np.asarray(src, dtype=np.float32)
-        direct = _mosaic_align_window_direct_copy(
+        tmp = _mosaic_align_window_direct_copy(
             src_arr, prof, dst_transform, target_crs, bh, bw
         )
-        if direct is not None:
-            tmp = direct
-            tmp[~np.isfinite(tmp) | (tmp <= 0)] = np.nan
+        if tmp is None:
+            tmp = np.full((bh, bw), np.nan, dtype=np.float32)
+            try:
+                reproject(
+                    source=src_arr,
+                    destination=tmp,
+                    src_transform=prof["transform"],
+                    src_crs=prof["crs"],
+                    src_nodata=prof.get("nodata"),
+                    dst_transform=dst_transform,
+                    dst_crs=target_crs,
+                    dst_nodata=np.nan,
+                    resampling=Resampling.nearest,
+                    num_threads=1,
+                )
+            except Exception as exc:
+                logger.debug("Windowed reproject failed; falling back to full mosaic: %s", exc)
+                full = _mosaic_align(indices, final_arr, prof_arr, height, width, transform, target_crs)
+                if full is None:
+                    return None
+                return full[y_slice, x_slice].astype(np.float32, copy=False)
+
+        tmp[~np.isfinite(tmp) | (tmp <= 0)] = np.nan
+        if out is None:
+            # First contributing scene: adopt its buffer directly instead of
+            # merging into a pre-allocated NaN window.  With one scene per
+            # call (the composite path) this skips the merge entirely.
+            out = tmp
+        else:
             take = np.isnan(out) & np.isfinite(tmp)
             if take.any():
                 out[take] = tmp[take]
-            continue
-        tmp = np.full((bh, bw), np.nan, dtype=np.float32)
-        try:
-            reproject(
-                source=src_arr,
-                destination=tmp,
-                src_transform=prof["transform"],
-                src_crs=prof["crs"],
-                src_nodata=prof.get("nodata"),
-                dst_transform=dst_transform,
-                dst_crs=target_crs,
-                dst_nodata=np.nan,
-                resampling=Resampling.nearest,
-                num_threads=1,
-            )
-        except Exception as exc:
-            logger.debug("Windowed reproject failed; falling back to full mosaic: %s", exc)
-            full = _mosaic_align(indices, final_arr, prof_arr, height, width, transform, target_crs)
-            if full is None:
-                return None
-            return full[y_slice, x_slice].astype(np.float32, copy=False)
 
-        tmp[~np.isfinite(tmp) | (tmp <= 0)] = np.nan
-        take = np.isnan(out) & np.isfinite(tmp)
-        if take.any():
-            out[take] = tmp[take]
-
-    return out if used_source else None
+    return out
 
 
 def _monthly_composite_block(
@@ -962,6 +971,26 @@ def _track_valid_mask_block(
     return mask
 
 
+def _run_blocks(worker, blocks: list, num_threads: int) -> list:
+    """Run per-block work serially or in a thread pool, preserving order.
+
+    Spatial blocks are aligned to the Zarr chunk grid, so concurrent block
+    writes touch disjoint chunks (safe in zarr v3).  The heavy per-block work
+    (bottleneck nanmedian, NumPy copies, GDAL warps, codec compression)
+    releases the GIL, so threads give near-linear speedup without the memory
+    cost of extra worker processes.
+    """
+    if num_threads <= 1 or len(blocks) <= 1:
+        return [worker(i, ys, xs) for i, (ys, xs) in enumerate(blocks, 1)]
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=min(int(num_threads), len(blocks))) as ex:
+        futures = [
+            ex.submit(worker, i, ys, xs)
+            for i, (ys, xs) in enumerate(blocks, 1)
+        ]
+        return [f.result() for f in futures]
+
+
 def _begin_zarr_timestep_blockwise(
     g: zarr.Group,
     dt_ns: np.datetime64,
@@ -997,8 +1026,19 @@ def _begin_zarr_timestep_blockwise(
                 f"time ({t}); cannot append safely."
             )
         arr.resize((t + 1,) + arr.shape[1:])
-        arr[t, :, :] = np.nan
+        if not _fill_value_is_nan(arr):
+            # Legacy stores were created with fill_value=0, so the new slot
+            # must be NaN-initialised explicitly.  NaN-filled stores get the
+            # same semantics from resize alone, without writing any chunks.
+            arr[t, :, :] = np.nan
     return t, int(new_key)
+
+
+def _fill_value_is_nan(arr) -> bool:
+    try:
+        return bool(np.isnan(arr.fill_value))
+    except (TypeError, ValueError, AttributeError):
+        return False
 
 
 def _finalize_zarr_timestep_blockwise(
@@ -1146,9 +1186,11 @@ def _write_smonthly_month_zarr_blockwise_single_track(
     trim_fraction: float,
     tile_clip: bool,
     mgrs_tile_id: str,
+    num_threads: int = 1,
 ) -> tuple[list[int], dict[int, int]] | None:
     """Write one smonthly timestep for a single track in one blockwise pass."""
-    total_blocks = sum(1 for _ in _iter_spatial_blocks(height, width, chunk_y, chunk_x))
+    blocks = list(_iter_spatial_blocks(height, width, chunk_y, chunk_x))
+    total_blocks = len(blocks)
     logger.info(
         "Month %s blockwise: %d spatial blocks, 1 track, one-pass processing",
         month_str, total_blocks,
@@ -1169,46 +1211,46 @@ def _write_smonthly_month_zarr_blockwise_single_track(
     time_index, new_key = _begin_zarr_timestep_blockwise(g, dt_ns, band_names)
     logger.info("Month %s: One-pass - Writing single-track Zarr...", month_str)
 
-    block_num = 0
+    def _do_block(block_num, y_slice, x_slice):
+        if block_num % 4 == 0 or block_num == total_blocks:
+            logger.debug(
+                "  One-pass: Block %d/%d writing to Zarr",
+                block_num, total_blocks,
+            )
+
+        cvv = _track_composite_block(
+            track_indices, final_vv, prof_vv, height, width,
+            transform, target_crs, y_slice, x_slice,
+            composite_method, trim_fraction,
+            scene_bounds=bounds_vv,
+        )
+        if cvv is None:
+            return 0
+
+        cvh = _track_composite_block(
+            track_indices, final_vh, prof_vh, height, width,
+            transform, target_crs, y_slice, x_slice,
+            composite_method, trim_fraction,
+            scene_bounds=bounds_vh,
+        )
+        if cvh is None:
+            cvh = np.full_like(cvv, np.nan, dtype=np.float32)
+
+        block_bands = _make_smonthly_block_bands(
+            cvv, cvh,
+            copol_name, crosspol_name,
+            features_ratio, features_rvi,
+            ratio_name, rvi_name,
+        )
+        _apply_block_clip(block_bands, clip_geom, transform, y_slice, x_slice)
+        _write_smonthly_block_bands(
+            g, time_index, y_slice, x_slice, band_names, block_bands
+        )
+        return int(np.isfinite(cvv).sum())
+
     try:
-        for y_slice, x_slice in _iter_spatial_blocks(height, width, chunk_y, chunk_x):
-            block_num += 1
-            if block_num % 4 == 0 or block_num == total_blocks:
-                logger.debug(
-                    "  One-pass: Block %d/%d writing to Zarr",
-                    block_num, total_blocks,
-                )
-
-            cvv = _track_composite_block(
-                track_indices, final_vv, prof_vv, height, width,
-                transform, target_crs, y_slice, x_slice,
-                composite_method, trim_fraction,
-                scene_bounds=bounds_vv,
-            )
-            if cvv is None:
-                continue
-            track_cov[int(track_id)] += int(np.isfinite(cvv).sum())
-
-            cvh = _track_composite_block(
-                track_indices, final_vh, prof_vh, height, width,
-                transform, target_crs, y_slice, x_slice,
-                composite_method, trim_fraction,
-                scene_bounds=bounds_vh,
-            )
-            if cvh is None:
-                cvh = np.full_like(cvv, np.nan, dtype=np.float32)
-
-            block_bands = _make_smonthly_block_bands(
-                cvv, cvh,
-                copol_name, crosspol_name,
-                features_ratio, features_rvi,
-                ratio_name, rvi_name,
-            )
-            _apply_block_clip(block_bands, clip_geom, transform, y_slice, x_slice)
-            _write_smonthly_block_bands(
-                g, time_index, y_slice, x_slice, band_names, block_bands
-            )
-            del cvv, cvh, block_bands
+        coverages = _run_blocks(_do_block, blocks, num_threads)
+        track_cov[int(track_id)] += sum(coverages)
 
         if track_cov[int(track_id)] <= 0:
             _rollback_zarr_timestep_blockwise(g, time_index, band_names)
@@ -2497,6 +2539,14 @@ def _prepare_valid_clean_indices_for_monthly(
         ).astype(bool)
 
     valid_indices: set[int] = set()
+    # Per-scene master-grid footprints for windowed hole QC; the denominator
+    # stays the full tile so windowed fractions match the full-tile measure.
+    _scene_bounds_qc = _compute_scene_dst_bounds(
+        final_vv, prof_vv, transform, target_crs, height, width
+    )
+    _qc_denom = (
+        int(_tile_mask.sum()) if _tile_mask is not None else int(height) * int(width)
+    )
     _acq_iter = sorted(
         _acq_group_to_rows.items(),
         key=lambda kv: min(pd.Timestamp(r['acq_dt']).tz_convert('UTC') for r in kv[1])
@@ -2572,14 +2622,44 @@ def _prepare_valid_clean_indices_for_monthly(
                 continue
             logger.warning(_msg + " Writing with the gap (incomplete_acquisition=write).")
 
-        arr_vv_lin = _mosaic_align(
-            indices, final_vv, prof_vv, height, width, transform, target_crs
-        )
-        if arr_vv_lin is None:
-            logger.warning("Scene %s VV mosaic returned None, skipping", dt_str)
-            continue
-
-        _hole_frac = _interior_hole_fraction(np.isfinite(arr_vv_lin), _tile_mask)
+        # Hole QC needs only the finite mask of the acquisition mosaic, and
+        # interior holes are invariant under cropping to a window containing
+        # all the acquisition's valid pixels — so build the mask on the union
+        # bounding window instead of mosaicking the full tile per acquisition.
+        _acq_bounds = [_scene_bounds_qc[i] for i in indices]
+        if indices and all(b is not None for b in _acq_bounds):
+            _r0 = min(b[0] for b in _acq_bounds)
+            _r1 = max(b[1] for b in _acq_bounds)
+            _c0 = min(b[2] for b in _acq_bounds)
+            _c1 = max(b[3] for b in _acq_bounds)
+            if _r1 <= _r0 or _c1 <= _c0:
+                logger.warning("Scene %s footprint outside grid, skipping", dt_str)
+                continue
+            _y_sl, _x_sl = slice(_r0, _r1), slice(_c0, _c1)
+            _valid_mask = _track_valid_mask_block(
+                indices, final_vv, prof_vv, height, width,
+                transform, target_crs, _y_sl, _x_sl,
+                scene_bounds=_scene_bounds_qc,
+            )
+            if _valid_mask is None:
+                logger.warning("Scene %s VV mosaic returned None, skipping", dt_str)
+                continue
+            _win_tile_mask = (
+                _tile_mask[_y_sl, _x_sl] if _tile_mask is not None else None
+            )
+            _hole_frac = _interior_hole_fraction(
+                _valid_mask, _win_tile_mask, denom=_qc_denom
+            )
+        else:
+            # Unknown footprint(s): fall back to the full-tile mosaic
+            arr_vv_lin = _mosaic_align(
+                indices, final_vv, prof_vv, height, width, transform, target_crs
+            )
+            if arr_vv_lin is None:
+                logger.warning("Scene %s VV mosaic returned None, skipping", dt_str)
+                continue
+            _hole_frac = _interior_hole_fraction(np.isfinite(arr_vv_lin), _tile_mask)
+            del arr_vv_lin
         if _hole_frac > interior_hole_max_frac:
             if _network_missing:
                 _cause, _recover = "NETWORK", "re-run should fill it"
@@ -2615,12 +2695,10 @@ def _prepare_valid_clean_indices_for_monthly(
                         f"[yellow]      SKIP {_date_label}: {_detail} "
                         f"({_cause}) - not used for smonthly[/yellow]"
                     )
-                del arr_vv_lin
                 continue
             logger.warning(_msg + " Writing with the gap (incomplete_acquisition=write).")
 
         valid_indices.update(indices)
-        del arr_vv_lin
 
     return valid_indices
 
@@ -2655,6 +2733,7 @@ def _write_smonthly_month_zarr_blockwise(
     trim_fraction: float,
     tile_clip: bool,
     mgrs_tile_id: str,
+    num_threads: int = 1,
 ) -> tuple[list[int], dict[int, int]] | None:
     """Write one smonthly timestep block-by-block.
 
@@ -2700,10 +2779,12 @@ def _write_smonthly_month_zarr_blockwise(
             trim_fraction=trim_fraction,
             tile_clip=tile_clip,
             mgrs_tile_id=mgrs_tile_id,
+            num_threads=num_threads,
         )
 
     # Calculate total blocks for progress reporting
-    total_blocks = sum(1 for _ in _iter_spatial_blocks(height, width, chunk_y, chunk_x))
+    blocks = list(_iter_spatial_blocks(height, width, chunk_y, chunk_x))
+    total_blocks = len(blocks)
     n_tracks = len(track_items)
 
     logger.info(
@@ -2727,10 +2808,11 @@ def _write_smonthly_month_zarr_blockwise(
     # Pass 1: Compute track coverage.  Coverage only needs the count of finite
     # composite pixels, and that finite mask is just the union of the aligned
     # scenes' finite masks — no composites (and no VH work) are required here.
+    # Each block returns its own per-track counts (rather than mutating the
+    # shared dict/set directly) so the pass is safe to run on worker threads.
     logger.info("Month %s: Pass 1/2 - Computing track coverage...", month_str)
-    block_num = 0
-    for y_slice, x_slice in _iter_spatial_blocks(height, width, chunk_y, chunk_x):
-        block_num += 1
+
+    def _pass1_block(block_num, y_slice, x_slice):
         if block_num % 4 == 0 or block_num == total_blocks:
             logger.debug(
                 "  Pass 1: Block %d/%d [y=%d:%d, x=%d:%d]",
@@ -2738,6 +2820,7 @@ def _write_smonthly_month_zarr_blockwise(
                 y_slice.start or 0, y_slice.stop or 0,
                 x_slice.start or 0, x_slice.stop or 0,
             )
+        block_cov: dict[int, int] = {}
         for tk, tk_idxs in idx_by_track.items():
             vmask = _track_valid_mask_block(
                 tk_idxs, final_vv, prof_vv, height, width,
@@ -2746,9 +2829,13 @@ def _write_smonthly_month_zarr_blockwise(
             )
             if vmask is None:
                 continue
-            track_seen.add(int(tk))
-            track_cov[int(tk)] += int(vmask.sum())
-            del vmask
+            block_cov[int(tk)] = int(vmask.sum())
+        return block_cov
+
+    for block_cov in _run_blocks(_pass1_block, blocks, num_threads):
+        for tk, px in block_cov.items():
+            track_seen.add(tk)
+            track_cov[tk] += px
 
     if not track_seen:
         logger.warning("Month %s: no valid acquisitions, skipping", month_str)
@@ -2767,62 +2854,60 @@ def _write_smonthly_month_zarr_blockwise(
 
     time_index, new_key = _begin_zarr_timestep_blockwise(g, dt_ns, band_names)
     logger.info("Month %s: Pass 2/2 - Writing to Zarr...", month_str)
-    block_num = 0
+
+    def _pass2_block(block_num, y_slice, x_slice):
+        if block_num % 4 == 0 or block_num == total_blocks:
+            logger.debug(
+                "  Pass 2: Block %d/%d writing to Zarr",
+                block_num, total_blocks,
+            )
+        bh = int((y_slice.stop or 0) - (y_slice.start or 0))
+        bw = int((x_slice.stop or 0) - (x_slice.start or 0))
+        composite_vv_lin = np.full((bh, bw), np.nan, dtype=np.float32)
+        composite_vh_lin = np.full((bh, bw), np.nan, dtype=np.float32)
+        filled = np.zeros((bh, bw), dtype=bool)
+
+        for tk in track_order:
+            tk_idxs = idx_by_track.get(tk, [])
+            cvv = _track_composite_block(
+                tk_idxs, final_vv, prof_vv, height, width,
+                transform, target_crs, y_slice, x_slice,
+                composite_method, trim_fraction,
+                scene_bounds=bounds_vv,
+            )
+            if cvv is None:
+                continue
+            cvh = _track_composite_block(
+                tk_idxs, final_vh, prof_vh, height, width,
+                transform, target_crs, y_slice, x_slice,
+                composite_method, trim_fraction,
+                scene_bounds=bounds_vh,
+            )
+            if cvh is None:
+                cvh = np.full_like(cvv, np.nan, dtype=np.float32)
+
+            take = ~filled & np.isfinite(cvv)
+            if take.any():
+                composite_vv_lin[take] = cvv[take]
+                composite_vh_lin[take] = cvh[take]
+                filled |= take
+            del cvv, cvh
+            if filled.all():
+                break
+
+        block_bands = _make_smonthly_block_bands(
+            composite_vv_lin, composite_vh_lin,
+            copol_name, crosspol_name,
+            features_ratio, features_rvi,
+            ratio_name, rvi_name,
+        )
+        _apply_block_clip(block_bands, clip_geom, transform, y_slice, x_slice)
+        _write_smonthly_block_bands(
+            g, time_index, y_slice, x_slice, band_names, block_bands
+        )
+
     try:
-        for y_slice, x_slice in _iter_spatial_blocks(height, width, chunk_y, chunk_x):
-            block_num += 1
-            if block_num % 4 == 0 or block_num == total_blocks:
-                logger.debug(
-                    "  Pass 2: Block %d/%d writing to Zarr",
-                    block_num, total_blocks,
-                )
-            bh = int((y_slice.stop or 0) - (y_slice.start or 0))
-            bw = int((x_slice.stop or 0) - (x_slice.start or 0))
-            composite_vv_lin = np.full((bh, bw), np.nan, dtype=np.float32)
-            composite_vh_lin = np.full((bh, bw), np.nan, dtype=np.float32)
-            filled = np.zeros((bh, bw), dtype=bool)
-
-            for tk in track_order:
-                tk_idxs = idx_by_track.get(tk, [])
-                cvv = _track_composite_block(
-                    tk_idxs, final_vv, prof_vv, height, width,
-                    transform, target_crs, y_slice, x_slice,
-                    composite_method, trim_fraction,
-                    scene_bounds=bounds_vv,
-                )
-                if cvv is None:
-                    continue
-                cvh = _track_composite_block(
-                    tk_idxs, final_vh, prof_vh, height, width,
-                    transform, target_crs, y_slice, x_slice,
-                    composite_method, trim_fraction,
-                    scene_bounds=bounds_vh,
-                )
-                if cvh is None:
-                    cvh = np.full_like(cvv, np.nan, dtype=np.float32)
-
-                take = ~filled & np.isfinite(cvv)
-                if take.any():
-                    composite_vv_lin[take] = cvv[take]
-                    composite_vh_lin[take] = cvh[take]
-                    filled |= take
-                del cvv, cvh
-                if filled.all():
-                    break
-
-            block_bands = _make_smonthly_block_bands(
-                composite_vv_lin, composite_vh_lin,
-                copol_name, crosspol_name,
-                features_ratio, features_rvi,
-                ratio_name, rvi_name,
-            )
-            _apply_block_clip(block_bands, clip_geom, transform, y_slice, x_slice)
-            _write_smonthly_block_bands(
-                g, time_index, y_slice, x_slice, band_names, block_bands
-            )
-
-            del composite_vv_lin, composite_vh_lin, filled, block_bands
-
+        _run_blocks(_pass2_block, blocks, num_threads)
         _finalize_zarr_timestep_blockwise(g, time_index, new_key)
         logger.info(
             "Month %s: Pass 2/2 complete. Zarr timestep written successfully.",
@@ -3197,6 +3282,12 @@ def _write_smonthly_one_track(
     monthly_gen_png = monthly_cfg.get('generate_preview', generate_preview)
     composite_method = monthly_cfg.get('composite_method', 'median')
     trim_fraction = monthly_cfg.get('trim_fraction', 0.15)
+    # Spatial blocks are chunk-aligned, so concurrent block writes touch
+    # disjoint Zarr chunks; the per-block work (bottleneck nanmedian, NumPy
+    # copies, GDAL warps) releases the GIL. Defaults to 1 (serial, unchanged
+    # behaviour) since this adds CPU contention across the tile-level worker
+    # pool unless the operator opts in via monthly.blockwise_threads.
+    blockwise_threads = int(monthly_cfg.get('blockwise_threads', 1)) if monthly_cfg else 1
 
     # Blockwise path is safe for per-pixel compositing. Spatial-neighborhood
     # operations (despeckle, GLCM/texture, convolution, morphology) need halo or
@@ -3436,6 +3527,7 @@ def _write_smonthly_one_track(
                 trim_fraction=trim_fraction,
                 tile_clip=tile_clip,
                 mgrs_tile_id=mgrs_tile_id,
+                num_threads=blockwise_threads,
             )
             if blockwise_result is None:
                 continue
