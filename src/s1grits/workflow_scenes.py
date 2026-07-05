@@ -971,6 +971,27 @@ def _track_valid_mask_block(
     return mask
 
 
+def _resolve_blockwise_threads(value, max_workers: int = 1) -> int:
+    """Resolve the ``monthly.blockwise_threads`` setting to a thread count.
+
+    ``value`` is either a positive integer (used as-is) or the string
+    ``"auto"``, which divides the machine's CPU cores across the tile-level
+    process pool (``max_workers``) so the total thread count stays near the
+    core count.  BLAS/GDAL stay single-threaded via RuntimeLimits, so these
+    block threads do not oversubscribe through nested parallelism.  The auto
+    value is capped at 8 (block counts are small and returns flatten past
+    ~4-8 threads) and floored at 1.  Unparseable values fall back to 1.
+    """
+    if isinstance(value, str) and value.strip().lower() == "auto":
+        cpu = os.cpu_count() or 1
+        per_worker = max(1, cpu // max(1, int(max_workers)))
+        return min(per_worker, 8)
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return 1
+
+
 def _run_blocks(worker, blocks: list, num_threads: int) -> list:
     """Run per-block work serially or in a thread pool, preserving order.
 
@@ -3286,8 +3307,13 @@ def _write_smonthly_one_track(
     # disjoint Zarr chunks; the per-block work (bottleneck nanmedian, NumPy
     # copies, GDAL warps) releases the GIL. Defaults to 1 (serial, unchanged
     # behaviour) since this adds CPU contention across the tile-level worker
-    # pool unless the operator opts in via monthly.blockwise_threads.
-    blockwise_threads = int(monthly_cfg.get('blockwise_threads', 1)) if monthly_cfg else 1
+    # pool unless the operator opts in via monthly.blockwise_threads. The main
+    # workflow resolves "auto" to a concrete count before dispatch; this
+    # defensive resolve also handles direct/test callers passing "auto".
+    blockwise_threads = (
+        _resolve_blockwise_threads(monthly_cfg.get('blockwise_threads', 1))
+        if monthly_cfg else 1
+    )
 
     # Blockwise path is safe for per-pixel compositing. Spatial-neighborhood
     # operations (despeckle, GLCM/texture, convolution, morphology) need halo or
@@ -5093,6 +5119,22 @@ def run_scenes_workflow(config_path: str | Path, overrides: dict | None = None) 
     parallel_cfg = config.get('parallel', {})
     parallel_enabled = parallel_cfg.get('enabled', False)
     max_workers = parallel_cfg.get('max_workers', 2)
+
+    # Resolve monthly.blockwise_threads (int or "auto") once, up front, and
+    # write the concrete value back into the config so every tile worker —
+    # parallel (pickled copy) or serial (same dict) — receives the same count.
+    _monthly_cfg_ref = config.get('processing', {}).get('monthly')
+    if isinstance(_monthly_cfg_ref, dict) and 'blockwise_threads' in _monthly_cfg_ref:
+        _bw_raw = _monthly_cfg_ref['blockwise_threads']
+        _bw_workers = max_workers if parallel_enabled else 1
+        _monthly_cfg_ref['blockwise_threads'] = _resolve_blockwise_threads(
+            _bw_raw, _bw_workers
+        )
+        logger.info(
+            "smonthly blockwise threads: %s -> %d per tile worker "
+            "(tile workers=%d)",
+            _bw_raw, _monthly_cfg_ref['blockwise_threads'], _bw_workers,
+        )
 
     results: dict[str, dict] = {}
     all_catalogs: list[pd.DataFrame] = []

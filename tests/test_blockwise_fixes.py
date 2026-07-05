@@ -673,5 +673,33 @@ def test_threaded_blocks_match_serial_output(tmp_path):
     assert np.allclose(vh1, vh4, equal_nan=True)
 
 
+def test_resolve_blockwise_threads_integers():
+    assert ws._resolve_blockwise_threads(1) == 1
+    assert ws._resolve_blockwise_threads(4) == 4
+    assert ws._resolve_blockwise_threads("8") == 8
+    # Floors at 1 for zero/negative/garbage
+    assert ws._resolve_blockwise_threads(0) == 1
+    assert ws._resolve_blockwise_threads(-3) == 1
+    assert ws._resolve_blockwise_threads(None) == 1
+    assert ws._resolve_blockwise_threads("notanint") == 1
+
+
+def test_resolve_blockwise_threads_auto(monkeypatch):
+    monkeypatch.setattr(ws.os, "cpu_count", lambda: 16)
+    # Divides cores across the tile-worker pool
+    assert ws._resolve_blockwise_threads("auto", max_workers=2) == 8
+    assert ws._resolve_blockwise_threads("auto", max_workers=4) == 4
+    assert ws._resolve_blockwise_threads("AUTO", max_workers=8) == 2
+    # Caps at 8 even with many cores and a single worker
+    monkeypatch.setattr(ws.os, "cpu_count", lambda: 64)
+    assert ws._resolve_blockwise_threads("auto", max_workers=1) == 8
+    # Never returns 0 when workers exceed cores
+    monkeypatch.setattr(ws.os, "cpu_count", lambda: 4)
+    assert ws._resolve_blockwise_threads("auto", max_workers=16) == 1
+    # Unknown cpu_count degrades to 1
+    monkeypatch.setattr(ws.os, "cpu_count", lambda: None)
+    assert ws._resolve_blockwise_threads("auto", max_workers=2) == 1
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

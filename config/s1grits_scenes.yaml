@@ -247,6 +247,18 @@ processing:
     # Whether to generate PNG previews
     generate_preview: false
 
+    # Blockwise Zarr write parallelism (smonthly, non-GLCM path only).
+    # Spatial blocks are Zarr-chunk-aligned, so they are composited and
+    # written on a small thread pool with no change to output. Each tile
+    # worker (see parallel.max_workers) spawns this many block threads, so
+    # the effective thread count is parallel.max_workers * blockwise_threads.
+    #   1      : serial block loop (default, safest — no extra CPU contention)
+    #   4 / 8  : good on an idle box with spare cores; try 4 first
+    #   "auto" : divide CPU cores across the tile-worker pool (capped at 8)
+    # BLAS/GDAL stay single-threaded (see runtime limits), so these threads
+    # do not oversubscribe through nested parallelism.
+    blockwise_threads: 1
+
 # =============================================================================
 # LOGGING
 # =============================================================================
