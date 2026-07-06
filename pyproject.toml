@@ -7,7 +7,9 @@ name = "s1grits"
 version = "2.2.0"
 description = "S1-GRiTS: Sentinel-1 Gridded Radiometrically Terrain-Corrected gamma0 Monthly Composite Time Series"
 readme = "README.md"
-requires-python = ">=3.12,<3.13"
+# Pure-Python package (no compiled extensions), so it is no longer pinned to the
+# cp312 ABI. The <3.13 cap existed only for the old cp312-only .so/.pyd binaries.
+requires-python = ">=3.12"
 license = "Apache-2.0"
 authors = [
     {name = "ottoKae", email = "r1536803768@gmail.com"},
@@ -129,10 +131,6 @@ where = ["src"]
     # Static data files
     "data/*.parquet",
     "py.typed",
-    # Windows compiled extensions  (cp312-cp312-win_amd64)
-    "*.pyd",
-    # Linux compiled extensions    (cpython-312-x86_64-linux-gnu)
-    "*.so",
 ]
 "s1grits.analysis" = ["*.py"]
 "gui" = ["*.py"]

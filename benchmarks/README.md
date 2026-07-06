@@ -4,8 +4,8 @@ Read-only tooling to evaluate the scenes/blockwise workflow with **real runtime
 evidence** before making optimization changes. Nothing here is imported by the
 production workflow; these are diagnostics and reference fixtures.
 
-Run everything with the project's Python (the compiled `.so`/`.pyd` modules are
-cp312-only, so use a Python 3.12 environment).
+Run everything with the project's Python (a Python >=3.12 environment with the
+package installed via `pip install -e .`).
 
 ## Harnesses
 
