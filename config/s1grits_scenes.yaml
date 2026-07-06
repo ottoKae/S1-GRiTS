@@ -87,10 +87,22 @@ time:
 # =============================================================================
 output:
   base_dir: "../outputs"
-   # Whether to overwrite existing outputs (false = incremental-safe skip mode)
+  # Store-level policy for EXISTING Zarr stores:
+  #   false (incremental resume, recommended) — an existing store's locked grid
+  #         is adopted as this run's master grid, so a later run over a larger
+  #         time window (e.g. pilot month -> full year) appends new months onto
+  #         the same store. Nothing already written is deleted.
+  #   true  (rebuild mode) — this run derives a fresh burst-union grid from its
+  #         own window and DELETES + re-creates any existing store that is
+  #         incompatible with it (grid mismatch / missing bands). Compatible
+  #         stores are kept and appended to as usual.
   overwrite: false
 
-  # On time conflict: "skip" (keep existing) or "overwrite" (replace)
+  # Month-level policy when a month ALREADY EXISTS in a (compatible) store:
+  #   "skip"      — keep the existing month's composite, do not recompute
+  #   "overwrite" — delete that month's time step and rewrite it
+  # Applies to smonthly composites; per-acquisition scenes dedup by exact
+  # timestamp and are always skipped when already present.
   on_time_conflict: "skip"
 
   # ========================================================================

@@ -368,6 +368,7 @@ def _init_zarr_2band(
     chunk_x: int,
     processing_level: str,
     band_names: list[str] = None,
+    rebuild_on_mismatch: bool = False,
 ) -> zarr.Group:
     """
     Create (or open) a Zarr store with variable band support.
@@ -375,12 +376,18 @@ def _init_zarr_2band(
 
     Band names default to ["VV_dB", "VH_dB"] for backward compatibility.
     Additional bands (Ratio, RVI, GLCM) are created when specified.
+
+    ``rebuild_on_mismatch`` (wired from ``output.overwrite``) controls what
+    happens when a store exists but is incompatible with the requested grid or
+    band set: False (default) raises with recovery options; True deletes the
+    incompatible store and re-creates it fresh on the requested grid.
     """
     if band_names is None:
         band_names = ["VV_dB", "VH_dB"]
     zarr_path.parent.mkdir(parents=True, exist_ok=True)
 
     if zarr_path.exists():
+        _incompat: str | None = None
         try:
             g_check = zarr.open_group(str(zarr_path), mode='r', zarr_format=3)
             z_h = g_check['y'].shape[0]
@@ -388,29 +395,43 @@ def _init_zarr_2band(
 
             H, W = len(y_coords), len(x_coords)
             if H != z_h or W != z_w:
-                raise ValueError(
-                    f"Grid mismatch for {zarr_path}: "
-                    f"existing=({z_h},{z_w}) new=({H},{W}). "
-                    f"Delete the Zarr store or use a matching grid to re-run."
+                _incompat = (
+                    f"grid mismatch: existing=({z_h},{z_w}) new=({H},{W})"
                 )
-            g = zarr.open_group(str(zarr_path), mode='r+', zarr_format=3)
-            logger.info("[Zarr] Opened existing store (%d time steps), grid locked %dx%d",
-                        g['time'].shape[0], z_w, z_h)
-            # Validate that all expected band datasets exist
-            if band_names:
-                _missing = [b for b in band_names if b not in g]
+            else:
+                # Validate that all expected band datasets exist
+                _missing = [b for b in band_names if b not in g_check]
                 if _missing:
-                    raise RuntimeError(
-                        f"Cannot resume: existing Zarr at {zarr_path} is missing "
-                        f"band(s): {_missing}. Delete the store or use a different "
-                        f"output directory to add new bands."
-                    )
-            return g
+                    _incompat = f"missing band(s): {_missing}"
+            if _incompat is None:
+                g = zarr.open_group(str(zarr_path), mode='r+', zarr_format=3)
+                logger.info(
+                    "[Zarr] Opened existing store (%d time steps), grid locked %dx%d",
+                    g['time'].shape[0], z_w, z_h,
+                )
+                return g
         except (KeyError, ValueError) as e:
+            _incompat = f"unreadable or malformed store: {e}"
+
+        if rebuild_on_mismatch:
+            logger.warning(
+                "[Zarr] output.overwrite=true: rebuilding incompatible store "
+                "%s (%s). Existing time steps in this store are discarded.",
+                zarr_path, _incompat,
+            )
+            import shutil
+            shutil.rmtree(zarr_path)
+        else:
             raise RuntimeError(
-                f"Cannot resume: existing Zarr at {zarr_path} is incompatible. "
-                f"Delete it or use a new output directory. Detail: {e}"
-            ) from e
+                f"Cannot resume: existing Zarr at {zarr_path} is incompatible "
+                f"({_incompat}). A grid mismatch usually means the processing "
+                f"window changed (e.g. pilot month -> full year), so this run's "
+                f"burst-union master grid differs from the stored grid. "
+                f"Options: (1) rerun with output.overwrite=true to rebuild this "
+                f"store on the new grid, (2) delete this store to re-create it, "
+                f"or (3) use a fresh output.base_dir. Other tiles/stores are "
+                f"unaffected."
+            )
 
     # Fresh store
     g = zarr.open_group(str(zarr_path), mode='w', zarr_format=3)
@@ -451,6 +472,63 @@ def _init_zarr_2band(
     add_cf_grid_mapping(g, str(target_crs))
 
     return g
+
+
+def _adopt_existing_master_grid(
+    tile_dir: Path,
+    target_crs: str,
+    target_res: float,
+) -> tuple | None:
+    """Reuse the grid locked into an existing product store for this tile.
+
+    The burst-union master grid depends on the processing window (and on which
+    scenes actually downloaded in the run's first batch), so a rerun over a
+    different window (pilot month -> full year) derives a different H x W and
+    would fail the store's grid-lock check. On resume (output.overwrite=false)
+    we instead adopt the grid already locked into an existing store: it is
+    itself a previous burst union (so support-before-clip is preserved), and
+    both grids live on the same ``target_res``-aligned lattice
+    (``_build_grid_from_bursts`` floor/ceil-snaps bounds), so aligning new
+    scenes onto it is an exact crop/pad with no resampling shift.
+
+    Returns ``(transform, width, height, x_coords, y_coords)`` from the first
+    readable store whose CRS and resolution match, or ``None`` when there is
+    nothing to adopt (fresh tile, or CRS/resolution changed — in which case the
+    caller derives a fresh burst-union grid as before).
+    """
+    stores = sorted(tile_dir.glob('smonthly_*/zarr/*.zarr')) + \
+        sorted(tile_dir.glob('scenes_*/zarr/*.zarr'))
+    for zp in stores:
+        try:
+            g = zarr.open_group(str(zp), mode='r', zarr_format=3)
+            crs = g.attrs.get('crs')
+            tfm = g.attrs.get('transform')
+            if crs is None or tfm is None:
+                continue
+            if str(crs).upper() != str(target_crs).upper():
+                logger.info(
+                    "[Grid] Not adopting %s: CRS %s != target %s",
+                    zp.name, crs, target_crs,
+                )
+                continue
+            transform = Affine(*[float(v) for v in tfm[:6]])
+            if abs(transform.a - float(target_res)) > 1e-6 or \
+                    abs(-transform.e - float(target_res)) > 1e-6:
+                logger.info(
+                    "[Grid] Not adopting %s: resolution (%.3f, %.3f) != target %.3f",
+                    zp.name, transform.a, -transform.e, target_res,
+                )
+                continue
+            x_coords = np.asarray(g['x'][:], dtype='float64')
+            y_coords = np.asarray(g['y'][:], dtype='float64')
+            if x_coords.size == 0 or y_coords.size == 0:
+                continue
+            return transform, int(x_coords.size), int(y_coords.size), \
+                x_coords, y_coords
+        except Exception as exc:
+            logger.debug("[Grid] Could not read %s for grid adoption: %s", zp, exc)
+            continue
+    return None
 
 
 def _zarr_append(g: "zarr.Group", var_name: str, data: "np.ndarray") -> None:
@@ -2000,6 +2078,7 @@ def _write_scenes_output(
     incomplete_policy: str = "skip",
     incomplete_sink: list | None = None,
     interior_hole_max_frac: float = 0.005,
+    rebuild_on_mismatch: bool = False,
 ) -> list[dict]:
     """
     Write per-acquisition-group scene products.
@@ -2299,6 +2378,7 @@ def _write_scenes_output(
             transform, chunk_y, chunk_x,
             processing_level=f"scenes_{despeckle_method if do_despeckle else 'ARDC'}",
             band_names=_band_names,
+            rebuild_on_mismatch=rebuild_on_mismatch,
         )
         # Write variant metadata to Zarr root attrs (idempotent)
         _g_group.attrs['processing_signature'] = _scenes_sig
@@ -3498,6 +3578,7 @@ def _write_smonthly_one_track(
     restrict_to_group: bool = False,
     valid_clean_indices: set[int] | None = None,
     spatial_filter_legacy: bool = False,
+    rebuild_on_mismatch: bool = False,
 ) -> list[dict]:
     """
     Compute monthly composites for ONE acquisition-group track and write
@@ -3570,6 +3651,7 @@ def _write_smonthly_one_track(
         transform, chunk_y, chunk_x,
         processing_level=f"monthly_{processing_level}",
         band_names=_band_names,
+        rebuild_on_mismatch=rebuild_on_mismatch,
     )
     g.attrs['product_type'] = 'smonthly'
     g.attrs['time_varying'] = True
@@ -4211,6 +4293,7 @@ def _write_monthly_output_scenes(
     rvi_name: str = "RVI",
     valid_clean_indices: set[int] | None = None,
     spatial_filter_legacy: bool = False,
+    rebuild_on_mismatch: bool = False,
 ) -> list[dict]:
     """
     Write per-track smonthly composites for one tile/direction batch.
@@ -4253,6 +4336,7 @@ def _write_monthly_output_scenes(
             restrict_to_group=restrict_to_group,
             valid_clean_indices=valid_clean_indices,
             spatial_filter_legacy=spatial_filter_legacy,
+            rebuild_on_mismatch=rebuild_on_mismatch,
         )
 
     # No track metadata -> single untracked product (df_track=None so the inner
@@ -4416,10 +4500,14 @@ def process_single_scenes_tile(
         overwrite = config.get('output', {}).get('overwrite', False)
 
         # Incremental update: when Zarr already exists and overwrite=false,
-        # we still process the tile normally — existing Zarr is opened in r+
-        # mode and existing_times dedup prevents re-writing old data.
-        # Only new acquisitions are appended; COG/STAC items are re-written
-        # (deterministic, same data → same output).
+        # we still process the tile normally — the existing store's locked grid
+        # is adopted as this run's master grid (see _adopt_existing_master_grid),
+        # the store is opened in r+ mode, and existing time-step dedup prevents
+        # re-writing old data. Only new acquisitions/months are appended;
+        # on_time_conflict decides skip-vs-replace for a month that already
+        # exists. overwrite=true instead derives a fresh burst-union grid from
+        # the current window and REBUILDS any store that is incompatible with
+        # it (grid mismatch / missing bands), discarding that store's contents.
         # The per-tile catalog reads existing records before writing (see below).
 
         # Processing config
@@ -4665,6 +4753,27 @@ def process_single_scenes_tile(
         _grid_built = False
         _master_transform = _master_width = _master_height = None
         _master_x_coords = _master_y_coords = None
+        # Resume-grid adoption: when this tile already has product stores from
+        # a previous run and overwrite=false (incremental mode), reuse their
+        # locked grid as this run's master grid instead of re-deriving it from
+        # the current window's burst union. This is what makes a pilot-month
+        # store extensible to a full-year rerun: the burst-union grid varies
+        # with the window, and a mismatched grid would otherwise fail the
+        # store's grid-lock check. With overwrite=true the run keeps its fresh
+        # burst-union grid and rebuilds any store that disagrees with it.
+        if not overwrite:
+            _adopted = _adopt_existing_master_grid(
+                tile_dir, target_crs, target_res
+            )
+            if _adopted is not None:
+                (_master_transform, _master_width, _master_height,
+                 _master_x_coords, _master_y_coords) = _adopted
+                _grid_built = True
+                logger.info(
+                    "[Grid] Resuming on existing store grid %dx%d for %s "
+                    "(grid locked); new acquisitions are aligned onto it",
+                    _master_width, _master_height, mgrs_tile_id,
+                )
         _metadata_prefilter = monthly_only and monthly_enabled and not write_scenes
         # Default path downloads VV/VH concurrently. The old VV-first branch is
         # intentionally off by default because clean tiles rarely save VH
@@ -5005,6 +5114,7 @@ def process_single_scenes_tile(
                     incomplete_policy=incomplete_policy,
                     incomplete_sink=_incomplete_acqs,
                     interior_hole_max_frac=interior_hole_max_frac,
+                    rebuild_on_mismatch=overwrite,
                 )
                 all_scenes_records.extend(scenes_recs)
                 if monthly_enabled:
@@ -5132,6 +5242,7 @@ def process_single_scenes_tile(
                         rvi_name=rvi_name,
                         valid_clean_indices=valid_clean_indices,
                         spatial_filter_legacy=smonthly_spatial_legacy,
+                        rebuild_on_mismatch=overwrite,
                     )
                 all_monthly_records.extend(monthly_recs)
 
