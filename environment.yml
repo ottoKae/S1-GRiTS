@@ -3,6 +3,9 @@ channels:
   - conda-forge
 
 dependencies:
+  # Pinned to 3.12 in lockstep with pyproject.toml requires-python (">=3.12,<3.13").
+  # The geoscience stack (GDAL/rasterio/fiona, geopandas, pyproj, shapely) only has
+  # reliable conda-forge/wheel builds for this range; newer CPython often lacks them.
   - python=3.12
   - pip
 
