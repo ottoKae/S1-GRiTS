@@ -18,7 +18,7 @@
     <img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" />
   </a>
   <a href="https://github.com/ottoKae/S1-GRiTS">
-    <img src="https://img.shields.io/badge/version-2.2.0-orange.svg" />
+    <img src="https://img.shields.io/badge/version-2.3.0-orange.svg" />
   </a>
 </p>
 
@@ -213,9 +213,12 @@ s1grits-gui  # Launch at http://localhost:8501
 pip install "s1grits[all]"
 ```
 
-### Step 2: Earthdata Authentication
+### Step 2: Earthdata Authentication (optional)
 
-All ASF downloads require NASA Earthdata credentials. Set up `.netrc` authentication once.
+**The production workflows do not require credentials**: OPERA RTC-S1 burst
+metadata (CMR) and downloads (ASF CDN) are public, and `s1grits doctor`
+reports credential status accordingly. Set up `.netrc` only if you extend
+the pipeline to restricted ASF datasets.
 
 **2.1 Register Account**
 
@@ -271,6 +274,23 @@ time:
 output:
   base_dir: "./output"
 ```
+
+### Step 3.5: Validate before long runs — `s1grits doctor`
+
+```bash
+s1grits doctor --config config/s1grits_scenes.yaml            # fast, offline
+s1grits doctor --config config/s1grits_scenes.yaml --network  # + ASF reachability
+```
+
+`doctor` finds in seconds the problems that would otherwise kill a multi-hour
+run midway: broken geospatial imports (rasterio/GDAL, zarr, cv2; missing
+`osgeo` is a warning with a conda-forge hint), invalid or misplaced config
+keys and output policies (including deprecated v2 keys), unwritable output /
+burst-cache directories, insufficient disk space (per the `preflight.disk`
+policy), tiles whose existing Zarr stores sit on inconsistent grids, and a
+RAM/CPU sanity check against the resolved worker counts. Exit code 0 means no
+hard failures (warnings don't fail). Run it after editing a config and before
+every long or production run.
 
 ### Step 4: Run
 
@@ -613,6 +633,7 @@ workflow: "static"
 output:
   base_dir: "./output_static"   # Separate directory recommended
   overwrite: false              # Skip if outputs exist
+                                # (legacy workflow: uses the v2 key natively)
 ```
 
 #### Available Static Layers
@@ -1145,15 +1166,31 @@ WARNING  Clipping end date from 2026-12-31 to 2026-03-31 (last fully completed m
 ```yaml
 output:
   base_dir: "./output"   # Output root (subdirectory structure auto-created)
-  overwrite: false       # false: skip existing outputs (incremental-safe)
-                         # true:  re-process and replace existing products
-  on_time_conflict: "skip"   # "skip" or "overwrite" (scenes workflow only)
-  
+
+  # v3 output policies (scenes workflow) — store level vs month level:
+  existing_store: "resume"   # "resume": adopt an existing store's locked grid
+                             #           and append (incremental, default)
+                             # "rebuild-incompatible": rebuild any store whose
+                             #           grid/bands are incompatible; compatible
+                             #           stores are still resumed, never wiped
+  existing_month: "skip"     # "skip": keep an already-written month
+                             # "overwrite": delete + recompute that month
+
   formats:
     cog: true            # Generate COG files (optional)
     preview: true        # Generate preview PNGs (optional)
                          # Note: Zarr is ALWAYS generated (cannot be disabled)
+
+preflight:
+  disk:
+    mode: "warn"         # warn | fail | off — checked BEFORE downloads start
+    min_free_gb: 50
 ```
+
+> **Deprecated v2 keys** — `output.overwrite` (== `existing_store:
+> rebuild-incompatible` when true) and `output.on_time_conflict` (==
+> `existing_month`) are still accepted with a deprecation warning; explicit
+> v3 keys win. The legacy monthly/static workflows use `overwrite` natively.
 
 > **Important — Zarr Band Schema is Fixed at Creation**
 >
@@ -1163,7 +1200,7 @@ output:
 > - Zarr created with `features_ratio: true, features_rvi: true` → **4 bands** (VV_dB, VH_dB, Ratio, RVI)
 > - Zarr created with `features_glcm: true` → **12 bands** (4 core + 8 GLCM texture)
 >
-> `overwrite: true` re-processes existing months **within existing schema** — it does NOT change band count.
+> `existing_month: "overwrite"` re-processes existing months **within the existing schema** — it does NOT change band count.
 >
 > **To add GLCM bands to existing 4-band Zarr:**
 > You must use a **separate output directory**:
@@ -1180,12 +1217,18 @@ output:
 ```yaml
 parallel:
   enabled: true
-  max_workers: 4         # Concurrent MGRS tiles
-                         # Recommended: ≤16GB RAM: 2 | 32GB: 4 | ≥64GB: 6-8
+  max_workers: 4         # Concurrent MGRS tiles; "auto" sizes from CPU cores
+                         # and RAM / the ~12 GB blockwise per-tile working set.
+                         # Manual guide: ≤16GB RAM: 2 | 32GB: 4 | ≥64GB: 6-8
 
 memory:
-  max_memory_gb: 'auto'  # 'auto' = auto-detect | number = manual override (GB)
-  batch_strategy: 'auto' # auto | yearly | quarterly | monthly
+  max_memory_gb: 'auto'  # RAM assumed by the 'auto' batch estimator ('auto' =
+                         # detect via psutil). NOT a hard cap; ignored when
+                         # batch_strategy is set explicitly.
+  batch_strategy: 'auto' # auto | yearly | quarterly | monthly. An explicit
+                         # value is honored as-is, including in parallel mode
+                         # (the per-worker RAM budget only tunes 'auto').
+  burst_cache_dir: null  # Optional on-disk burst cache shared across tiles/runs
   max_download_workers: 4
   scene_retry_timeout_seconds: 600   # Per-scene retry budget
   batch_max_retries: 2               # Batch-level retry count
@@ -1285,9 +1328,11 @@ processing:
     composite_method: "nanmedian"
     generate_cog: true
     generate_preview: true
-  
-  on_time_conflict: "skip"         # "skip" or "overwrite"
 ```
+
+> Month skip-vs-recompute is controlled by `output.existing_month`, **not** a
+> processing-level key — a `processing.on_time_conflict` entry is ignored and
+> the workflow warns if it finds one.
 
 **Scenes Workflow Feature Bands:**
 
@@ -1309,6 +1354,7 @@ Based on `features_*` toggles, output bands vary:
 output:
   base_dir: "./output_static"      # Separate directory recommended
   overwrite: false                 # Skip if outputs already exist
+                                   # (legacy workflow: uses the v2 key natively)
 ```
 
 Static layers generated:
@@ -1404,6 +1450,7 @@ S1-GRiTS provides **10+ commands** covering the full workflow: processing, catal
 | `s1grits process_scenes` | Per-acquisition scene outputs | Scenes |
 | `s1grits process_static` | Time-invariant static layers | Static |
 | `s1grits catalog resync` | Rebuild catalog + STAC from filesystem (no re-processing) | All |
+| `s1grits doctor` | Preflight: environment, config, disk, store-grid consistency, resource plan (`--config`, `--network`) | All |
 | `s1grits catalog doctor` | Check catalog/STAC/Zarr consistency (`--strict` to fail on warnings) | All |
 | `s1grits catalog validate` | Validate catalog schema & STAC Item alignment | All |
 | `s1grits catalog inspect` | Global coverage summary | All |
@@ -3045,7 +3092,7 @@ A: S1-GRiTS groups bursts by **(orbit_pass, track_number, frame_number)** to ens
 
 A: **No.** The Zarr band dimension is **fixed at creation time** and cannot be expanded in-place.
 
-`overwrite: true` re-processes existing months **within the existing schema** — it does not change band count.
+`existing_month: "overwrite"` re-processes existing months **within the existing schema** — it does not change band count.
 
 **Solution:** To add GLCM bands, use a **separate output directory**:
 ```yaml
@@ -3283,7 +3330,7 @@ GitHub: https://github.com/ottoKae/S1-GRiTS
   author       = {KaeRao},
   title        = {S1-GRiTS: Sentinel-1 Gridded RTC Time Series Data Cube},
   year         = {2026},
-  version      = {2.1.0},
+  version      = {2.3.0},
   url          = {https://github.com/ottoKae/S1-GRiTS},
   note         = {A companion paper is under review}
 }
