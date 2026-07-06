@@ -15,6 +15,11 @@ dependencies:
   - rioxarray
   - pyproj
   - shapely
+  # GDAL Python bindings (osgeo). rasterio bundles libgdal but NOT the `osgeo`
+  # module; the mosaic / mosaic_scenes commands import `from osgeo import gdal`
+  # (VRT/COG multi-tile mosaicking). conda-forge pins gdal and rasterio to the
+  # same libgdal, so install gdal here rather than via pip.
+  - gdal
 
   # Array / data stack
   - numpy
@@ -53,8 +58,10 @@ dependencies:
   - ipywidgets
 
   # PyPI package names needed by pyproject.toml.
+  # headless OpenCV: no GUI functions are used and the GUI-linked wheel
+  # needs libGL, which breaks on headless servers.
   - pip:
-      - opencv-python>=4.10.0.84
+      - opencv-python-headless>=4.10.0.84
 
   # NOTE: After creating this environment, install s1grits manually:
   #   pip install -e .   (editable mode, run from project root)

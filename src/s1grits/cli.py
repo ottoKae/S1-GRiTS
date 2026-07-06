@@ -2,10 +2,9 @@
 CLI with subcommands structure
 
 Provides a professional CLI interface with subcommands:
-- s1grits process          --config config.yaml
-- s1grits process_ablation --config config_experience/s1grits_ablation_template.yaml
-- s1grits process_static   --config config.yaml
-- s1grits process_normal40 --config config_experience/s1grits_normal_config.yaml
+- s1grits process          --config config.yaml   (monthly composite workflow)
+- s1grits process_scenes   --config config.yaml   (per-pass scenes + smonthly)
+- s1grits process_static   --config config.yaml   (static geometry layers)
 - s1grits catalog  resync   --output-dir ./output
 - s1grits catalog  validate --output-dir ./output
 - s1grits catalog  inspect  --output-dir ./output
@@ -21,6 +20,7 @@ from rich.console import Console
 from rich.table import Table
 import rioxarray  # Register .rio accessor for xarray
 
+from s1grits.__version__ import __version__
 from s1grits.logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -128,13 +128,80 @@ def print_summary(results: dict):
                 f"  [dim]drop  {_mid} TK{str(_tok).replace('_','-')}: "
                 f"{(_frac or 0)*100:.1f}% of tile[/dim]"
             )
-        for _mid, _tok, _dt, _ld, _ex, _cause in _inc_rows[:20]:
+        # Group by (tile, track, cause): a systematic gap (e.g. ASF permanently
+        # missing 2 bursts of a track for a year) is one operational fact, not
+        # hundreds of console lines. Full per-acquisition detail stays in each
+        # tile's processing_report.json.
+        _grouped: dict[tuple, list] = {}
+        for _mid, _tok, _dt, _ld, _ex, _cause in _inc_rows:
+            _grouped.setdefault((_mid, _tok, _cause), []).append((_dt, _ld, _ex))
+        for (_mid, _tok, _cause), _rows in sorted(_grouped.items()):
+            _dates = sorted(str(r[0]) for r in _rows)
+            _span = _dates[0] if len(_dates) == 1 else f"{_dates[0]} → {_dates[-1]}"
+            _worst = min((r[1] or 0) for r in _rows)
+            _exp = _rows[0][2]
             console.print(
-                f"  [dim]incomplete {_mid} TK{str(_tok).replace('_','-')} {_dt}: "
-                f"{_ld}/{_ex} bursts ({_cause})[/dim]"
+                f"  [dim]incomplete {_mid} TK{str(_tok).replace('_','-')} "
+                f"({_cause}): {len(_rows)} acquisition(s), {_span}, "
+                f"worst {_worst}/{_exp} bursts[/dim]"
             )
 
     console.rule(style="blue")
+
+
+def write_run_summary(
+    results: dict,
+    base_dir,
+    *,
+    duration_seconds: float | None = None,
+    config_path: str | None = None,
+):
+    """Write a machine-readable run summary JSON next to the global catalog.
+
+    One document per run (``run_summary.json``, overwritten): per-tile status,
+    months written, error text, plus data-quality counters — the fields a
+    pipeline needs to decide "retry / alert / proceed" without scraping the
+    Rich console output. Returns the path, or None when it cannot be written
+    (never fails the run over a summary file).
+    """
+    import json
+    from datetime import datetime, timezone
+    try:
+        tiles = {}
+        for mid, r in sorted(results.items()):
+            tiles[mid] = {
+                "status": r.get("status"),
+                "months_written": sorted(r.get("written_months") or []),
+                "n_months": len(r.get("written_months") or []),
+                "scenes_written": r.get("written_scenes"),
+                "tile_dir": r.get("tile_dir"),
+                "error": r.get("error"),
+                "dropped_tracks": r.get("dropped_tracks") or [],
+                "n_incomplete_acquisitions": len(
+                    r.get("incomplete_acquisitions") or []
+                ),
+            }
+        doc = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "s1grits_version": __version__,
+            "config_path": config_path,
+            "duration_seconds": duration_seconds,
+            "n_tiles": len(results),
+            "n_success": sum(
+                1 for r in results.values() if r.get("status") == "success"
+            ),
+            "n_failed": sum(
+                1 for r in results.values() if r.get("status") == "failed"
+            ),
+            "tiles": tiles,
+        }
+        out = Path(base_dir) / "run_summary.json"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+        return out
+    except Exception as _e:
+        logger.debug("Could not write run_summary.json: %s", _e)
+        return None
 
 
 def _add_output_flags(parser):
@@ -540,6 +607,28 @@ def cmd_tile_inspect(args):
     sys.exit(0)
 
 
+def _import_gdal():
+    """Import osgeo.gdal with an actionable error when it is missing.
+
+    rasterio bundles libgdal but NOT the ``osgeo`` python bindings, and pip
+    has no reliable osgeo wheels — conda-forge is the supported install path.
+    """
+    try:
+        from osgeo import gdal
+        return gdal
+    except ImportError as exc:
+        console.print(
+            "[red]ERROR: the 'osgeo' GDAL python bindings are not installed. "
+            "The mosaic/mosaic_scenes commands need them for VRT/COG "
+            "building.\n"
+            "Install via conda-forge (pip has no osgeo wheels):\n"
+            "    conda install -c conda-forge gdal\n"
+            "or create the full environment: conda env create -f "
+            "environment.yml[/red]"
+        )
+        raise SystemExit(1) from exc
+
+
 def cmd_mosaic(args):
     """Create a multi-tile mosaic VRT or COG for a given month"""
     from s1grits.analysis import create_mosaic_vrt, find_cog_files_for_mosaic
@@ -596,6 +685,17 @@ def cmd_mosaic(args):
         import traceback
         traceback.print_exc()
         sys.exit(1)
+
+
+def cmd_doctor(args):
+    """Environment + config health check; exit 0 iff no hard failure."""
+    from s1grits.doctor import run_doctor, format_results
+
+    exit_code, results = run_doctor(
+        config_path=args.config, network=args.network
+    )
+    print(format_results(results))
+    sys.exit(exit_code)
 
 
 def cmd_process_scenes(args):
@@ -656,6 +756,15 @@ def cmd_process_scenes(args):
             out_root = str(Path(r['tile_dir']).parent)
             console.print(f"\n[bold]Output:[/bold] {out_root}")
             break
+
+    # Machine-readable run summary for pipeline integration/monitoring.
+    _summary_path = write_run_summary(
+        results, config.get('output', {}).get('base_dir', '.'),
+        duration_seconds=duration.total_seconds(),
+        config_path=str(config_path),
+    )
+    if _summary_path:
+        console.print(f"[dim]Run summary: {_summary_path}[/dim]")
 
     logger.info("Scenes workflow completed in %s", duration)
     console.print(f"\nTotal time: [bold]{duration}[/bold]")
@@ -795,7 +904,7 @@ def cmd_mosaic_scenes(args):
 
         if args.format == 'cog':
             # Full reproject to target CRS
-            from osgeo import gdal
+            gdal = _import_gdal()
             ref_crs = args.crs if hasattr(args, 'crs') else 'EPSG:4326'
             vrt_path = str(out_path.with_suffix('.vrt'))
             gdal.BuildVRT(vrt_path, cog_files)
@@ -809,7 +918,7 @@ def cmd_mosaic_scenes(args):
             )
         else:
             # VRT (fast, no reprojection)
-            from osgeo import gdal
+            gdal = _import_gdal()
             gdal.BuildVRT(str(out_path), cog_files)
             console.print(
                 f"[green]INFO   VRT created: {out_path}[/green]"
@@ -827,12 +936,10 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''\
 Examples:
-  # Run processing workflows
-  s1grits process          --config config.yaml
-  s1grits process_ablation --config config_experience/s1grits_ablation_template.yaml
-  s1grits process_static   --config config.yaml
-  s1grits process_normal40 --config config_experience/s1grits_normal_config.yaml
-  s1grits process_scenes   --config config_scenes.yaml
+  # Run processing workflows (three products)
+  s1grits process          --config config/s1grits_monthly.yaml   # monthly composites
+  s1grits process_scenes   --config config/s1grits_scenes.yaml    # per-pass scenes + smonthly
+  s1grits process_static   --config config/s1grits_static.yaml    # static geometry layers
 
   # Catalog management (resync rebuilds catalog.parquet + STAC from disk)
   s1grits catalog resync   --output-dir ./output
@@ -856,27 +963,29 @@ Examples:
         '''
     )
 
-    parser.add_argument('--version', action='version', version='s1grits 1.0.0')
+    parser.add_argument(
+        '--version', action='version', version=f's1grits {__version__}'
+    )
 
-    subparsers = parser.add_subparsers(dest='command', help='Available commands')
+    # metavar hides argparse's auto-generated "{cmd1,cmd2,...}" brace list, which
+    # would otherwise expose SUPPRESS-hidden aliases (e.g. process_monthly). The
+    # per-command help lines below still list every non-suppressed command.
+    subparsers = parser.add_subparsers(
+        dest='command', metavar='<command>', help='Available commands'
+    )
 
     # ── process ──────────────────────────────────────────────────────────────
+    # `process_monthly` is a back-compat alias: argparse accepts it but does not
+    # list it as a separate command, so the production help stays minimal while
+    # existing scripts/docs that call `process_monthly` keep working.
     parser_process = subparsers.add_parser(
         'process',
-        help='Run the full processing workflow from a YAML config'
+        aliases=['process_monthly'],
+        help='Run the monthly composite workflow from a YAML config'
     )
     parser_process.add_argument('--config', required=True, help='Path to YAML config file')
     _add_output_flags(parser_process)
     parser_process.set_defaults(func=cmd_process)
-
-    # ── process_monthly (alias for process) ─────────────────────────────────
-    parser_monthly = subparsers.add_parser(
-        'process_monthly',
-        help='Run the legacy monthly composite workflow (alias for process)'
-    )
-    parser_monthly.add_argument('--config', required=True, help='Path to YAML config file')
-    _add_output_flags(parser_monthly)
-    parser_monthly.set_defaults(func=cmd_process)
 
     # ── process_static ───────────────────────────────────────────────────────
     parser_static = subparsers.add_parser(
@@ -992,6 +1101,21 @@ Examples:
         help='Filter tiles by MGRS prefix (e.g., 50R includes 50RKU, 50RKV, …)'
     )
     parser_mosaic.set_defaults(func=cmd_mosaic)
+
+    # ── doctor ────────────────────────────────────────────────────────────────
+    parser_doctor = subparsers.add_parser(
+        'doctor',
+        help='Check environment, config, disk, and resource plan before a run'
+    )
+    parser_doctor.add_argument(
+        '--config', default=None,
+        help='YAML config to validate (schema, policies, paths, workers)'
+    )
+    parser_doctor.add_argument(
+        '--network', action='store_true',
+        help='Also check ASF/CMR reachability (needs internet)'
+    )
+    parser_doctor.set_defaults(func=cmd_doctor)
 
     # ── process_scenes ────────────────────────────────────────────────────────
     parser_scenes = subparsers.add_parser(

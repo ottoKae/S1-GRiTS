@@ -87,11 +87,34 @@ time:
 # =============================================================================
 output:
   base_dir: "../outputs"
-   # Whether to overwrite existing outputs (false = incremental-safe skip mode)
-  overwrite: false
 
-  # On time conflict: "skip" (keep existing) or "overwrite" (replace)
-  on_time_conflict: "skip"
+  # ---- v3 output policies: store level vs month level, explicitly split ----
+  #
+  # STORE level — what to do with a whole existing Zarr store:
+  #   "resume"               (default, incremental) — adopt the store's locked
+  #                          grid as this run's master grid and append. A later
+  #                          run over a larger window (pilot month -> full
+  #                          year) extends the same store; nothing is deleted.
+  #                          An incompatible store (changed CRS/resolution)
+  #                          fails with recovery options.
+  #   "rebuild-incompatible" — adopt the grid backing the MOST data (or derive
+  #                          a fresh burst-union grid on a fresh tile), then
+  #                          DELETE + re-create any store incompatible with it
+  #                          (e.g. a stray store left by an interrupted run on
+  #                          a different grid). Compatible stores are still
+  #                          resumed, never wiped.
+  existing_store: "resume"
+
+  # MONTH level — when a month ALREADY EXISTS in a (compatible) store:
+  #   "skip"      — keep the existing month's composite, do not recompute
+  #   "overwrite" — delete that month's time step and rewrite it
+  # Applies to smonthly composites; per-acquisition scenes dedup by exact
+  # timestamp and are always skipped when already present.
+  existing_month: "skip"
+
+  # (Deprecated v2 aliases still accepted with a warning:
+  #  overwrite: true  == existing_store: "rebuild-incompatible"
+  #  on_time_conflict == existing_month)
 
   # ========================================================================
   # STAC generation
@@ -108,6 +131,18 @@ output:
     cog: false        # Optional: per-acquisition GeoTIFF exports
     preview: false    # Optional: PNG visualization exports
     # zarr is NOT listed here — it is always produced regardless
+
+# =============================================================================
+# PREFLIGHT CHECKS (run before downloads begin)
+# =============================================================================
+preflight:
+  disk:
+    # What to do when free space on the output volume is below min_free_gb:
+    #   "warn" (default) — log a warning and continue
+    #   "fail"           — abort the run before any download starts
+    #   "off"            — skip the check
+    mode: "warn"
+    min_free_gb: 50
 
 # =============================================================================
 # QUERY ROBUSTNESS (ASF CMR metadata search)
@@ -262,8 +297,8 @@ processing:
     kwargs:
       reg_param: 5.0
 
-  # On time conflict: "skip" or "overwrite"
-  on_time_conflict: "skip"
+  # NOTE: on_time_conflict lives under `output:`, not here. A processing-level
+  # on_time_conflict key is ignored by the code (the workflow warns if found).
 
   # Incomplete-acquisition policy. Normal "edge truncation" (a data-take ending
   # a burst or two short along-track) is ALWAYS kept — only an INTERIOR NoData

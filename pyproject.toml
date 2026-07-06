@@ -1,10 +1,12 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+# setuptools>=77 for PEP 639 SPDX license expressions (license = "..." string
+# + license-files).
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "s1grits"
-version = "2.2.0"
+version = "2.3.0"
 description = "S1-GRiTS: Sentinel-1 Gridded Radiometrically Terrain-Corrected gamma0 Monthly Composite Time Series"
 readme = "README.md"
 # Pinned to Python 3.12. The package itself is pure Python, but the geoscience
@@ -15,7 +17,11 @@ readme = "README.md"
 # bound only after verifying the whole geoscience stack installs on the newer
 # interpreter.
 requires-python = ">=3.12,<3.13"
-license = "Apache-2.0"
+# Dual-licensed: PolyForm Noncommercial 1.0.0 for public/noncommercial use;
+# commercial licenses available separately (see LICENSE-COMMERCIAL.md).
+# Releases before v2.3.0 were Apache-2.0.
+license = "PolyForm-Noncommercial-1.0.0"
+license-files = ["LICENSE", "LICENSE-COMMERCIAL.md"]
 authors = [
     {name = "ottoKae", email = "r1536803768@gmail.com"},
 ]
@@ -46,6 +52,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Atmospheric Science",
     "Operating System :: Microsoft :: Windows",
     "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS :: MacOS X",
 ]
 
 dependencies = [
@@ -79,9 +86,12 @@ dependencies = [
     "rich>=13.0.0",
     "tqdm>=4.66.0",
 
-    # Image processing (despeckle + preview + visualization)
+    # Image processing (despeckle + preview + visualization).
+    # headless build: the code uses only filter2D/warpAffine/imwrite (no GUI),
+    # and the GUI-linked opencv-python wheel needs libGL — the classic
+    # headless-server install failure.
+    "opencv-python-headless>=4.10.0.84",
     "scikit-image>=0.22.0",
-    "opencv-python>=4.10.0.84",
     "pillow>=10.0.0",
     "matplotlib>=3.7.0",
 
