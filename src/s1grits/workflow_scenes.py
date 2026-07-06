@@ -1254,6 +1254,158 @@ def _write_smonthly_block_bands(
         )
 
 
+# GLCM co-occurrence support radius (window_size//2 + distance) for the fixed
+# smonthly texture config (window_size=5, distance=1) is 3 px; 8 is a safe halo
+# that makes each block's GLCM bit-identical to the full-tile computation
+# (verified in tests/test_glcm_halo_equivalence.py).
+GLCM_BLOCK_HALO: int = 8
+
+
+def _smonthly_texture_cfg(copol_name: str, crosspol_name: str) -> dict:
+    """The fixed GLCM texture config used by the smonthly writers.
+
+    Kept identical to the legacy full-tile path so blockwise GLCM is bit-exact:
+    no vv_db_range/vh_db_range keys, so compute_glcm_texture_bands uses its
+    defaults ([-25, 5] / [-32, -5]).
+    """
+    return {
+        "enabled": True, "inputs": [copol_name, crosspol_name],
+        "metrics": ["contrast", "homogeneity", "entropy", "correlation"],
+        "window_size": 5, "distance": 1, "angles": [0, 90],
+        "average_angles": True, "levels": 16,
+    }
+
+
+def _priority_mosaic_lin_window(
+    idx_by_track: dict,
+    track_order: list,
+    final_vv: list,
+    prof_vv: list,
+    final_vh: list,
+    prof_vh: list,
+    height: int,
+    width: int,
+    transform: Affine,
+    target_crs: str,
+    y_slice: slice,
+    x_slice: slice,
+    composite_method: str,
+    trim_fraction: float,
+    bounds_vv: list | None,
+    bounds_vh: list | None,
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """Composite the unclipped VV/VH linear priority mosaic for one window.
+
+    Mirrors the pass-2 first-valid-pixel priority fill (VV drives the per-pixel
+    source so VV/VH stay co-sourced), producing exactly the composite the main
+    blockwise write produces — but returned as linear arrays for the GLCM pass
+    to convert to dB before clipping.  Returns ``(None, None)`` when no track
+    contributes to the window.
+    """
+    bh = int((y_slice.stop or 0) - (y_slice.start or 0))
+    bw = int((x_slice.stop or 0) - (x_slice.start or 0))
+    vv = np.full((bh, bw), np.nan, dtype=np.float32)
+    vh = np.full((bh, bw), np.nan, dtype=np.float32)
+    filled = np.zeros((bh, bw), dtype=bool)
+    any_data = False
+    for tk in track_order:
+        tk_idxs = idx_by_track.get(tk, [])
+        cvv = _track_composite_block(
+            tk_idxs, final_vv, prof_vv, height, width,
+            transform, target_crs, y_slice, x_slice,
+            composite_method, trim_fraction, scene_bounds=bounds_vv,
+        )
+        if cvv is None:
+            continue
+        cvh = _track_composite_block(
+            tk_idxs, final_vh, prof_vh, height, width,
+            transform, target_crs, y_slice, x_slice,
+            composite_method, trim_fraction, scene_bounds=bounds_vh,
+        )
+        if cvh is None:
+            cvh = np.full_like(cvv, np.nan, dtype=np.float32)
+        take = ~filled & np.isfinite(cvv)
+        if take.any():
+            vv[take] = cvv[take]
+            vh[take] = cvh[take]
+            filled |= take
+            any_data = True
+        if filled.all():
+            break
+    return (vv, vh) if any_data else (None, None)
+
+
+def _write_glcm_blocks(
+    g: zarr.Group,
+    time_index: int,
+    idx_by_track: dict,
+    track_order: list,
+    final_vv: list,
+    prof_vv: list,
+    final_vh: list,
+    prof_vh: list,
+    height: int,
+    width: int,
+    transform: Affine,
+    target_crs: str,
+    chunk_y: int,
+    chunk_x: int,
+    bounds_vv: list | None,
+    bounds_vh: list | None,
+    composite_method: str,
+    trim_fraction: float,
+    texture_cfg: dict,
+    glcm_band_names: list[str],
+    clip_geom,
+    num_threads: int,
+    halo: int = GLCM_BLOCK_HALO,
+) -> None:
+    """Fill the GLCM band arrays for a reserved timestep, block by block.
+
+    For each block, the unclipped VV/VH dB is composited on a ``halo``-expanded
+    window (so the GLCM box filter and co-occurrence shift see the true
+    neighbourhood), GLCM is computed on that window, cropped back to the block,
+    tile-clipped, and written.  This is bit-identical to computing GLCM on the
+    full-tile unclipped dB and then clipping (the legacy path): the composite is
+    per-pixel so the windowed composite equals the full-tile composite, and a
+    halo >= the support radius makes the cropped GLCM equal the full-tile GLCM.
+    """
+    blocks = list(_iter_spatial_blocks(height, width, chunk_y, chunk_x))
+
+    def _do_block(block_num: int, y_slice: slice, x_slice: slice):
+        y0 = int(y_slice.start or 0); y1 = int(y_slice.stop or 0)
+        x0 = int(x_slice.start or 0); x1 = int(x_slice.stop or 0)
+        ey0 = max(0, y0 - halo); ey1 = min(int(height), y1 + halo)
+        ex0 = max(0, x0 - halo); ex1 = min(int(width), x1 + halo)
+        ys, xs = slice(ey0, ey1), slice(ex0, ex1)
+
+        vv_lin, vh_lin = _priority_mosaic_lin_window(
+            idx_by_track, track_order, final_vv, prof_vv, final_vh, prof_vh,
+            height, width, transform, target_crs, ys, xs,
+            composite_method, trim_fraction, bounds_vv, bounds_vh,
+        )
+        if vv_lin is None:
+            return  # no data in this window -> GLCM stays NaN (reserved value)
+
+        vv_db = _linear_to_db(vv_lin)
+        vh_db = _linear_to_db(vh_lin)
+        from s1grits.asf_array_processing import compute_glcm_texture_bands
+        tex_arrays, tex_names = compute_glcm_texture_bands(vv_db, vh_db, texture_cfg)
+
+        oy = y0 - ey0; ox = x0 - ex0
+        bh = y1 - y0; bw = x1 - x0
+        block_bands = {
+            name: np.ascontiguousarray(arr[oy:oy + bh, ox:ox + bw])
+            for name, arr in zip(tex_names, tex_arrays)
+        }
+        _apply_block_clip(block_bands, clip_geom, transform, y_slice, x_slice)
+        _write_smonthly_block_bands(
+            g, time_index, y_slice, x_slice, list(block_bands.keys()), block_bands
+        )
+
+    _run_blocks(_do_block, blocks, num_threads)
+
+
 def _write_smonthly_month_zarr_blockwise_single_track(
     g: zarr.Group,
     month_str: str,
@@ -1282,6 +1434,8 @@ def _write_smonthly_month_zarr_blockwise_single_track(
     tile_clip: bool,
     mgrs_tile_id: str,
     num_threads: int = 1,
+    glcm_band_names: list[str] | None = None,
+    texture_cfg: dict | None = None,
 ) -> tuple[list[int], dict[int, int]] | None:
     """Write one smonthly timestep for a single track in one blockwise pass."""
     blocks = list(_iter_spatial_blocks(height, width, chunk_y, chunk_x))
@@ -1293,6 +1447,7 @@ def _write_smonthly_month_zarr_blockwise_single_track(
 
     clip_geom = _prepare_block_clip_geom(tile_clip, mgrs_tile_id, target_crs)
     track_cov: dict[int, int] = {int(track_id): 0}
+    _all_band_names = list(band_names) + list(glcm_band_names or [])
 
     # Per-scene master-grid footprints let each block skip the scenes that do
     # not intersect it, instead of stacking one all-NaN window per scene.
@@ -1303,7 +1458,7 @@ def _write_smonthly_month_zarr_blockwise_single_track(
         final_vh, prof_vh, transform, target_crs, height, width
     )
 
-    time_index, new_key = _begin_zarr_timestep_blockwise(g, dt_ns, band_names)
+    time_index, new_key = _begin_zarr_timestep_blockwise(g, dt_ns, _all_band_names)
     logger.info("Month %s: One-pass - Writing single-track Zarr...", month_str)
 
     def _do_block(block_num, y_slice, x_slice):
@@ -1348,9 +1503,18 @@ def _write_smonthly_month_zarr_blockwise_single_track(
         track_cov[int(track_id)] += sum(coverages)
 
         if track_cov[int(track_id)] <= 0:
-            _rollback_zarr_timestep_blockwise(g, time_index, band_names)
+            _rollback_zarr_timestep_blockwise(g, time_index, _all_band_names)
             logger.warning("Month %s: no valid acquisitions, skipping", month_str)
             return None
+
+        if glcm_band_names:
+            _write_glcm_blocks(
+                g, time_index, {int(track_id): list(track_indices)},
+                [int(track_id)], final_vv, prof_vv, final_vh, prof_vh,
+                height, width, transform, target_crs, chunk_y, chunk_x,
+                bounds_vv, bounds_vh, composite_method, trim_fraction,
+                texture_cfg, glcm_band_names, clip_geom, num_threads,
+            )
 
         _finalize_zarr_timestep_blockwise(g, time_index, new_key)
         logger.info(
@@ -1358,7 +1522,7 @@ def _write_smonthly_month_zarr_blockwise_single_track(
             month_str,
         )
     except Exception:
-        _rollback_zarr_timestep_blockwise(g, time_index, band_names)
+        _rollback_zarr_timestep_blockwise(g, time_index, _all_band_names)
         raise
 
     return [int(track_id)], track_cov
@@ -2829,6 +2993,8 @@ def _write_smonthly_month_zarr_blockwise(
     tile_clip: bool,
     mgrs_tile_id: str,
     num_threads: int = 1,
+    glcm_band_names: list[str] | None = None,
+    texture_cfg: dict | None = None,
 ) -> tuple[list[int], dict[int, int]] | None:
     """Write one smonthly timestep block-by-block.
 
@@ -2875,6 +3041,8 @@ def _write_smonthly_month_zarr_blockwise(
             tile_clip=tile_clip,
             mgrs_tile_id=mgrs_tile_id,
             num_threads=num_threads,
+            glcm_band_names=glcm_band_names,
+            texture_cfg=texture_cfg,
         )
 
     # Calculate total blocks for progress reporting
@@ -2946,8 +3114,9 @@ def _write_smonthly_month_zarr_blockwise(
     )
 
     clip_geom = _prepare_block_clip_geom(tile_clip, mgrs_tile_id, target_crs)
+    _all_band_names = list(band_names) + list(glcm_band_names or [])
 
-    time_index, new_key = _begin_zarr_timestep_blockwise(g, dt_ns, band_names)
+    time_index, new_key = _begin_zarr_timestep_blockwise(g, dt_ns, _all_band_names)
     logger.info("Month %s: Pass 2/2 - Writing to Zarr...", month_str)
 
     def _pass2_block(block_num, y_slice, x_slice):
@@ -3003,13 +3172,21 @@ def _write_smonthly_month_zarr_blockwise(
 
     try:
         _run_blocks(_pass2_block, blocks, num_threads)
+        if glcm_band_names:
+            _write_glcm_blocks(
+                g, time_index, idx_by_track, track_order,
+                final_vv, prof_vv, final_vh, prof_vh,
+                height, width, transform, target_crs, chunk_y, chunk_x,
+                bounds_vv, bounds_vh, composite_method, trim_fraction,
+                texture_cfg, glcm_band_names, clip_geom, num_threads,
+            )
         _finalize_zarr_timestep_blockwise(g, time_index, new_key)
         logger.info(
             "Month %s: Pass 2/2 complete. Zarr timestep written successfully.",
             month_str,
         )
     except Exception:
-        _rollback_zarr_timestep_blockwise(g, time_index, band_names)
+        _rollback_zarr_timestep_blockwise(g, time_index, _all_band_names)
         raise
 
     return track_order, track_cov
@@ -3320,20 +3497,23 @@ def _write_smonthly_one_track(
     zarr_path = monthly_zarr_dir / f"s1grits_smonthly_{mgrs_tile_id}_{direction_label}{_tk_suffix}.zarr"
 
     # Build band list
-    _band_names = [copol_name, crosspol_name]
+    # Core per-pixel bands (written by the main blockwise pass) vs GLCM texture
+    # bands (filled by a dedicated blockwise halo pass). _band_names remains the
+    # FULL advertised list (core + GLCM) for Zarr creation, product metadata and
+    # COG export; _core_band_names / _glcm_band_names drive the two-pass write.
+    _core_band_names = [copol_name, crosspol_name]
     if features_ratio:
-        _band_names.append(ratio_name)
+        _core_band_names.append(ratio_name)
     if features_rvi:
-        _band_names.append(rvi_name)
+        _core_band_names.append(rvi_name)
+    _band_names = list(_core_band_names)
+    _glcm_band_names: list[str] = []
+    _blockwise_tex_cfg = None
     if features_glcm:
         from s1grits.asf_array_processing import _get_texture_band_names
-        _tex_cfg = {
-            "enabled": True, "inputs": [copol_name, crosspol_name],
-            "metrics": ["contrast", "homogeneity", "entropy", "correlation"],
-            "window_size": 5, "distance": 1, "angles": [0, 90],
-            "average_angles": True, "levels": 16,
-        }
-        _band_names.extend(_get_texture_band_names(_tex_cfg))
+        _blockwise_tex_cfg = _smonthly_texture_cfg(copol_name, crosspol_name)
+        _glcm_band_names = _get_texture_band_names(_blockwise_tex_cfg)
+        _band_names.extend(_glcm_band_names)
 
     # ---- Compute smonthly product instance metadata ----
     _composite_method = monthly_cfg.get('composite_method', 'median') if monthly_cfg else 'median'
@@ -3616,7 +3796,7 @@ def _write_smonthly_one_track(
                 target_crs=target_crs,
                 chunk_y=chunk_y,
                 chunk_x=chunk_x,
-                band_names=_band_names,
+                band_names=_core_band_names,
                 copol_name=copol_name,
                 crosspol_name=crosspol_name,
                 features_ratio=features_ratio,
@@ -3628,6 +3808,8 @@ def _write_smonthly_one_track(
                 tile_clip=tile_clip,
                 mgrs_tile_id=mgrs_tile_id,
                 num_threads=blockwise_threads,
+                glcm_band_names=_glcm_band_names or None,
+                texture_cfg=_blockwise_tex_cfg,
             )
             if blockwise_result is None:
                 continue
@@ -4404,10 +4586,14 @@ def process_single_scenes_tile(
             _despeckle_kwargs = {}
 
         do_despeckle = bool(processing_config.get('spatial_despeckle', False))
+        # GLCM no longer forces the legacy full-array path: the blockwise writer
+        # computes it exactly via a halo-composite-before-clip pass. Despeckle
+        # and other spatial-neighbourhood filters still require the legacy path
+        # (handled separately), so exclude only GLCM from this gate.
         spatial_filter_legacy = _spatial_filters_enabled(
             processing_config,
             do_despeckle=do_despeckle,
-            features_glcm=features_glcm,
+            features_glcm=False,
         )
         if spatial_filter_legacy:
             logger.info(
