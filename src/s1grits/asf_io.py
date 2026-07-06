@@ -48,7 +48,7 @@ DEFAULT_CHUNK_SIZE: int = 1024           # Default zarr chunk size (pixels)
 COG_BLOCK_SIZE: int = 256               # COG internal tile block size (pixels)
 DEFAULT_RES_M: float = 30.0             # Default output resolution (metres)
 PREVIEW_RES_M: float = 300.0            # Default preview resolution (metres)
-DOWNLOAD_CHUNK_BYTES: int = 16384       # HTTP download streaming chunk size (bytes)
+DOWNLOAD_CHUNK_BYTES: int = 1024 * 1024  # HTTP download streaming chunk size (1 MiB)
 
 # Per-URL 404 retry counter (module-level; avoids function-attribute state that
 # Cython cannot optimise and that is not thread-safe).
@@ -187,7 +187,7 @@ def _download_to_bytes(
                     )
                 resp.raise_for_status()
                 buf = io.BytesIO()
-                for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                for chunk in resp.iter_content(chunk_size=DOWNLOAD_CHUNK_BYTES):
                     if chunk:
                         buf.write(chunk)
                 return buf.getvalue()

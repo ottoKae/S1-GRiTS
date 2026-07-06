@@ -971,6 +971,35 @@ def _track_valid_mask_block(
     return mask
 
 
+# Global ceiling on simultaneous ASF download connections across the whole
+# run (tile_workers x download_workers), chosen to stay polite to ASF's CDN
+# while keeping the pipe full. "auto" divides this budget across the tile-level
+# process pool. Downloads are I/O-bound, so this is a connection budget, not a
+# CPU budget.
+DOWNLOAD_GLOBAL_CONNECTION_BUDGET: int = 16
+DOWNLOAD_AUTO_MIN_WORKERS: int = 4
+DOWNLOAD_AUTO_MAX_WORKERS: int = 8
+
+
+def _resolve_download_workers(value, tile_workers: int = 1) -> int:
+    """Resolve ``memory.max_download_workers`` (int or ``"auto"``) to a count.
+
+    A positive integer is used as-is (floored at 1).  ``"auto"`` divides the
+    global connection budget across the tile-level process pool so the total
+    concurrent ASF connections stay near ``DOWNLOAD_GLOBAL_CONNECTION_BUDGET``,
+    floored at ``DOWNLOAD_AUTO_MIN_WORKERS`` and capped at
+    ``DOWNLOAD_AUTO_MAX_WORKERS``.  Unparseable values fall back to 4 (the
+    historical default).
+    """
+    if isinstance(value, str) and value.strip().lower() == "auto":
+        per_tile = DOWNLOAD_GLOBAL_CONNECTION_BUDGET // max(1, int(tile_workers))
+        return max(DOWNLOAD_AUTO_MIN_WORKERS, min(per_tile, DOWNLOAD_AUTO_MAX_WORKERS))
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return 4
+
+
 # Auto-mode ceiling on per-tile block threads. The thread-scaling benchmark
 # (benchmarks/bench_thread_scaling.py) shows speedup plateauing at 4 threads on
 # a real tile-month (1x/1.5x/3.4x/3.4x at 1/2/4/8), so "auto" never selects
@@ -4293,7 +4322,16 @@ def process_single_scenes_tile(
         _scene_retry_timeout = config.get('memory', {}).get(
             'scene_retry_timeout_seconds', 600.0
         )
-        _max_workers = config.get('memory', {}).get('max_download_workers', 4)
+        # Resolve max_download_workers (int or "auto"). "auto" divides the
+        # global ASF connection budget across the tile-level worker pool.
+        _parallel_cfg = config.get('parallel', {})
+        _tile_workers = (
+            int(_parallel_cfg.get('max_workers', 2))
+            if _parallel_cfg.get('enabled', False) else 1
+        )
+        _max_workers = _resolve_download_workers(
+            config.get('memory', {}).get('max_download_workers', 4), _tile_workers
+        )
         _clear_cache = config.get('memory', {}).get(
             'clear_cache_per_batch', True
         )

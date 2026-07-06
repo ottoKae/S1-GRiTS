@@ -145,6 +145,11 @@ memory:
   max_memory_gb: 'auto'
   # Batch strategy: 'auto', 'yearly', 'quarterly', 'monthly'
   batch_strategy: 'quarterly'
+  # Parallel ASF download connections per tile worker. An integer is used
+  # as-is; "auto" divides a global 16-connection budget across the tile-level
+  # worker pool (parallel.max_workers), floored at 4 and capped at 8, to stay
+  # polite to ASF's CDN while keeping the pipe full. Downloads already stream
+  # in 1 MiB chunks.
   max_download_workers: 4
   clear_cache_per_batch: true
   batch_max_retries: 2
