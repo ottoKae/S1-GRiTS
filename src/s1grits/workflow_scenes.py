@@ -3366,11 +3366,18 @@ def _generate_cog_preview_from_zarr(
     cog_block: int,
     band_names: list[str],
     product_label: str,
+    skip_if_exists: bool = False,
 ) -> tuple[str | None, str | None]:
     """Generate COG and Preview from already-written Zarr data.
 
     This decouples Zarr writing (blockwise, memory-efficient) from
     COG/Preview export (one-time read-back from Zarr).
+
+    ``skip_if_exists`` (used by the resume/backfill path): when True, an asset
+    that is already on disk is left untouched and its path returned, and only
+    genuinely missing assets are regenerated. This makes the exporter
+    idempotent so a resume run can fill in COG/preview for a month whose Zarr
+    already exists, without recomputing anything already present.
 
     Parameters
     ----------
@@ -3410,6 +3417,31 @@ def _generate_cog_preview_from_zarr(
     """
     if not generate_cog and not generate_preview:
         return None, None
+
+    # Deterministic asset paths (naming depends only on the args, not on Zarr
+    # contents), computed once so the generate blocks and the skip-if-exists
+    # check below cannot drift apart.
+    _cog_dir = tile_dir / product_label / 'cog'
+    _png_dir = tile_dir / product_label / 'preview'
+    _asset_stem = (
+        f"s1grits_smonthly_{mgrs_tile_id}_{direction_label}_"
+        f"TK{track_token}_N{n_bursts_track:02d}_{month_str}"
+    )
+    cog_path = _cog_dir / f"{_asset_stem}.tif"
+    png_path = _png_dir / f"{_asset_stem}.png"
+
+    # Backfill fast path: skip assets already on disk; regenerate only missing
+    # ones. If nothing is missing, return existing relpaths without reading Zarr.
+    if skip_if_exists:
+        _cog_have = generate_cog and cog_path.exists()
+        _png_have = generate_preview and png_path.exists()
+        generate_cog = generate_cog and not cog_path.exists()
+        generate_preview = generate_preview and not png_path.exists()
+        if not generate_cog and not generate_preview:
+            return (
+                str(cog_path.relative_to(tile_dir)) if _cog_have else None,
+                str(png_path.relative_to(tile_dir)) if _png_have else None,
+            )
 
     logger.info(
         "Generating COG/Preview from Zarr for month %s (cog=%s, preview=%s)",
@@ -3493,20 +3525,22 @@ def _generate_cog_preview_from_zarr(
                 mgrs_tile_id, month_str, e
             )
 
-    cog_relpath = None
-    preview_relpath = None
+    # Seed with any assets already on disk (skip_if_exists path) so the return
+    # value reflects on-disk truth, not only what THIS call generated. The
+    # generate blocks below overwrite these when they (re)write an asset.
+    cog_relpath = (
+        str(cog_path.relative_to(tile_dir))
+        if skip_if_exists and not generate_cog and cog_path.exists() else None
+    )
+    preview_relpath = (
+        str(png_path.relative_to(tile_dir))
+        if skip_if_exists and not generate_preview and png_path.exists() else None
+    )
 
     # Generate COG
     if generate_cog:
         try:
-            monthly_cog_dir = tile_dir / product_label / 'cog'
-            monthly_cog_dir.mkdir(parents=True, exist_ok=True)
-
-            fname = (
-                f"s1grits_smonthly_{mgrs_tile_id}_{direction_label}_"
-                f"TK{track_token}_N{n_bursts_track:02d}_{month_str}.tif"
-            )
-            cog_path = monthly_cog_dir / fname
+            _cog_dir.mkdir(parents=True, exist_ok=True)
 
             band_list = [
                 (bn, band_arrays[bn]) for bn in band_names if bn in band_arrays
@@ -3534,14 +3568,7 @@ def _generate_cog_preview_from_zarr(
     # Generate Preview PNG
     if generate_preview:
         try:
-            monthly_png_dir = tile_dir / product_label / 'preview'
-            monthly_png_dir.mkdir(parents=True, exist_ok=True)
-
-            png_name = (
-                f"s1grits_smonthly_{mgrs_tile_id}_{direction_label}_"
-                f"TK{track_token}_N{n_bursts_track:02d}_{month_str}.png"
-            )
-            png_path = monthly_png_dir / png_name
+            _png_dir.mkdir(parents=True, exist_ok=True)
 
             # Ratio calculation: VH/VV in linear power domain
             # band_arrays contains dB values, convert back to linear for ratio
@@ -3917,6 +3944,32 @@ def _write_smonthly_one_track(
         _overwrite_pending = False
         if month_str in existing_months:
             if on_time_conflict == 'skip':
+                # The monthly Zarr timestep already exists and is authoritative
+                # — do NOT recompute the composite. But derived COG/preview
+                # assets may be missing (e.g. the first run had
+                # generate_cog/preview=false and they were enabled later, or an
+                # export was interrupted). Backfill only the missing assets from
+                # the existing Zarr (read-back, no recompute); assets already on
+                # disk are left untouched. Catalog/STAC pick these up on the
+                # next `catalog resync`.
+                if use_blockwise and (monthly_gen_cog or monthly_gen_png):
+                    _bf_cog, _bf_png = _generate_cog_preview_from_zarr(
+                        zarr_path=zarr_path, month_str=month_str,
+                        tile_dir=tile_dir, direction_label=direction_label,
+                        mgrs_tile_id=mgrs_tile_id, track_token=track_token,
+                        n_bursts_track=n_bursts_track, target_crs=target_crs,
+                        tile_clip=tile_clip, generate_cog=monthly_gen_cog,
+                        generate_preview=monthly_gen_png, cog_block=cog_block,
+                        band_names=_band_names, product_label=product_label,
+                        skip_if_exists=True,
+                    )
+                    if _bf_cog or _bf_png:
+                        logger.info(
+                            "Month %s exists; backfilled missing derived "
+                            "asset(s) from Zarr (cog=%s, preview=%s)",
+                            month_str, bool(_bf_cog), bool(_bf_png),
+                        )
+                        continue
                 logger.info("Month %s already exists, skipping", month_str)
                 continue
             # 'overwrite': mark for deletion after new composite is validated
