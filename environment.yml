@@ -15,6 +15,11 @@ dependencies:
   - rioxarray
   - pyproj
   - shapely
+  # GDAL Python bindings (osgeo). rasterio bundles libgdal but NOT the `osgeo`
+  # module; the mosaic / mosaic_scenes commands import `from osgeo import gdal`
+  # (VRT/COG multi-tile mosaicking). conda-forge pins gdal and rasterio to the
+  # same libgdal, so install gdal here rather than via pip.
+  - gdal
 
   # Array / data stack
   - numpy
