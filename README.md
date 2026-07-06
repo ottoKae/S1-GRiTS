@@ -3294,7 +3294,22 @@ If you ran scenes without monthly enabled, you can:
 
 Copyright 2026 KaeRao
 
-Licensed under the **Apache License, Version 2.0**. See [LICENSE](LICENSE) for full text.
+S1-GRiTS is **dual-licensed**:
+
+* **Noncommercial use** (academic research, education, personal projects,
+  government/nonprofit research, evaluation): licensed under the
+  **[PolyForm Noncommercial License 1.0.0](LICENSE)**. You may use, modify,
+  and redistribute the software freely for any noncommercial purpose, with
+  attribution preserved.
+* **Commercial use** (use in or for a for-profit product, service, or
+  operation): requires a **separate commercial license** — see
+  [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md) and contact the author.
+
+The license governs *distribution and use terms only*; it places no
+technical restrictions on local execution — all workflows run identically
+regardless of license class. Versions released before v2.3.0 were published
+under Apache-2.0 and remain available under those terms for their
+recipients.
 
 ### Citation
 
@@ -3311,7 +3326,7 @@ for decadal vegetation monitoring in cloud-prone regions. (under review).
 **Software:**
 
 ```text
-KaeRao. (2026). S1-GRiTS: Sentinel-1 Gridded RTC Time Series Data Cube (Version 2.1.0).
+KaeRao. (2026). S1-GRiTS: Sentinel-1 Gridded RTC Time Series Data Cube (Version 2.3.0).
 GitHub: https://github.com/ottoKae/S1-GRiTS
 ```
 

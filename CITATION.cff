@@ -1,0 +1,45 @@
+cff-version: 1.2.0
+message: >-
+  If you use S1-GRiTS in your research, please cite both the software and
+  the companion paper (see README "License & Citation").
+type: software
+title: "S1-GRiTS: Sentinel-1 Gridded RTC Time Series Data Cube"
+authors:
+  - family-names: Rao
+    given-names: Keyi
+    email: r1536803768@gmail.com
+version: 2.3.0
+date-released: 2026-07-06
+url: "https://github.com/ottoKae/S1-GRiTS"
+repository-code: "https://github.com/ottoKae/S1-GRiTS"
+license: PolyForm-Noncommercial-1.0.0
+keywords:
+  - sentinel-1
+  - sar
+  - remote-sensing
+  - time-series
+  - zarr
+  - rtc
+  - monthly-composite
+preferred-citation:
+  type: article
+  title: >-
+    Sentinel-1 Gridded Time Series (S1-GRiTS): Geometry-traceable SAR Data
+    Cubes for decadal vegetation monitoring in cloud-prone regions
+  authors:
+    - family-names: Rao
+      given-names: Keyi
+    - family-names: Lei
+      given-names: Lei
+    - family-names: Dong
+      given-names: Shixin
+    - family-names: Alvarez
+      given-names: Cesar Ivan
+    - family-names: Zou
+      given-names: Linxin
+    - family-names: Hu
+      given-names: Zhongwen
+    - family-names: Wu
+      given-names: Zhaocong
+  year: 2026
+  notes: under review
