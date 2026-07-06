@@ -93,6 +93,10 @@ output:
   layout_mode: "stac"  # Options: "stac" (new STAC ecosystem) or "legacy" (backward compatible)
   overwrite: false
 
+  # On time conflict when a month already exists in the store:
+  # "skip" (keep existing) or "overwrite" (replace that month)
+  on_time_conflict: "skip"
+
   formats:
     cog: true
     preview: true
@@ -145,7 +149,8 @@ processing:
   use_roi_mask: false
   tile_clip: true
   trim_fraction: 0.15
-  on_time_conflict: "skip"
+  # NOTE: on_time_conflict lives under `output:`, not here — a processing-level
+  # key is ignored by the code (the workflow warns if found).
   min_valid_lin: 1.0e-7
   eps_lin: 1.0e-7
 

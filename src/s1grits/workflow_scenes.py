@@ -5521,6 +5521,10 @@ def run_scenes_workflow(config_path: str | Path, overrides: dict | None = None) 
     )
     config = load_config(config_path)
     config = apply_output_overrides_and_stac(config, overrides)
+    # Warn-only: surface misspelled/misplaced YAML keys that dict.get() would
+    # otherwise silently ignore (e.g. processing.on_time_conflict).
+    from s1grits.config_schema import warn_unknown_config_keys
+    warn_unknown_config_keys(config, logger)
     runtime_limits = runtime_limits_from_config(config)
     applied_runtime_env = apply_runtime_limits(runtime_limits)
     if applied_runtime_env:
@@ -5600,6 +5604,29 @@ def run_scenes_workflow(config_path: str | Path, overrides: dict | None = None) 
 
     results: dict[str, dict] = {}
     all_catalogs: list[pd.DataFrame] = []
+
+    # Disk space pre-check (warn-only, mirrors the monthly workflow): a
+    # full-year multi-tile run writes tens of GB, and running out mid-run
+    # wastes the whole download budget.
+    try:
+        import shutil as _shutil
+        _check = output_root
+        while _check != _check.parent and not _check.exists():
+            _check = _check.parent
+        _free_gb = _shutil.disk_usage(str(_check)).free / (1024 ** 3)
+        _warn_gb = float(config.get('output', {}).get('disk_warn_gb', 50.0))
+        if _free_gb < _warn_gb:
+            logger.warning(
+                "Low disk space: %.1f GB free on output volume "
+                "(threshold=%.0f GB). Consider freeing space before "
+                "a long run.", _free_gb, _warn_gb,
+            )
+        else:
+            logger.info(
+                "Disk space OK: %.1f GB free on output volume", _free_gb
+            )
+    except Exception as _disk_e:
+        logger.debug("Disk space check failed: %s", _disk_e)
 
     # Acquire file lock — prevents concurrent writes to same base_dir
     _lock_info = acquire_lock(str(output_root))

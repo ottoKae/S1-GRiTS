@@ -274,8 +274,8 @@ processing:
     kwargs:
       reg_param: 5.0
 
-  # On time conflict: "skip" or "overwrite"
-  on_time_conflict: "skip"
+  # NOTE: on_time_conflict lives under `output:`, not here. A processing-level
+  # on_time_conflict key is ignored by the code (the workflow warns if found).
 
   # Incomplete-acquisition policy. Normal "edge truncation" (a data-take ending
   # a burst or two short along-track) is ALWAYS kept — only an INTERIOR NoData
