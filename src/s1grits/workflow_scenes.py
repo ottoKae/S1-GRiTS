@@ -78,7 +78,12 @@ from s1grits.asf_io import (
     load_rtc_band_strict,
     _mgrs_to_utm_epsg,
 )
-from s1grits.memory_manager import get_memory_strategy_from_config, chunk_time_by_strategy
+from s1grits.memory_manager import (
+    get_memory_strategy_from_config,
+    chunk_time_by_strategy,
+    detect_system_memory,
+    estimate_memory_demand_gb,
+)
 from s1grits.asf_output_writing import _build_grid_from_bursts, _mosaic_align, _generate_preview_png, _get_mgrs_tile_geometry_wkt, _clip_arrays_to_wkt_4326, _check_tile_integrity, _zarr_delete_timestep
 from s1grits.stac_builder import (
     _utm_extent_to_wgs84,
@@ -979,6 +984,39 @@ def _track_valid_mask_block(
 DOWNLOAD_GLOBAL_CONNECTION_BUDGET: int = 16
 DOWNLOAD_AUTO_MIN_WORKERS: int = 4
 DOWNLOAD_AUTO_MAX_WORKERS: int = 8
+
+
+# Auto-mode ceiling on tile-level worker processes. Tile parallelism is
+# memory-bound (each worker holds one tile's blockwise working set), so more
+# than this rarely helps and risks oversubscribing cores against the block
+# thread pool.
+MAX_WORKERS_AUTO_CAP: int = 8
+# Representative blockwise per-tile working set (GB) for the auto RAM budget.
+# Derived from the blockwise estimate for a busy tile-month (~120 scenes on a
+# standard tile); matches the ~11 GB peak seen in real runs.
+_AUTO_PER_TILE_GB: float = 12.0
+
+
+def _resolve_max_workers(value, *, available_gb: float | None = None,
+                         cpu: int | None = None, per_tile_gb: float = _AUTO_PER_TILE_GB) -> int:
+    """Resolve ``parallel.max_workers`` (int or ``"auto"``) to a worker count.
+
+    A positive integer is used as-is (floored at 1).  ``"auto"`` picks the
+    smaller of a CPU bound (one worker per core) and a RAM bound (available
+    memory / the blockwise per-tile working set), floored at 1 and capped at
+    ``MAX_WORKERS_AUTO_CAP``.  This deliberately sizes for the blockwise path,
+    whose per-tile footprint is far smaller than the legacy full-tile stack.
+    """
+    if isinstance(value, str) and value.strip().lower() == "auto":
+        n_cpu = cpu if cpu is not None else (os.cpu_count() or 1)
+        ram = available_gb if available_gb is not None else detect_system_memory()
+        by_cpu = max(1, int(n_cpu))
+        by_ram = max(1, int(ram // max(1.0, per_tile_gb)))
+        return max(1, min(by_cpu, by_ram, MAX_WORKERS_AUTO_CAP))
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return 2
 
 
 def _resolve_download_workers(value, tile_workers: int = 1) -> int:
@@ -5170,7 +5208,17 @@ def run_scenes_workflow(config_path: str | Path, overrides: dict | None = None) 
     # Parallel configuration
     parallel_cfg = config.get('parallel', {})
     parallel_enabled = parallel_cfg.get('enabled', False)
-    max_workers = parallel_cfg.get('max_workers', 2)
+    # Resolve parallel.max_workers (int or "auto"). "auto" sizes the tile-level
+    # process pool from CPU cores and available RAM / the blockwise per-tile
+    # working set, so a big-RAM box uses more workers and a small one fewer.
+    _mw_raw = parallel_cfg.get('max_workers', 2)
+    max_workers = _resolve_max_workers(_mw_raw)
+    if str(_mw_raw).lower() == 'auto':
+        logger.info(
+            "parallel.max_workers: auto -> %d tile workers "
+            "(cpu=%s, per_tile~%.0f GB)",
+            max_workers, os.cpu_count(), _AUTO_PER_TILE_GB,
+        )
 
     # Resolve monthly.blockwise_threads (int or "auto") once, up front, and
     # write the concrete value back into the config so every tile worker —

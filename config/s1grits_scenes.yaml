@@ -133,8 +133,11 @@ query:
 # =============================================================================
 parallel:
   enabled: true
-  # Recommended: 2 for <=16GB, 4 for 32GB, 6-8 for >=64GB
-  # TEMPORARY: Set to 1 to debug sanitization in serial mode
+  # Tile-level worker processes. An integer is used as-is; "auto" sizes the
+  # pool from CPU cores and available RAM / the blockwise per-tile working set
+  # (~12 GB), floored at 1 and capped at 8. Blockwise sizing means a big-RAM
+  # box gets more workers than the old full-tile heuristic allowed.
+  # Manual guide: 2 for <=16GB, 4 for 32GB, 6-8 for >=64GB.
   max_workers: 2
 
 # =============================================================================
