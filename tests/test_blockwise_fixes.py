@@ -81,6 +81,29 @@ def test_spatial_filters_cap_batch_and_disable_blockwise():
     assert ws._cap_batch_strategy_for_spatial_filters("yearly", False) == "yearly"
 
 
+def test_despeckle_and_glcm_do_not_force_smonthly_legacy():
+    """Roadmap item 8: the smonthly writer composites RAW scenes — despeckle is
+    applied only in the per-acquisition scenes writer, and GLCM is now computed
+    blockwise via a halo pass. So the *smonthly* gate (do_despeckle=False,
+    features_glcm=False) must stay False even when despeckle or GLCM is enabled,
+    while the scenes/batch gate (which drives the legacy despeckle path and the
+    batch-strategy cap) still flips True.
+    """
+    for cfg in ({"spatial_despeckle": True},
+                {"features_glcm": True},
+                {"spatial_despeckle": True, "features_glcm": True}):
+        # scenes/batch gate: despeckle forces legacy; the composite-only smonthly
+        # gate excludes despeckle and (now) GLCM, so it stays blockwise.
+        smonthly_gate = ws._spatial_filters_enabled(
+            cfg, do_despeckle=False, features_glcm=False
+        )
+        assert smonthly_gate is False, cfg
+        # A genuine composite-time neighbourhood filter still forces legacy.
+        assert ws._spatial_filters_enabled(
+            {"morphology": {"enabled": True}}, do_despeckle=False, features_glcm=False
+        ) is True
+
+
 def test_generate_cog_preview_from_zarr_creates_outputs(tmp_path):
     """Test that COG/Preview are correctly generated from Zarr."""
     # Create a minimal Zarr store with one month of data

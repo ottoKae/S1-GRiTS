@@ -4595,10 +4595,27 @@ def process_single_scenes_tile(
             do_despeckle=do_despeckle,
             features_glcm=False,
         )
+        # The smonthly writer composites RAW scenes: despeckle is applied only in
+        # the per-acquisition scenes writer (_write_scenes_output), never to the
+        # monthly composite. So despeckle alone must NOT force smonthly onto the
+        # legacy full-array path — its blockwise output is bit-identical to legacy
+        # regardless of spatial_despeckle. Exclude both despeckle AND GLCM here;
+        # only a genuine composite-time neighbourhood filter would flip this True.
+        smonthly_spatial_legacy = _spatial_filters_enabled(
+            processing_config,
+            do_despeckle=False,
+            features_glcm=False,
+        )
         if spatial_filter_legacy:
             logger.info(
-                "Spatial-neighborhood processing enabled; smonthly will use "
-                "legacy full-array path and batch strategy is capped at quarterly."
+                "Spatial-neighborhood processing enabled; scenes writer uses the "
+                "legacy full-array despeckle path and batch strategy is capped at "
+                "quarterly."
+            )
+        if smonthly_spatial_legacy:
+            logger.info(
+                "Composite-time spatial-neighborhood filter enabled; smonthly will "
+                "use the legacy full-array path."
             )
 
         # 5. Batch loop
@@ -5072,7 +5089,7 @@ def process_single_scenes_tile(
                         ratio_name=ratio_name,
                         rvi_name=rvi_name,
                         valid_clean_indices=valid_clean_indices,
-                        spatial_filter_legacy=spatial_filter_legacy,
+                        spatial_filter_legacy=smonthly_spatial_legacy,
                     )
                 all_monthly_records.extend(monthly_recs)
 

@@ -196,6 +196,11 @@ processing:
   # TV despeckle toggle
   # true  -> suffix _tvbregmanX, despeckle applied
   # false -> no despeckle, output suffix is cleaner
+  # Despeckle is applied only in the per-acquisition scenes writer; the smonthly
+  # composite is built from RAW scenes and is never despeckled, so enabling this
+  # does NOT push smonthly onto the slower legacy full-array path (it still uses
+  # the fast blockwise Zarr writer). It does still cap the batch strategy at
+  # quarterly for the memory-heavier legacy despeckle path in the scenes writer.
   spatial_despeckle: false
 
   # Optional derived bands (default: false — 2-band VV_dB + VH_dB only)
