@@ -354,8 +354,23 @@ def run_doctor(
     return exit_code, results
 
 
+def _icons() -> dict:
+    """Unicode icons when stdout can encode them, ASCII otherwise.
+
+    Windows consoles (and CI shells) often use cp1252, where printing
+    '✓' raises UnicodeEncodeError — doctor must never crash over
+    cosmetics.
+    """
+    enc = getattr(sys.stdout, "encoding", None) or "ascii"
+    try:
+        "✓✗".encode(enc)
+        return {OK: "✓", WARN: "!", FAIL: "✗"}
+    except (UnicodeEncodeError, LookupError):
+        return {OK: "+", WARN: "!", FAIL: "x"}
+
+
 def format_results(results: list[CheckResult]) -> str:
-    icon = {OK: "✓", WARN: "!", FAIL: "✗"}
+    icon = _icons()
     lines = [
         f" {icon[r.level]} [{r.level:>4}] {r.name}: {r.detail}"
         for r in results

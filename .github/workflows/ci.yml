@@ -31,6 +31,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # os MUST be a base matrix key: include-only entries with a shared key
+        # get merged into the base combination sequentially (last one wins),
+        # collapsing the matrix to a single job. With os in the base matrix,
+        # each include entry matches its os and only adds `experimental`.
+        os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.12"]
         include:
           - os: ubuntu-latest

@@ -216,3 +216,21 @@ def test_format_results_summarises():
         CheckResult("a", OK, "fine"), CheckResult("b", WARN, "meh"),
     ])
     assert "no failures, 1 warning(s)" in text
+
+
+def test_format_results_ascii_safe_on_cp1252_stdout(monkeypatch):
+    """Windows consoles use cp1252; doctor output must encode there (the
+    first real CI run crashed printing '✓' on windows-latest)."""
+    import io
+    import s1grits.doctor as doc
+
+    class _Cp1252Out(io.StringIO):
+        encoding = "cp1252"
+
+    monkeypatch.setattr(sys, "stdout", _Cp1252Out())
+    text = doc.format_results([
+        doc.CheckResult("a", doc.OK, "fine"),
+        doc.CheckResult("b", doc.FAIL, "broken"),
+    ])
+    text.encode("cp1252")  # must not raise
+    assert "1 failure(s)" in text
