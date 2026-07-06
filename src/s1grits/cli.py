@@ -2,10 +2,9 @@
 CLI with subcommands structure
 
 Provides a professional CLI interface with subcommands:
-- s1grits process          --config config.yaml
-- s1grits process_ablation --config config_experience/s1grits_ablation_template.yaml
-- s1grits process_static   --config config.yaml
-- s1grits process_normal40 --config config_experience/s1grits_normal_config.yaml
+- s1grits process          --config config.yaml   (monthly composite workflow)
+- s1grits process_scenes   --config config.yaml   (per-pass scenes + smonthly)
+- s1grits process_static   --config config.yaml   (static geometry layers)
 - s1grits catalog  resync   --output-dir ./output
 - s1grits catalog  validate --output-dir ./output
 - s1grits catalog  inspect  --output-dir ./output
@@ -21,6 +20,7 @@ from rich.console import Console
 from rich.table import Table
 import rioxarray  # Register .rio accessor for xarray
 
+from s1grits.__version__ import __version__
 from s1grits.logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -827,12 +827,10 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''\
 Examples:
-  # Run processing workflows
-  s1grits process          --config config.yaml
-  s1grits process_ablation --config config_experience/s1grits_ablation_template.yaml
-  s1grits process_static   --config config.yaml
-  s1grits process_normal40 --config config_experience/s1grits_normal_config.yaml
-  s1grits process_scenes   --config config_scenes.yaml
+  # Run processing workflows (three products)
+  s1grits process          --config config/s1grits_monthly.yaml   # monthly composites
+  s1grits process_scenes   --config config/s1grits_scenes.yaml    # per-pass scenes + smonthly
+  s1grits process_static   --config config/s1grits_static.yaml    # static geometry layers
 
   # Catalog management (resync rebuilds catalog.parquet + STAC from disk)
   s1grits catalog resync   --output-dir ./output
@@ -856,27 +854,29 @@ Examples:
         '''
     )
 
-    parser.add_argument('--version', action='version', version='s1grits 1.0.0')
+    parser.add_argument(
+        '--version', action='version', version=f's1grits {__version__}'
+    )
 
-    subparsers = parser.add_subparsers(dest='command', help='Available commands')
+    # metavar hides argparse's auto-generated "{cmd1,cmd2,...}" brace list, which
+    # would otherwise expose SUPPRESS-hidden aliases (e.g. process_monthly). The
+    # per-command help lines below still list every non-suppressed command.
+    subparsers = parser.add_subparsers(
+        dest='command', metavar='<command>', help='Available commands'
+    )
 
     # ── process ──────────────────────────────────────────────────────────────
+    # `process_monthly` is a back-compat alias: argparse accepts it but does not
+    # list it as a separate command, so the production help stays minimal while
+    # existing scripts/docs that call `process_monthly` keep working.
     parser_process = subparsers.add_parser(
         'process',
-        help='Run the full processing workflow from a YAML config'
+        aliases=['process_monthly'],
+        help='Run the monthly composite workflow from a YAML config'
     )
     parser_process.add_argument('--config', required=True, help='Path to YAML config file')
     _add_output_flags(parser_process)
     parser_process.set_defaults(func=cmd_process)
-
-    # ── process_monthly (alias for process) ─────────────────────────────────
-    parser_monthly = subparsers.add_parser(
-        'process_monthly',
-        help='Run the legacy monthly composite workflow (alias for process)'
-    )
-    parser_monthly.add_argument('--config', required=True, help='Path to YAML config file')
-    _add_output_flags(parser_monthly)
-    parser_monthly.set_defaults(func=cmd_process)
 
     # ── process_static ───────────────────────────────────────────────────────
     parser_static = subparsers.add_parser(
