@@ -165,6 +165,51 @@ def test_doctor_unreadable_config_fails(tmp_path):
     assert code == 1
 
 
+def test_doctor_flags_mixed_grid_stores(tmp_path):
+    import yaml
+    import numpy as np
+    from rasterio.transform import Affine
+    from s1grits.doctor import check_store_grid_consistency, WARN, OK
+    from s1grits.workflow_scenes import _init_zarr_2band
+
+    def make(tile, name, w, h):
+        minx, maxy = 500000.0, 8500000.0
+        tr = Affine(30.0, 0, minx, 0, -30.0, maxy)
+        x = (minx + (np.arange(w) + 0.5) * 30.0)
+        y = (maxy - (np.arange(h) + 0.5) * 30.0)
+        _init_zarr_2band(tmp_path / tile / "smonthly_x" / "zarr" / name,
+                         x, y, "EPSG:32717", tr, 8, 8,
+                         processing_level="monthly_ARDC")
+
+    make("17MQV", "a_TK18.zarr", 24, 16)
+    make("17MQV", "b_TK91.zarr", 30, 20)   # different grid -> inconsistent
+    make("17MPU", "a_TK18.zarr", 24, 16)   # single grid -> fine
+
+    cfg = {"output": {"base_dir": str(tmp_path)}}
+    results = check_store_grid_consistency(cfg)
+    warns = [r for r in results if r.level == WARN]
+    assert len(warns) == 1 and "17MQV" in warns[0].detail
+    assert "rebuild-incompatible" in warns[0].detail
+
+
+def test_run_summary_json_written(tmp_path):
+    from s1grits.cli import write_run_summary
+    import json
+    results = {
+        "17MPU": {"status": "success", "written_months": ["2026-01"],
+                  "written_scenes": 0, "tile_dir": str(tmp_path / "17MPU"),
+                  "error": None, "incomplete_acquisitions": [{"date": "x"}]},
+        "17MQV": {"status": "failed", "error": "Cannot resume: grid mismatch"},
+    }
+    p = write_run_summary(results, tmp_path, duration_seconds=42.0,
+                          config_path="cfg.yaml")
+    doc = json.loads(Path(p).read_text())
+    assert doc["n_tiles"] == 2 and doc["n_success"] == 1 and doc["n_failed"] == 1
+    assert doc["tiles"]["17MQV"]["error"].startswith("Cannot resume")
+    assert doc["tiles"]["17MPU"]["n_incomplete_acquisitions"] == 1
+    assert doc["duration_seconds"] == 42.0
+
+
 def test_format_results_summarises():
     from s1grits.doctor import CheckResult, format_results, OK, WARN
     text = format_results([

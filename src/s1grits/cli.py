@@ -128,13 +128,80 @@ def print_summary(results: dict):
                 f"  [dim]drop  {_mid} TK{str(_tok).replace('_','-')}: "
                 f"{(_frac or 0)*100:.1f}% of tile[/dim]"
             )
-        for _mid, _tok, _dt, _ld, _ex, _cause in _inc_rows[:20]:
+        # Group by (tile, track, cause): a systematic gap (e.g. ASF permanently
+        # missing 2 bursts of a track for a year) is one operational fact, not
+        # hundreds of console lines. Full per-acquisition detail stays in each
+        # tile's processing_report.json.
+        _grouped: dict[tuple, list] = {}
+        for _mid, _tok, _dt, _ld, _ex, _cause in _inc_rows:
+            _grouped.setdefault((_mid, _tok, _cause), []).append((_dt, _ld, _ex))
+        for (_mid, _tok, _cause), _rows in sorted(_grouped.items()):
+            _dates = sorted(str(r[0]) for r in _rows)
+            _span = _dates[0] if len(_dates) == 1 else f"{_dates[0]} → {_dates[-1]}"
+            _worst = min((r[1] or 0) for r in _rows)
+            _exp = _rows[0][2]
             console.print(
-                f"  [dim]incomplete {_mid} TK{str(_tok).replace('_','-')} {_dt}: "
-                f"{_ld}/{_ex} bursts ({_cause})[/dim]"
+                f"  [dim]incomplete {_mid} TK{str(_tok).replace('_','-')} "
+                f"({_cause}): {len(_rows)} acquisition(s), {_span}, "
+                f"worst {_worst}/{_exp} bursts[/dim]"
             )
 
     console.rule(style="blue")
+
+
+def write_run_summary(
+    results: dict,
+    base_dir,
+    *,
+    duration_seconds: float | None = None,
+    config_path: str | None = None,
+):
+    """Write a machine-readable run summary JSON next to the global catalog.
+
+    One document per run (``run_summary.json``, overwritten): per-tile status,
+    months written, error text, plus data-quality counters — the fields a
+    pipeline needs to decide "retry / alert / proceed" without scraping the
+    Rich console output. Returns the path, or None when it cannot be written
+    (never fails the run over a summary file).
+    """
+    import json
+    from datetime import datetime, timezone
+    try:
+        tiles = {}
+        for mid, r in sorted(results.items()):
+            tiles[mid] = {
+                "status": r.get("status"),
+                "months_written": sorted(r.get("written_months") or []),
+                "n_months": len(r.get("written_months") or []),
+                "scenes_written": r.get("written_scenes"),
+                "tile_dir": r.get("tile_dir"),
+                "error": r.get("error"),
+                "dropped_tracks": r.get("dropped_tracks") or [],
+                "n_incomplete_acquisitions": len(
+                    r.get("incomplete_acquisitions") or []
+                ),
+            }
+        doc = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "s1grits_version": __version__,
+            "config_path": config_path,
+            "duration_seconds": duration_seconds,
+            "n_tiles": len(results),
+            "n_success": sum(
+                1 for r in results.values() if r.get("status") == "success"
+            ),
+            "n_failed": sum(
+                1 for r in results.values() if r.get("status") == "failed"
+            ),
+            "tiles": tiles,
+        }
+        out = Path(base_dir) / "run_summary.json"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+        return out
+    except Exception as _e:
+        logger.debug("Could not write run_summary.json: %s", _e)
+        return None
 
 
 def _add_output_flags(parser):
@@ -689,6 +756,15 @@ def cmd_process_scenes(args):
             out_root = str(Path(r['tile_dir']).parent)
             console.print(f"\n[bold]Output:[/bold] {out_root}")
             break
+
+    # Machine-readable run summary for pipeline integration/monitoring.
+    _summary_path = write_run_summary(
+        results, config.get('output', {}).get('base_dir', '.'),
+        duration_seconds=duration.total_seconds(),
+        config_path=str(config_path),
+    )
+    if _summary_path:
+        console.print(f"[dim]Run summary: {_summary_path}[/dim]")
 
     logger.info("Scenes workflow completed in %s", duration)
     console.print(f"\nTotal time: [bold]{duration}[/bold]")

@@ -493,13 +493,23 @@ def _adopt_existing_master_grid(
     (``_build_grid_from_bursts`` floor/ceil-snaps bounds), so aligning new
     scenes onto it is an exact crop/pad with no resampling shift.
 
-    Returns ``(transform, width, height, x_coords, y_coords)`` from the first
-    readable store whose CRS and resolution match, or ``None`` when there is
-    nothing to adopt (fresh tile, or CRS/resolution changed — in which case the
-    caller derives a fresh burst-union grid as before).
+    Returns ``(transform, width, height, x_coords, y_coords)`` or ``None``
+    when there is nothing to adopt (fresh tile, or CRS/resolution changed —
+    in which case the caller derives a fresh burst-union grid as before).
+
+    Sibling stores can carry DIFFERENT locked grids (e.g. a per-track store
+    created by an interrupted pre-adoption run next to a fully populated
+    pilot store). No single master grid can satisfy both, so the grid backed
+    by the MOST time steps wins — it protects the most data — and every
+    disagreeing store is named in a warning. Under
+    ``existing_store: rebuild-incompatible`` the minority stores are then
+    rebuilt onto the adopted grid at open time (self-heal); under ``resume``
+    they fail their grid-lock check with the recovery options.
     """
     stores = sorted(tile_dir.glob('smonthly_*/zarr/*.zarr')) + \
         sorted(tile_dir.glob('scenes_*/zarr/*.zarr'))
+    # candidate grid groups keyed by (w, h, origin): [total_steps, grid, paths]
+    groups: dict[tuple, list] = {}
     for zp in stores:
         try:
             g = zarr.open_group(str(zp), mode='r', zarr_format=3)
@@ -525,12 +535,45 @@ def _adopt_existing_master_grid(
             y_coords = np.asarray(g['y'][:], dtype='float64')
             if x_coords.size == 0 or y_coords.size == 0:
                 continue
-            return transform, int(x_coords.size), int(y_coords.size), \
-                x_coords, y_coords
+            n_steps = int(g['time'].shape[0]) if 'time' in g else 0
+            key = (int(x_coords.size), int(y_coords.size),
+                   round(transform.c, 3), round(transform.f, 3))
+            grp = groups.setdefault(key, [0, None, []])
+            grp[0] += n_steps
+            if grp[1] is None:
+                grp[1] = (transform, int(x_coords.size), int(y_coords.size),
+                          x_coords, y_coords)
+            grp[2].append((zp, n_steps))
         except Exception as exc:
             logger.debug("[Grid] Could not read %s for grid adoption: %s", zp, exc)
             continue
-    return None
+
+    if not groups:
+        return None
+
+    # Most data wins; deterministic tie-break on the grid key.
+    chosen_key = max(groups, key=lambda k: (groups[k][0], k))
+    if len(groups) > 1:
+        detail = "; ".join(
+            f"{w}x{h}: " + ", ".join(f"{p.name} ({n} steps)" for p, n in grp[2])
+            for (w, h, *_), grp in sorted(groups.items())
+        )
+        logger.warning(
+            "[Grid] Tile %s has stores on %d DIFFERENT grids (%s). Adopting "
+            "the grid with the most time steps (%dx%d). Stores on other "
+            "grids will fail their grid-lock check under existing_store="
+            "resume, or be rebuilt onto the adopted grid under "
+            "existing_store=rebuild-incompatible.",
+            tile_dir.name, len(groups), detail,
+            chosen_key[0], chosen_key[1],
+        )
+    _, grid, members = groups[chosen_key]
+    logger.info(
+        "[Grid] Adopting locked grid %dx%d from %s (%d store(s), %d total steps)",
+        chosen_key[0], chosen_key[1], members[0][0].name,
+        len(members), groups[chosen_key][0],
+    )
+    return grid
 
 
 def _zarr_append(g: "zarr.Group", var_name: str, data: "np.ndarray") -> None:
@@ -4758,27 +4801,30 @@ def process_single_scenes_tile(
         _grid_built = False
         _master_transform = _master_width = _master_height = None
         _master_x_coords = _master_y_coords = None
-        # Resume-grid adoption: when this tile already has product stores from
-        # a previous run and overwrite=false (incremental mode), reuse their
-        # locked grid as this run's master grid instead of re-deriving it from
-        # the current window's burst union. This is what makes a pilot-month
-        # store extensible to a full-year rerun: the burst-union grid varies
-        # with the window, and a mismatched grid would otherwise fail the
-        # store's grid-lock check. With overwrite=true the run keeps its fresh
-        # burst-union grid and rebuilds any store that disagrees with it.
-        if not overwrite:
-            _adopted = _adopt_existing_master_grid(
-                tile_dir, target_crs, target_res
+        # Resume-grid adoption: when this tile already has product stores
+        # from a previous run, reuse their locked grid (the one backing the
+        # most data, see _adopt_existing_master_grid) as this run's master
+        # grid instead of re-deriving it from the current window's burst
+        # union. This is what makes a pilot-month store extensible to a
+        # full-year rerun: the burst-union grid varies with the window, and
+        # a mismatched grid would otherwise fail the store's grid-lock check.
+        # Adoption applies under BOTH store policies: with existing_store=
+        # rebuild-incompatible the adopted grid protects the populated
+        # store(s) while any store on a disagreeing grid is rebuilt onto it;
+        # only a fresh tile (or a CRS/resolution change) derives a new
+        # burst-union grid.
+        _adopted = _adopt_existing_master_grid(
+            tile_dir, target_crs, target_res
+        )
+        if _adopted is not None:
+            (_master_transform, _master_width, _master_height,
+             _master_x_coords, _master_y_coords) = _adopted
+            _grid_built = True
+            logger.info(
+                "[Grid] Resuming on existing store grid %dx%d for %s "
+                "(grid locked); new acquisitions are aligned onto it",
+                _master_width, _master_height, mgrs_tile_id,
             )
-            if _adopted is not None:
-                (_master_transform, _master_width, _master_height,
-                 _master_x_coords, _master_y_coords) = _adopted
-                _grid_built = True
-                logger.info(
-                    "[Grid] Resuming on existing store grid %dx%d for %s "
-                    "(grid locked); new acquisitions are aligned onto it",
-                    _master_width, _master_height, mgrs_tile_id,
-                )
         _metadata_prefilter = monthly_only and monthly_enabled and not write_scenes
         # Default path downloads VV/VH concurrently. The old VV-first branch is
         # intentionally off by default because clean tiles rarely save VH

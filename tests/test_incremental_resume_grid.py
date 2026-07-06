@@ -112,6 +112,48 @@ def test_adoption_enables_pilot_to_full_year_resume(tmp_path):
     assert g2["time"].shape[0] == 2
 
 
+def test_mixed_grid_siblings_adopt_data_richest_grid(tmp_path, caplog):
+    """A tile whose sibling stores sit on DIFFERENT grids (the state left by
+    an interrupted pre-adoption run) adopts the grid backing the most time
+    steps, and warns naming the disagreeing stores (the 17MQV canary case)."""
+    import logging
+    tile_dir = tmp_path / "17MQV"
+    pilot = _grid(500000.0, 8500000.0, width=86, height=61)     # populated
+    stray = _grid(502000.0, 8498000.0, width=41, height=53)     # interrupted run
+
+    zp_pilot, g_pilot = _make_store(
+        tile_dir, pilot, name="s1grits_smonthly_17MQV_ASCENDING_TK18_N3.zarr")
+    _append_month(g_pilot, "2026-01-15")
+    _append_month(g_pilot, "2026-02-14")
+    zp_stray, g_stray = _make_store(
+        tile_dir, stray, name="s1grits_smonthly_17MQV_ASCENDING_TK91_N2.zarr")
+    # stray store: zero or fewer steps than the pilot
+
+    with caplog.at_level(logging.WARNING):
+        adopted = _adopt_existing_master_grid(tile_dir, CRS, RES)
+    a_tr, a_w, a_h, _, _ = adopted
+    assert (a_w, a_h) == (pilot[1], pilot[2])  # most data wins
+    warn = "\n".join(r.message for r in caplog.records)
+    assert "DIFFERENT grids" in warn
+    assert "TK91" in warn  # disagreeing store is named
+
+    # Self-heal path: rebuild-incompatible rebuilds the stray store onto the
+    # adopted grid while the pilot store resumes untouched.
+    del g_stray
+    g2 = _init_zarr_2band(
+        zp_stray, adopted[3], adopted[4], CRS, a_tr, chunk_y=32, chunk_x=32,
+        processing_level="monthly_ARDC", band_names=BANDS,
+        rebuild_on_mismatch=True,
+    )
+    assert (g2["x"].shape[0], g2["y"].shape[0]) == (a_w, a_h)
+    g3 = _init_zarr_2band(
+        zp_pilot, adopted[3], adopted[4], CRS, a_tr, chunk_y=32, chunk_x=32,
+        processing_level="monthly_ARDC", band_names=BANDS,
+        rebuild_on_mismatch=True,
+    )
+    assert g3["time"].shape[0] == 2  # pilot data preserved
+
+
 def test_adoption_skips_mismatched_crs_and_resolution(tmp_path):
     tile_dir = tmp_path / "17MPU"
     _make_store(tile_dir, _grid(500000.0, 8500000.0, width=16, height=16))

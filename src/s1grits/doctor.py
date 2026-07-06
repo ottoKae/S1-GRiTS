@@ -176,6 +176,63 @@ def check_filesystem(config: dict) -> list[CheckResult]:
     return results
 
 
+def check_store_grid_consistency(config: dict) -> list[CheckResult]:
+    """Detect tiles whose existing Zarr stores sit on DIFFERENT locked grids.
+
+    This is the state left behind by an interrupted pre-v2.3 run (one track's
+    store on the pilot grid, a sibling on a window-derived grid) and the one
+    condition that still fails a tile under existing_store=resume. Surfacing
+    it in doctor turns a 3-hour runtime failure into a 2-second preflight
+    warning with the remediation attached.
+    """
+    results: list[CheckResult] = []
+    base_dir = Path(((config.get("output") or {}).get("base_dir")) or "./output")
+    if not base_dir.is_dir():
+        return results  # nothing produced yet — nothing to check
+    try:
+        import zarr
+    except ImportError:
+        return results
+
+    checked = 0
+    for tile_dir in sorted(p for p in base_dir.iterdir() if p.is_dir()):
+        stores = sorted(tile_dir.glob("smonthly_*/zarr/*.zarr")) + \
+            sorted(tile_dir.glob("scenes_*/zarr/*.zarr"))
+        if not stores:
+            continue
+        checked += 1
+        grids: dict[tuple, list[str]] = {}
+        for zp in stores:
+            try:
+                g = zarr.open_group(str(zp), mode="r", zarr_format=3)
+                key = (int(g["x"].shape[0]), int(g["y"].shape[0]))
+                steps = int(g["time"].shape[0]) if "time" in g else 0
+                grids.setdefault(key, []).append(f"{zp.name} ({steps} steps)")
+            except Exception as exc:
+                results.append(_check(
+                    "store:readable", WARN,
+                    f"{tile_dir.name}/{zp.name}: unreadable store ({exc})",
+                ))
+        if len(grids) > 1:
+            detail = "; ".join(
+                f"{w}x{h}: {', '.join(names)}" for (w, h), names in sorted(grids.items())
+            )
+            results.append(_check(
+                "store:grid-consistency", WARN,
+                f"tile {tile_dir.name} has stores on {len(grids)} different "
+                f"grids ({detail}). Under existing_store=resume the minority "
+                f"store(s) will fail; rerun with existing_store: "
+                f"rebuild-incompatible to rebuild them onto the data-richest "
+                f"grid, or delete the stray store(s).",
+            ))
+    if checked and not any(r.name == "store:grid-consistency" for r in results):
+        results.append(_check(
+            "store:grid-consistency", OK,
+            f"{checked} tile(s) checked, all stores grid-consistent",
+        ))
+    return results
+
+
 # ---------------------------------------------------------------------------
 # Resource-plan checks
 # ---------------------------------------------------------------------------
@@ -287,6 +344,7 @@ def run_doctor(
     if config:
         results.extend(check_config(config))
         results.extend(check_filesystem(config))
+        results.extend(check_store_grid_consistency(config))
         results.extend(check_resources(config))
 
     if network:

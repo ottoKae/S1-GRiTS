@@ -97,9 +97,11 @@ output:
   #                          year) extends the same store; nothing is deleted.
   #                          An incompatible store (changed CRS/resolution)
   #                          fails with recovery options.
-  #   "rebuild-incompatible" — derive a fresh burst-union grid from this run's
-  #                          window, and DELETE + re-create any store that is
-  #                          incompatible with it. Compatible stores are still
+  #   "rebuild-incompatible" — adopt the grid backing the MOST data (or derive
+  #                          a fresh burst-union grid on a fresh tile), then
+  #                          DELETE + re-create any store incompatible with it
+  #                          (e.g. a stray store left by an interrupted run on
+  #                          a different grid). Compatible stores are still
   #                          resumed, never wiped.
   existing_store: "resume"
 
