@@ -128,8 +128,8 @@ output:
 
   # Output format toggles (Zarr is always generated — it is the primary Data Cube product)
   formats:
-    cog: false        # Optional: per-acquisition GeoTIFF exports
-    preview: false    # Optional: PNG visualization exports
+    cog: true        # Optional: per-acquisition GeoTIFF exports
+    preview: true    # Optional: PNG visualization exports
     # zarr is NOT listed here — it is always produced regardless
 
 # =============================================================================
@@ -335,10 +335,10 @@ processing:
     # Note: With blockwise Zarr path (when features_glcm=false), COG/Preview
     # are generated post-hoc from Zarr, allowing memory-efficient processing
     # with full output format support.
-    generate_cog: false
+    generate_cog: true
 
     # Whether to generate PNG previews
-    generate_preview: false
+    generate_preview: true
 
     # Blockwise Zarr write parallelism (smonthly, non-GLCM path only).
     # Spatial blocks are Zarr-chunk-aligned, so they are composited and
