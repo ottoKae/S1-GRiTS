@@ -154,6 +154,12 @@ memory:
   # polite to ASF's CDN while keeping the pipe full. Downloads already stream
   # in 1 MiB chunks.
   max_download_workers: 4
+  # Optional on-disk cache for downloaded burst GeoTIFFs, keyed by URL. When
+  # set to a directory, bursts shared between adjacent MGRS tiles (and re-runs)
+  # are downloaded once and reused from disk. null (default) disables it, so
+  # the download path is byte-for-byte unchanged. Entries are sha256-validated;
+  # the directory can be deleted at any time to reclaim space.
+  burst_cache_dir: null
   clear_cache_per_batch: true
   batch_max_retries: 2
   scene_max_retries: 3

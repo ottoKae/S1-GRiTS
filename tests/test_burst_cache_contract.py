@@ -79,10 +79,40 @@ class RefBurstCache:
         data.write_bytes(raw[: len(raw) // 2])
 
 
-CACHE_FACTORIES = [RefBurstCache]
-# When the production cache exists, append it here, e.g.:
-#   from s1grits.burst_cache import BurstCache
-#   CACHE_FACTORIES.append(BurstCache)
+class _RealCacheAdapter:
+    """Adapt the production URL-keyed BurstCache to the (granule_id, pol) contract."""
+
+    def __init__(self, root):
+        import sys
+        _src = str(Path(__file__).resolve().parents[1] / "src")
+        if _src not in sys.path:
+            sys.path.insert(0, _src)
+        from s1grits.burst_cache import BurstCache
+        self._c = BurstCache(root)
+
+    @staticmethod
+    def _url(granule_id, pol):
+        return f"https://asf.example/{granule_id}/{pol}.tif"
+
+    def get(self, granule_id, pol):
+        return self._c.get(self._url(granule_id, pol))
+
+    def put(self, granule_id, pol, content):
+        self._c.put(self._url(granule_id, pol), content)
+
+    def simulate_interrupted_put(self, granule_id, pol, content):
+        # Write only the .bin temp, never publish -> no checksum sidecar.
+        data_p, _ = self._c._paths(self._url(granule_id, pol))
+        tmp = data_p.with_suffix(data_p.suffix + ".part.test")
+        tmp.write_bytes(content)
+
+    def corrupt_committed_entry(self, granule_id, pol):
+        data_p, _ = self._c._paths(self._url(granule_id, pol))
+        raw = data_p.read_bytes()
+        data_p.write_bytes(raw[: len(raw) // 2])
+
+
+CACHE_FACTORIES = [RefBurstCache, _RealCacheAdapter]
 
 
 @pytest.fixture(params=CACHE_FACTORIES, ids=lambda f: f.__name__)

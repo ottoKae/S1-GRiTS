@@ -4078,6 +4078,12 @@ def process_single_scenes_tile(
     from s1grits.stac_builder import set_stac_output_enabled
     set_stac_output_enabled(False)
 
+    # Opt-in cross-tile burst cache (default off => unchanged download path).
+    # Configured per worker process from memory.burst_cache_dir so shared bursts
+    # between adjacent tiles are downloaded once and reused from disk.
+    from s1grits import burst_cache
+    burst_cache.configure(config.get('memory', {}).get('burst_cache_dir'))
+
     _console = Console(legacy_windows=True, no_color=False, quiet=quiet)
     _console.print(f"\n[bold cyan]Tile: {mgrs_tile_id}[/bold cyan]")
 

@@ -176,6 +176,15 @@ def _download_to_bytes(
     deadline = time.monotonic() + retry_timeout_seconds
     attempt = 0
 
+    # Opt-in cross-tile burst cache: return cached bytes without any HTTP when
+    # this URL was already downloaded (this run or a prior one). Inert unless
+    # burst_cache.configure() was called, so the default path is unchanged.
+    from s1grits import burst_cache
+    if burst_cache.is_enabled():
+        _cached = burst_cache.get(url)
+        if _cached is not None:
+            return _cached
+
     while True:
         attempt += 1
         try:
@@ -190,7 +199,10 @@ def _download_to_bytes(
                 for chunk in resp.iter_content(chunk_size=DOWNLOAD_CHUNK_BYTES):
                     if chunk:
                         buf.write(chunk)
-                return buf.getvalue()
+                _data = buf.getvalue()
+                if burst_cache.is_enabled():
+                    burst_cache.put(url, _data)
+                return _data
 
         except FileNotFoundError:
             # Retry up to 2 times with 30 s gap for transient ASF re-archiving.
