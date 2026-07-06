@@ -138,20 +138,36 @@ query:
 # =============================================================================
 parallel:
   enabled: true
-  # Tile-level worker processes. An integer is used as-is; "auto" sizes the
-  # pool from CPU cores and available RAM / the blockwise per-tile working set
-  # (~12 GB), floored at 1 and capped at 8. Blockwise sizing means a big-RAM
-  # box gets more workers than the old full-tile heuristic allowed.
-  # Manual guide: 2 for <=16GB, 4 for 32GB, 6-8 for >=64GB.
+  # Tile-level worker processes (ProcessPoolExecutor). An integer is used as-is;
+  # "auto" sizes the pool from CPU cores and available RAM / the blockwise
+  # per-tile working set (~12 GB), floored at 1 and capped at 8. Blockwise
+  # sizing means a big-RAM box gets more workers than the old full-tile
+  # heuristic allowed. Manual guide: 2 for <=16GB, 4 for 32GB, 6-8 for >=64GB.
+  #
+  # Concurrency model (three cooperating pools; keep the product in mind):
+  #   * parallel.max_workers        — processes, one MGRS tile each
+  #   * monthly.blockwise_threads   — threads PER tile worker for block writes
+  #       -> effective CPU threads ~= max_workers * blockwise_threads
+  #   * memory.max_download_workers — HTTP connections PER tile worker
+  #       -> effective ASF connections ~= max_workers * max_download_workers,
+  #          bounded by a global 16-connection budget when set to "auto"
+  # BLAS/GDAL/OMP stay single-threaded (see the runtime section), so these pools
+  # do not oversubscribe through nested library parallelism.
   max_workers: 2
 
 # =============================================================================
 # MEMORY MANAGEMENT
 # =============================================================================
 memory:
-  # Maximum memory (GB): 'auto' or a number
+  # Maximum memory (GB): 'auto' (detect from the machine via psutil) or a number.
   max_memory_gb: 'auto'
-  # Batch strategy: 'auto', 'yearly', 'quarterly', 'monthly'
+  # Batch strategy: 'auto', 'yearly', 'quarterly', 'monthly'. Controls how many
+  # months of scenes are held in memory per tile at once. With 'auto', the
+  # estimator is blockwise-aware: the blockwise smonthly writer holds only a
+  # burst-footprint working set (~1/4 of a full-tile stack), so a large-RAM box
+  # is allowed a bigger batch than the old full-tile heuristic. When a spatial
+  # neighbourhood filter forces the legacy full-array scenes path (despeckle),
+  # the batch is capped at quarterly to bound peak RSS.
   batch_strategy: 'quarterly'
   # Parallel ASF download connections per tile worker. An integer is used
   # as-is; "auto" divides a global 16-connection budget across the tile-level
@@ -163,7 +179,10 @@ memory:
   # set to a directory, bursts shared between adjacent MGRS tiles (and re-runs)
   # are downloaded once and reused from disk. null (default) disables it, so
   # the download path is byte-for-byte unchanged. Entries are sha256-validated;
-  # the directory can be deleted at any time to reclaim space.
+  # the directory can be deleted at any time to reclaim space. Recommended for
+  # multi-tile ROIs or repeated runs over the same area, where the same burst
+  # feeds several tiles; not useful for a single one-shot tile. Point it at fast
+  # local storage with room for the working set of bursts.
   burst_cache_dir: null
   clear_cache_per_batch: true
   batch_max_retries: 2
@@ -196,19 +215,34 @@ processing:
   # TV despeckle toggle
   # true  -> suffix _tvbregmanX, despeckle applied
   # false -> no despeckle, output suffix is cleaner
-  # Despeckle is applied only in the per-acquisition scenes writer; the smonthly
-  # composite is built from RAW scenes and is never despeckled, so enabling this
-  # does NOT push smonthly onto the slower legacy full-array path (it still uses
-  # the fast blockwise Zarr writer). It does still cap the batch strategy at
-  # quarterly for the memory-heavier legacy despeckle path in the scenes writer.
+  # Despeckle is a spatial-window (neighbourhood) filter. It runs on the full
+  # burst-union mosaic BEFORE the MGRS tile clip (support-before-clip), so tile-
+  # edge pixels are filtered with real beyond-tile neighbours and no artificial
+  # tile-boundary artifact is introduced.
+  # IMPORTANT: despeckle is applied ONLY in the per-acquisition scenes writer.
+  # The smonthly monthly composite is built from RAW (non-despeckled) scenes and
+  # is never despeckled — enabling this flag does NOT despeckle smonthly, and a
+  # separate future feature would be required to add monthly despeckling. Because
+  # smonthly is unaffected, enabling despeckle does NOT push smonthly onto the
+  # slower legacy full-array path (smonthly still uses the fast blockwise Zarr
+  # writer). It does cap the batch strategy at quarterly for the memory-heavier
+  # legacy despeckle path in the scenes writer.
   spatial_despeckle: false
 
   # Optional derived bands (default: false — 2-band VV_dB + VH_dB only)
-  features_ratio: false         # Ratio = VH/VV
-  features_rvi: false          # RVI = 4*VH/(VV+VH)
-  features_glcm: false         # GLCM texture bands
+  features_ratio: false         # Ratio = VH/VV  (per-pixel, no spatial window)
+  features_rvi: false          # RVI = 4*VH/(VV+VH)  (per-pixel, no spatial window)
+  # GLCM texture bands (contrast/homogeneity/entropy/correlation on VV & VH).
+  # GLCM is a spatial-window operation: it is computed on the larger burst-union
+  # mosaic and, in the blockwise smonthly writer, on a halo-expanded window per
+  # Zarr block, then cropped and tile-clipped LAST. This makes the blockwise
+  # result bit-identical to full-mosaic GLCM while avoiding both tile-boundary
+  # and block-boundary artifacts. Enabling it does not force the legacy path.
+  features_glcm: false
 
-  # Clip output to MGRS tile boundary after all processing (recommended: true)
+  # Clip output to MGRS tile boundary. This is deliberately the FINAL step, after
+  # despeckle and GLCM, so spatial-window operations always run on the larger
+  # burst-union support region first (recommended: true).
   tile_clip: true
 
   # Target resolution in meters

@@ -1184,6 +1184,13 @@ def _apply_block_clip(
     y_slice: slice,
     x_slice: slice,
 ) -> None:
+    """Mask a block's bands to the MGRS tile polygon (NaN outside).
+
+    Always the LAST step for a block: per-pixel composites and windowed GLCM are
+    both produced on the larger burst-union support first, so this clip only
+    removes the beyond-tile margin — it never truncates a spatial window
+    (support-before-clip invariant).
+    """
     if clip_geom is None:
         return
     first = next(iter(block_bands.values()), None)
@@ -1362,13 +1369,26 @@ def _write_glcm_blocks(
 ) -> None:
     """Fill the GLCM band arrays for a reserved timestep, block by block.
 
-    For each block, the unclipped VV/VH dB is composited on a ``halo``-expanded
-    window (so the GLCM box filter and co-occurrence shift see the true
-    neighbourhood), GLCM is computed on that window, cropped back to the block,
-    tile-clipped, and written.  This is bit-identical to computing GLCM on the
-    full-tile unclipped dB and then clipping (the legacy path): the composite is
-    per-pixel so the windowed composite equals the full-tile composite, and a
-    halo >= the support radius makes the cropped GLCM equal the full-tile GLCM.
+    Two levels of spatial support cooperate here:
+
+    * The composite window is drawn from the *burst-union* master grid
+      (``transform``/``height``/``width`` come from ``_build_grid_from_bursts``),
+      which is larger than the MGRS tile. This removes *tile*-boundary artifacts
+      because the tile edge is interior to the support region.
+    * ``halo`` (``GLCM_BLOCK_HALO``) expands each block by >= the GLCM support
+      radius (``window//2 + distance``) before compositing, so the box filter and
+      the co-occurrence shift see the true neighbourhood. This removes *block*-
+      boundary artifacts within the tile.
+
+    For each block, the unclipped VV/VH dB is composited on the halo-expanded
+    window, GLCM is computed on that window, cropped back to the block, and only
+    THEN tile-clipped (``_apply_block_clip``) and written. Clip-last is
+    deliberate. The result is bit-identical to computing GLCM on the full
+    unclipped dB mosaic and then clipping (the legacy path): the composite is
+    per-pixel so the windowed composite equals the full-mosaic composite, and a
+    halo >= the support radius makes the cropped GLCM equal the full-mosaic GLCM
+    (see tests/test_glcm_halo_equivalence.py and
+    tests/test_spatial_support_before_clip.py).
     """
     blocks = list(_iter_spatial_blocks(height, width, chunk_y, chunk_x))
 
@@ -2204,7 +2224,15 @@ def _write_scenes_output(
                 f"({_cause}) — writing[/yellow]"
             )
 
-        # Apply spatial despeckle to full mosaicked image (post-mosaic, not per-burst)
+        # Apply spatial despeckle to the full mosaicked image (post-mosaic, not
+        # per-burst). arr_vv_lin/arr_vh_lin are on the burst-union master grid,
+        # which is larger than the MGRS tile, and the tile clip below is applied
+        # only AFTER this filter — so despeckle near the tile edge uses real
+        # beyond-tile pixels (support-before-clip invariant). Despeckle runs on
+        # the whole array (not blockwise), so there are no block seams to halo.
+        # NOTE: this per-acquisition scenes writer is the ONLY despeckle site;
+        # the smonthly monthly composite is built from raw scenes and is never
+        # despeckled (see the gate in the batch loop and config docs).
         if do_despeckle:
             from s1grits.asf_array_processing import despeckle_2d
             _tv_kw = despeckle_kwargs if despeckle_method == "tv_bregman" else None
@@ -2230,7 +2258,9 @@ def _write_scenes_output(
             _rvi_lin = np.where(_denom_rvi > 0, 4.0 * arr_vh_lin / _denom_rvi, np.nan)
             _extra_bands.append((rvi_name, _rvi_lin.astype(np.float32)))
 
-        # GLCM texture bands
+        # GLCM texture bands, computed on the full burst-union mosaic dB BEFORE
+        # the tile clip below, so window/co-occurrence support at the tile edge
+        # uses real beyond-tile pixels (support-before-clip).
         _glcm_bands = []
         if features_glcm:
             from s1grits.asf_array_processing import compute_glcm_texture_bands
@@ -2247,7 +2277,11 @@ def _write_scenes_output(
             for _name, _arr in zip(_tex_names, _tex_arrays):
                 _glcm_bands.append((_name, _arr.astype(np.float32)))
 
-        # Apply MGRS tile clip mask (final step after all processing)
+        # Apply MGRS tile clip mask as the FINAL step, after despeckle, dB
+        # conversion, derived bands, and GLCM. Clipping must stay last so every
+        # spatial-window operation above ran on the larger burst-union support
+        # (support-before-clip); clipping earlier would reintroduce artificial
+        # tile-boundary artifacts.
         if _clip_inv_mask is not None:
             arr_vv_db[_clip_inv_mask] = np.nan
             arr_vh_db[_clip_inv_mask] = np.nan
@@ -4912,7 +4946,15 @@ def process_single_scenes_tile(
                     len(prof_vh) if prof_vh else 0, len(final_vh)
                 )
 
-            # Build master grid from burst footprint union on first success
+            # Build master grid from the burst-footprint UNION (not the MGRS
+            # tile bounds). This is the "support-before-clip" invariant: the
+            # union grid is strictly larger than the tile, so every spatial-
+            # window operation downstream (GLCM texture, despeckle) sees real
+            # beyond-tile neighbours near the tile edge. The MGRS tile clip is
+            # applied only AFTER those operations, which is what prevents
+            # artificial tile-boundary artifacts. Do NOT switch this to
+            # _build_grid_from_mgrs_tile without moving the clip and re-deriving
+            # the halo (see tests/test_spatial_support_before_clip.py).
             if not _grid_built:
                 with _phase_timer(
                     "grid.build",
