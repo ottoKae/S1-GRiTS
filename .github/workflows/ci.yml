@@ -1,0 +1,67 @@
+# CI matrix: the same network-free test suite on every OS users run S1-GRiTS on.
+#
+# Strategy (minimal-reliable first):
+#   * pip-only install — every runtime dependency (rasterio, geopandas,
+#     pyproj, shapely, zarr, opencv-python-headless, ...) ships binary wheels
+#     for CPython 3.12 on linux/macos/windows, so no conda is needed for CI.
+#   * osgeo/GDAL python bindings are deliberately NOT installed: they have no
+#     pip wheels. The mosaic commands guard the import with an actionable
+#     error, and `s1grits doctor` reports osgeo as a WARN, not a failure.
+#   * Ubuntu is the required check; macOS/Windows start as informational
+#     (continue-on-error) until a few green runs establish the baseline —
+#     then remove continue-on-error to promote them to required.
+#
+# Expected failure modes to watch for on first runs:
+#   * a transitive dependency releasing a wheel-less version (pin it here),
+#   * Windows path-length or file-locking issues in tmp-dir Zarr tests,
+#   * slower macOS runners hitting the job timeout (raise if needed).
+name: CI
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+
+jobs:
+  test:
+    name: pytest (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12"]
+        include:
+          - os: ubuntu-latest
+            experimental: false
+          - os: macos-latest
+            experimental: true
+          - os: windows-latest
+            experimental: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install package (wheels only — fail loudly on source builds)
+        run: |
+          python -m pip install --upgrade pip
+          pip install --only-binary=:all: -e ".[dev]"
+
+      - name: Import + CLI smoke
+        run: |
+          python -c "import s1grits; print(s1grits.__name__)"
+          python -m s1grits --version
+          python -m s1grits --help
+
+      - name: Doctor (env + template config validation, no network)
+        run: python -m s1grits doctor --config config/s1grits_scenes.yaml
+
+      - name: Run network-free test suite
+        run: python -m pytest tests/ -q --tb=short

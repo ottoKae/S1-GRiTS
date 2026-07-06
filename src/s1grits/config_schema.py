@@ -14,6 +14,7 @@ silent typos loud.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
@@ -42,11 +43,19 @@ KNOWN_KEYS: dict = {
     "time_range": None,  # legacy alias for time (time_utils)
     "output": {
         "base_dir": None,
+        # v3 policy keys (scenes workflow)
+        "existing_store": None,   # resume | rebuild-incompatible
+        "existing_month": None,   # skip | overwrite
+        # v2 policy keys (deprecated in the scenes workflow; still native to
+        # the legacy monthly/static workflows)
         "overwrite": None,
         "on_time_conflict": None,
-        "disk_warn_gb": None,
+        "disk_warn_gb": None,     # deprecated in favor of preflight.disk
         "formats": {"cog": None, "preview": None},
         "layout_mode": None,  # legacy monthly workflow only
+    },
+    "preflight": {
+        "disk": {"mode": None, "min_free_gb": None},
     },
     "query": {
         "cmr_timeout_seconds": None,
@@ -165,3 +174,97 @@ def warn_unknown_config_keys(config: dict, log: logging.Logger | None = None) ->
     for p in problems:
         log.warning("[Config] %s", p)
     return problems
+
+
+# ---------------------------------------------------------------------------
+# Output policies (v3): store-level vs month-level, explicitly separated.
+#
+# v2 exposed `output.overwrite` (bool) and `output.on_time_conflict`, which
+# read as overlapping/contradictory ("overwrite: true" + "skip"?!). v3 names
+# the two independent levels:
+#
+#   existing_store: what to do with a WHOLE existing Zarr store
+#       "resume"               (default) adopt its locked grid and append;
+#                              fail with recovery options if incompatible
+#       "rebuild-incompatible" delete + re-create a store whose grid/bands
+#                              are incompatible with this run (compatible
+#                              stores are still resumed)
+#   existing_month: what to do when a month ALREADY EXISTS in a
+#                   (compatible) store
+#       "skip"      (default) keep the existing composite
+#       "overwrite" delete that month's time step and rewrite it
+#
+# v2 keys are still accepted with a deprecation warning; explicit v3 keys win.
+# ---------------------------------------------------------------------------
+EXISTING_STORE_VALUES = ("resume", "rebuild-incompatible")
+EXISTING_MONTH_VALUES = ("skip", "overwrite")
+
+
+@dataclass
+class OutputPolicies:
+    """Resolved store-level + month-level output policies."""
+    existing_store: str = "resume"
+    existing_month: str = "skip"
+    deprecations: list[str] = field(default_factory=list)
+
+    @property
+    def rebuild_on_mismatch(self) -> bool:
+        return self.existing_store == "rebuild-incompatible"
+
+
+def resolve_output_policies(
+    config: dict, log: logging.Logger | None = None
+) -> OutputPolicies:
+    """Resolve v3 (preferred) or v2 (deprecated) output policy keys.
+
+    Raises ``ValueError`` on an invalid value — a typo like ``"Skip"`` must
+    fail at startup, not silently select the other branch mid-run.
+    """
+    out = (config or {}).get("output", {}) or {}
+    pol = OutputPolicies()
+
+    if "existing_store" in out:
+        pol.existing_store = str(out["existing_store"]).lower()
+        if "overwrite" in out:
+            pol.deprecations.append(
+                "output.overwrite is ignored because output.existing_store "
+                "is set (v3 key wins)"
+            )
+    elif "overwrite" in out:
+        pol.existing_store = (
+            "rebuild-incompatible" if bool(out["overwrite"]) else "resume"
+        )
+        pol.deprecations.append(
+            "output.overwrite is deprecated; use "
+            f"output.existing_store: {pol.existing_store!r}"
+        )
+
+    if "existing_month" in out:
+        pol.existing_month = str(out["existing_month"]).lower()
+        if "on_time_conflict" in out:
+            pol.deprecations.append(
+                "output.on_time_conflict is ignored because "
+                "output.existing_month is set (v3 key wins)"
+            )
+    elif "on_time_conflict" in out:
+        pol.existing_month = str(out["on_time_conflict"]).lower()
+        pol.deprecations.append(
+            "output.on_time_conflict is deprecated; use "
+            f"output.existing_month: {pol.existing_month!r}"
+        )
+
+    if pol.existing_store not in EXISTING_STORE_VALUES:
+        raise ValueError(
+            f"output.existing_store={pol.existing_store!r} is invalid; "
+            f"expected one of {EXISTING_STORE_VALUES}"
+        )
+    if pol.existing_month not in EXISTING_MONTH_VALUES:
+        raise ValueError(
+            f"output.existing_month={pol.existing_month!r} is invalid; "
+            f"expected one of {EXISTING_MONTH_VALUES}"
+        )
+
+    if log is not None:
+        for d in pol.deprecations:
+            log.warning("[Config] %s", d)
+    return pol

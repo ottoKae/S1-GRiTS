@@ -32,6 +32,7 @@
 ## Table of Contents
 
 - [For Reviewers — Paper ↔ Code](#for-reviewers--paper--code)
+- [Production Guide](docs/PRODUCTION.md) — output policies, preflight/doctor, platform installs, metadata contract, ML access
 - [Features](#features)
 - [Quick Start](#quick-start)
 - [Architecture](#architecture)

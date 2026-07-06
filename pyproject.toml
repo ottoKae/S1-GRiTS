@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "s1grits"
-version = "2.2.0"
+version = "2.3.0"
 description = "S1-GRiTS: Sentinel-1 Gridded Radiometrically Terrain-Corrected gamma0 Monthly Composite Time Series"
 readme = "README.md"
 # Pinned to Python 3.12. The package itself is pure Python, but the geoscience
@@ -46,6 +46,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Atmospheric Science",
     "Operating System :: Microsoft :: Windows",
     "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS :: MacOS X",
 ]
 
 dependencies = [
@@ -79,9 +80,12 @@ dependencies = [
     "rich>=13.0.0",
     "tqdm>=4.66.0",
 
-    # Image processing (despeckle + preview + visualization)
+    # Image processing (despeckle + preview + visualization).
+    # headless build: the code uses only filter2D/warpAffine/imwrite (no GUI),
+    # and the GUI-linked opencv-python wheel needs libGL — the classic
+    # headless-server install failure.
+    "opencv-python-headless>=4.10.0.84",
     "scikit-image>=0.22.0",
-    "opencv-python>=4.10.0.84",
     "pillow>=10.0.0",
     "matplotlib>=3.7.0",
 

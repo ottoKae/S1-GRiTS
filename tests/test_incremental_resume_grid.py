@@ -139,8 +139,10 @@ def test_grid_mismatch_without_overwrite_raises_actionable_error(tmp_path):
             rebuild_on_mismatch=False,
         )
     msg = str(exc.value)
-    # The error must tell the operator exactly how to recover.
+    # The error must tell the operator exactly how to recover, teaching the
+    # v3 policy key while still naming the legacy alias.
     assert "grid mismatch" in msg
+    assert "output.existing_store" in msg and "rebuild-incompatible" in msg
     assert "output.overwrite=true" in msg
     assert "output.base_dir" in msg
     # And must not have touched the store.

@@ -415,8 +415,9 @@ def _init_zarr_2band(
 
         if rebuild_on_mismatch:
             logger.warning(
-                "[Zarr] output.overwrite=true: rebuilding incompatible store "
-                "%s (%s). Existing time steps in this store are discarded.",
+                "[Zarr] existing_store=rebuild-incompatible: rebuilding "
+                "incompatible store %s (%s). Existing time steps in this "
+                "store are discarded.",
                 zarr_path, _incompat,
             )
             import shutil
@@ -427,10 +428,11 @@ def _init_zarr_2band(
                 f"({_incompat}). A grid mismatch usually means the processing "
                 f"window changed (e.g. pilot month -> full year), so this run's "
                 f"burst-union master grid differs from the stored grid. "
-                f"Options: (1) rerun with output.overwrite=true to rebuild this "
-                f"store on the new grid, (2) delete this store to re-create it, "
-                f"or (3) use a fresh output.base_dir. Other tiles/stores are "
-                f"unaffected."
+                f"Options: (1) rerun with output.existing_store: "
+                f"rebuild-incompatible (legacy alias: output.overwrite=true) "
+                f"to rebuild this store on the new grid, (2) delete this store "
+                f"to re-create it, or (3) use a fresh output.base_dir. Other "
+                f"tiles/stores are unaffected."
             )
 
     # Fresh store
@@ -4497,7 +4499,12 @@ def process_single_scenes_tile(
                 "exits to avoid recursive output-root lock acquisition"
             )
 
-        overwrite = config.get('output', {}).get('overwrite', False)
+        # Store-level + month-level output policies (v3 keys, v2 accepted
+        # with deprecation). Resolved silently here — run_scenes_workflow
+        # already validated and logged deprecations once.
+        from s1grits.config_schema import resolve_output_policies
+        _out_pol = resolve_output_policies(config)
+        overwrite = _out_pol.rebuild_on_mismatch
 
         # Incremental update: when Zarr already exists and overwrite=false,
         # we still process the tile normally — the existing store's locked grid
@@ -4522,9 +4529,7 @@ def process_single_scenes_tile(
         generate_preview = config.get('output', {}).get('formats', {}).get(
             'preview', False
         )
-        on_time_conflict = config.get('output', {}).get(
-            'on_time_conflict', 'skip'
-        )
+        on_time_conflict = _out_pol.existing_month
         target_crs = _mgrs_to_utm_epsg(mgrs_tile_id)
 
         tile_clip = processing_config.get("tile_clip", True)
@@ -5476,22 +5481,42 @@ def _process_scenes_tile_with_memory_budget(
     parent's progress bar be the single live display; per-tile detail still
     lands in the log file.
     """
-    import copy
     import os
     from s1grits.runtime_limits import apply_runtime_limits, runtime_limits_from_config
     apply_runtime_limits(runtime_limits_from_config(config))
     os.environ['TQDM_DISABLE'] = '1'   # silence download tqdm bars in this worker
     console.quiet = True               # silence the module-global console
-    config_copy = copy.deepcopy(config)
-
-    if 'memory' not in config_copy:
-        config_copy['memory'] = {}
-    config_copy['memory']['max_memory_gb'] = memory_budget_gb
-    config_copy['memory']['batch_strategy'] = 'auto'
+    config_copy = _apply_worker_memory_budget(config, memory_budget_gb)
 
     return process_single_scenes_tile(
         mgrs_tile_id, time_ranges, config_copy, output_root, quiet=True
     )
+
+
+def _apply_worker_memory_budget(config: dict, memory_budget_gb: float) -> dict:
+    """Return a per-worker config copy with this worker's RAM budget applied.
+
+    ``memory.max_memory_gb`` is set to the worker's share of system RAM so
+    the 'auto' batch-strategy estimator sizes batches for one worker, not the
+    whole machine. An EXPLICIT ``memory.batch_strategy`` (yearly/quarterly/
+    monthly) is honoured unchanged — user configuration is never silently
+    overridden; only 'auto' (or absent) resolves against the worker budget.
+    """
+    import copy
+    config_copy = copy.deepcopy(config)
+    mem = config_copy.setdefault('memory', {})
+    mem['max_memory_gb'] = memory_budget_gb
+
+    explicit = str(mem.get('batch_strategy', 'auto')).lower()
+    if explicit == 'auto':
+        mem['batch_strategy'] = 'auto'
+    else:
+        logger.info(
+            "Honoring explicit memory.batch_strategy=%r in parallel mode "
+            "(worker RAM budget %.1f GB is applied to 'auto' only)",
+            explicit, memory_budget_gb,
+        )
+    return config_copy
 
 
 # ---------------------------------------------------------------------------
@@ -5523,8 +5548,17 @@ def run_scenes_workflow(config_path: str | Path, overrides: dict | None = None) 
     config = apply_output_overrides_and_stac(config, overrides)
     # Warn-only: surface misspelled/misplaced YAML keys that dict.get() would
     # otherwise silently ignore (e.g. processing.on_time_conflict).
-    from s1grits.config_schema import warn_unknown_config_keys
+    from s1grits.config_schema import (
+        warn_unknown_config_keys,
+        resolve_output_policies,
+    )
     warn_unknown_config_keys(config, logger)
+    # Fail fast on invalid output policies; log v2-key deprecations once.
+    _policies = resolve_output_policies(config, logger)
+    logger.info(
+        "Output policies: existing_store=%s, existing_month=%s",
+        _policies.existing_store, _policies.existing_month,
+    )
     runtime_limits = runtime_limits_from_config(config)
     applied_runtime_env = apply_runtime_limits(runtime_limits)
     if applied_runtime_env:
@@ -5605,28 +5639,12 @@ def run_scenes_workflow(config_path: str | Path, overrides: dict | None = None) 
     results: dict[str, dict] = {}
     all_catalogs: list[pd.DataFrame] = []
 
-    # Disk space pre-check (warn-only, mirrors the monthly workflow): a
-    # full-year multi-tile run writes tens of GB, and running out mid-run
-    # wastes the whole download budget.
-    try:
-        import shutil as _shutil
-        _check = output_root
-        while _check != _check.parent and not _check.exists():
-            _check = _check.parent
-        _free_gb = _shutil.disk_usage(str(_check)).free / (1024 ** 3)
-        _warn_gb = float(config.get('output', {}).get('disk_warn_gb', 50.0))
-        if _free_gb < _warn_gb:
-            logger.warning(
-                "Low disk space: %.1f GB free on output volume "
-                "(threshold=%.0f GB). Consider freeing space before "
-                "a long run.", _free_gb, _warn_gb,
-            )
-        else:
-            logger.info(
-                "Disk space OK: %.1f GB free on output volume", _free_gb
-            )
-    except Exception as _disk_e:
-        logger.debug("Disk space check failed: %s", _disk_e)
+    # Disk space preflight under the configurable policy (warn | fail | off):
+    # a full-year multi-tile run writes tens of GB, and running out mid-run
+    # wastes the whole download budget. mode=fail raises PreflightError here,
+    # BEFORE any download starts.
+    from s1grits.preflight import check_disk_space
+    check_disk_space(config, output_root, logger)
 
     # Acquire file lock — prevents concurrent writes to same base_dir
     _lock_info = acquire_lock(str(output_root))

@@ -598,10 +598,14 @@ class PatchDataset:
             patch = (patch - self._mean[None, :, None, None]) / self._std[None, :, None, None]
         if self.nan_to is not None:
             patch = np.nan_to_num(patch, nan=float(self.nan_to))
-        import torch
-        tensor = torch.from_numpy(np.ascontiguousarray(patch))
+        out = np.ascontiguousarray(patch)
+        try:
+            import torch
+            out = torch.from_numpy(out)
+        except ImportError:
+            pass  # torch-free: return the numpy patch as documented
         if self.return_meta:
-            return tensor, {"store": zp, "y0": y0, "x0": x0}
-        return tensor
+            return out, {"store": zp, "y0": y0, "x0": x0}
+        return out
 
 

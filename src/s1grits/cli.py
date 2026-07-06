@@ -540,6 +540,28 @@ def cmd_tile_inspect(args):
     sys.exit(0)
 
 
+def _import_gdal():
+    """Import osgeo.gdal with an actionable error when it is missing.
+
+    rasterio bundles libgdal but NOT the ``osgeo`` python bindings, and pip
+    has no reliable osgeo wheels — conda-forge is the supported install path.
+    """
+    try:
+        from osgeo import gdal
+        return gdal
+    except ImportError as exc:
+        console.print(
+            "[red]ERROR: the 'osgeo' GDAL python bindings are not installed. "
+            "The mosaic/mosaic_scenes commands need them for VRT/COG "
+            "building.\n"
+            "Install via conda-forge (pip has no osgeo wheels):\n"
+            "    conda install -c conda-forge gdal\n"
+            "or create the full environment: conda env create -f "
+            "environment.yml[/red]"
+        )
+        raise SystemExit(1) from exc
+
+
 def cmd_mosaic(args):
     """Create a multi-tile mosaic VRT or COG for a given month"""
     from s1grits.analysis import create_mosaic_vrt, find_cog_files_for_mosaic
@@ -596,6 +618,17 @@ def cmd_mosaic(args):
         import traceback
         traceback.print_exc()
         sys.exit(1)
+
+
+def cmd_doctor(args):
+    """Environment + config health check; exit 0 iff no hard failure."""
+    from s1grits.doctor import run_doctor, format_results
+
+    exit_code, results = run_doctor(
+        config_path=args.config, network=args.network
+    )
+    print(format_results(results))
+    sys.exit(exit_code)
 
 
 def cmd_process_scenes(args):
@@ -795,7 +828,7 @@ def cmd_mosaic_scenes(args):
 
         if args.format == 'cog':
             # Full reproject to target CRS
-            from osgeo import gdal
+            gdal = _import_gdal()
             ref_crs = args.crs if hasattr(args, 'crs') else 'EPSG:4326'
             vrt_path = str(out_path.with_suffix('.vrt'))
             gdal.BuildVRT(vrt_path, cog_files)
@@ -809,7 +842,7 @@ def cmd_mosaic_scenes(args):
             )
         else:
             # VRT (fast, no reprojection)
-            from osgeo import gdal
+            gdal = _import_gdal()
             gdal.BuildVRT(str(out_path), cog_files)
             console.print(
                 f"[green]INFO   VRT created: {out_path}[/green]"
@@ -992,6 +1025,21 @@ Examples:
         help='Filter tiles by MGRS prefix (e.g., 50R includes 50RKU, 50RKV, …)'
     )
     parser_mosaic.set_defaults(func=cmd_mosaic)
+
+    # ── doctor ────────────────────────────────────────────────────────────────
+    parser_doctor = subparsers.add_parser(
+        'doctor',
+        help='Check environment, config, disk, and resource plan before a run'
+    )
+    parser_doctor.add_argument(
+        '--config', default=None,
+        help='YAML config to validate (schema, policies, paths, workers)'
+    )
+    parser_doctor.add_argument(
+        '--network', action='store_true',
+        help='Also check ASF/CMR reachability (needs internet)'
+    )
+    parser_doctor.set_defaults(func=cmd_doctor)
 
     # ── process_scenes ────────────────────────────────────────────────────────
     parser_scenes = subparsers.add_parser(

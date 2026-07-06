@@ -85,6 +85,65 @@ def test_free_form_subtrees_are_not_flagged():
     assert find_unknown_config_keys(cfg) == []
 
 
+# ---------------------------------------------------------------------------
+# v3 output policies: store level vs month level, v2 keys deprecated.
+# ---------------------------------------------------------------------------
+from s1grits.config_schema import resolve_output_policies  # noqa: E402
+
+
+def test_v3_defaults_are_resume_and_skip():
+    pol = resolve_output_policies({})
+    assert pol.existing_store == "resume"
+    assert pol.existing_month == "skip"
+    assert pol.rebuild_on_mismatch is False
+    assert pol.deprecations == []
+
+
+def test_v3_keys_resolve_without_deprecations():
+    cfg = {"output": {"existing_store": "rebuild-incompatible",
+                      "existing_month": "overwrite"}}
+    pol = resolve_output_policies(cfg)
+    assert pol.rebuild_on_mismatch is True
+    assert pol.existing_month == "overwrite"
+    assert pol.deprecations == []
+
+
+def test_v2_keys_map_with_deprecation_warnings():
+    cfg = {"output": {"overwrite": True, "on_time_conflict": "overwrite"}}
+    pol = resolve_output_policies(cfg)
+    assert pol.existing_store == "rebuild-incompatible"
+    assert pol.existing_month == "overwrite"
+    assert len(pol.deprecations) == 2
+    assert all("deprecated" in d for d in pol.deprecations)
+
+
+def test_v3_wins_over_v2_when_both_present():
+    cfg = {"output": {"existing_store": "resume", "overwrite": True,
+                      "existing_month": "skip", "on_time_conflict": "overwrite"}}
+    pol = resolve_output_policies(cfg)
+    assert pol.existing_store == "resume"
+    assert pol.existing_month == "skip"
+    assert len(pol.deprecations) == 2
+    assert all("ignored" in d for d in pol.deprecations)
+
+
+def test_invalid_policy_values_fail_fast():
+    # A typo must error at startup, not silently pick the other branch.
+    with pytest.raises(ValueError, match="existing_store"):
+        resolve_output_policies({"output": {"existing_store": "rebuild"}})
+    with pytest.raises(ValueError, match="existing_month"):
+        resolve_output_policies({"output": {"on_time_conflict": "skpi"}})
+
+
+def test_shipped_scenes_template_uses_v3_keys():
+    out = _load("s1grits_scenes.yaml")["output"]
+    assert out.get("existing_store") == "resume"
+    assert out.get("existing_month") == "skip"
+    assert "overwrite" not in out and "on_time_conflict" not in out
+    pol = resolve_output_policies({"output": out})
+    assert pol.deprecations == []
+
+
 def test_warn_helper_logs_and_never_raises(caplog):
     import logging
     with caplog.at_level(logging.WARNING):

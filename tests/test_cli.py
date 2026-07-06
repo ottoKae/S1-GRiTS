@@ -23,7 +23,7 @@ from s1grits import cli  # noqa: E402
 # Commands that must remain visible in the production help.
 RETAINED_VISIBLE = [
     "process", "process_scenes", "process_static",
-    "catalog", "tile", "mosaic", "mosaic_scenes",
+    "catalog", "tile", "mosaic", "mosaic_scenes", "doctor",
 ]
 # Hidden from --help but must keep working (pure alias for `process`).
 HIDDEN_ALIASES = ["process_monthly"]
