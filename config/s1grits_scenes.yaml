@@ -118,6 +118,11 @@ query:
   cmr_timeout_seconds: 90      # per-request timeout (asf_search default is 30)
   max_retries: 3               # retry each time-range chunk this many times
   retry_backoff_seconds: 5     # base backoff; waits 5s, 10s, 20s, … between tries
+  # Parallel CMR burst subqueries. 1 = serial single call (default). Higher
+  # values split the tile's burst-ID list into that many chunks and query CMR
+  # concurrently; the merged result is identical to the serial call (bursts are
+  # independent; dedup + sort are deterministic). 4 is a good, polite value.
+  max_workers: 4
   # Look back this many months (metadata only, no download) to establish each
   # track's TRUE burst footprint, so interior-gap detection works even when the
   # processed window is short (e.g. a single month). 0 disables.

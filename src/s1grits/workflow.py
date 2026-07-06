@@ -229,6 +229,9 @@ def query_rtc_metadata_for_tile(
     cmr_timeout = int(query_cfg.get('cmr_timeout_seconds', 90))
     max_retries = int(query_cfg.get('max_retries', 3))
     backoff = float(query_cfg.get('retry_backoff_seconds', 5))
+    # Parallelize the per-burst CMR subqueries (identical merged result set).
+    # Default 1 = serial single call, unchanged behaviour.
+    query_workers = int(query_cfg.get('max_workers', 1))
     try:
         import asf_search
         asf_search.constants.INTERNAL.CMR_TIMEOUT = cmr_timeout
@@ -248,7 +251,8 @@ def query_rtc_metadata_for_tile(
                     track_numbers=None,  # Get all tracks
                     start_acq_dt=start_date,
                     stop_acq_dt=end_date,
-                    polarizations=polarization
+                    polarizations=polarization,
+                    query_workers=query_workers,
                 )
                 break
             except Exception as e:

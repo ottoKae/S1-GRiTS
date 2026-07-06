@@ -159,12 +159,62 @@ def append_pass_data(df_rtc: gpd.GeoDataFrame, mgrs_tile_ids: list[str]) -> gpd.
     return df_rtc
 
 
+def _chunk_list(items: list, n_chunks: int) -> list[list]:
+    """Split *items* into up to *n_chunks* contiguous, roughly-equal chunks."""
+    n_chunks = max(1, min(int(n_chunks), len(items)))
+    if n_chunks <= 1:
+        return [items]
+    size = (len(items) + n_chunks - 1) // n_chunks
+    return [items[i:i + size] for i in range(0, len(items), size)]
+
+
+def _geo_search_bursts(
+    burst_ids: list[str],
+    start_acq_dt_obj,
+    stop_acq_dt_obj,
+    query_workers: int,
+) -> list:
+    """Run asf.geo_search over *burst_ids*, optionally across a thread pool.
+
+    Splitting the burst-ID list into chunks and issuing one geo_search per
+    chunk returns the same union of products as a single geo_search over the
+    whole list (bursts are independent), so the concatenated response feeds
+    the identical downstream dedup/sort and yields a bit-identical result set.
+    Parallelism only overlaps the network round-trips.  ``query_workers <= 1``
+    keeps the original single call.
+    """
+    if query_workers <= 1 or len(burst_ids) <= 1:
+        return list(asf.geo_search(
+            operaBurstID=burst_ids,
+            processingLevel='RTC',
+            start=start_acq_dt_obj,
+            end=stop_acq_dt_obj,
+        ))
+    chunks = _chunk_list(burst_ids, query_workers)
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _one(chunk):
+        return list(asf.geo_search(
+            operaBurstID=chunk,
+            processingLevel='RTC',
+            start=start_acq_dt_obj,
+            end=stop_acq_dt_obj,
+        ))
+
+    resp: list = []
+    with ThreadPoolExecutor(max_workers=len(chunks)) as ex:
+        for part in ex.map(_one, chunks):   # ex.map preserves chunk order
+            resp.extend(part)
+    return resp
+
+
 def get_rtc_s1_ts_metadata_by_burst_ids(
     burst_ids: str | list[str],
     start_acq_dt: str | datetime | None | pd.Timestamp = None,
     stop_acq_dt: str | datetime | None | pd.Timestamp = None,
     polarizations: str | None = None,
     include_single_polarization: bool = False,
+    query_workers: int = 1,
 ) -> gpd.GeoDataFrame:
     """Wrap/format the ASF search API for RTC-S1 metadata search. All searches go through this function.
 
@@ -172,6 +222,11 @@ def get_rtc_s1_ts_metadata_by_burst_ids(
     of the available type).
 
     If dual polarized data is mixed (that is there are HH+HV and VV+VH), will raise an error.
+
+    ``query_workers`` > 1 splits the burst-ID list into that many chunks and
+    issues the CMR searches concurrently.  The merged result is identical to the
+    serial single-call result (bursts are independent; the downstream dedup and
+    ``sort_values(['jpl_burst_id', 'acq_dt'])`` are deterministic).
     """
     if isinstance(burst_ids, str):
         burst_ids = [burst_ids]
@@ -191,12 +246,7 @@ def get_rtc_s1_ts_metadata_by_burst_ids(
 
     # Make sure JPL syntax is transformed to asf syntax
     burst_ids = [burst_id.upper().replace('-', '_') for burst_id in burst_ids]
-    resp = asf.geo_search(
-        operaBurstID=burst_ids,
-        processingLevel='RTC',
-        start=start_acq_dt_obj,
-        end=stop_acq_dt_obj,
-    )
+    resp = _geo_search_bursts(burst_ids, start_acq_dt_obj, stop_acq_dt_obj, query_workers)
     if not resp:
         warn('No results - please check burst id and availability.', category=UserWarning)
         return gpd.GeoDataFrame(columns=rtc_s1_resp_schema.columns.keys())
@@ -577,8 +627,13 @@ def get_rtc_s1_ts_metadata_from_mgrs_tiles(
     start_acq_dt: str | datetime | None = None,
     stop_acq_dt: str | datetime | None = None,
     polarizations: str | None = None,
+    query_workers: int = 1,
 ) -> gpd.GeoDataFrame:
-    """Get the RTC S1 time series for a given MGRS tile and track number."""
+    """Get the RTC S1 time series for a given MGRS tile and track number.
+
+    ``query_workers`` > 1 parallelizes the CMR burst searches (identical
+    result set; see get_rtc_s1_ts_metadata_by_burst_ids).
+    """
     if isinstance(start_acq_dt, str):
         start_acq_dt = datetime.strptime(start_acq_dt, '%Y-%m-%d')
     if isinstance(stop_acq_dt, str):
@@ -586,7 +641,8 @@ def get_rtc_s1_ts_metadata_from_mgrs_tiles(
 
     burst_ids = get_burst_ids_in_mgrs_tiles(mgrs_tile_ids, track_numbers=track_numbers)
     df_rtc_ts = get_rtc_s1_ts_metadata_by_burst_ids(
-        burst_ids, start_acq_dt=start_acq_dt, stop_acq_dt=stop_acq_dt, polarizations=polarizations
+        burst_ids, start_acq_dt=start_acq_dt, stop_acq_dt=stop_acq_dt,
+        polarizations=polarizations, query_workers=query_workers,
     )
     if df_rtc_ts.empty:
         mgrs_tiles_str = ','.join(mgrs_tile_ids)
