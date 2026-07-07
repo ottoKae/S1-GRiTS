@@ -4757,7 +4757,9 @@ def process_single_scenes_tile(
                 import re as _re
                 for _, _row in _cat.iterrows():
                     _ggid = str(_row.get('geometry_group_id') or '')
-                    _m = _re.search(r'_TK(.+?)_N\d+', _ggid)
+                    # geometry_group_id is {TILE}_{DIR}_TK{tok} (track-only,
+                    # current) or {TILE}_{DIR}_TK{tok}_N{nn} (legacy records).
+                    _m = _re.search(r'_TK([\d\-]+)(?:_N\d+)?$', _ggid)
                     if not _m:
                         continue
                     _tok = _m.group(1).replace('-', '_')  # dashed in name -> underscore token
