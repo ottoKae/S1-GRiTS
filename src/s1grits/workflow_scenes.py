@@ -4619,6 +4619,44 @@ def _write_monthly_output_scenes(
     return records
 
 
+def _iter_prefetched(items: list, fetch, prefetch: bool):
+    """Yield ``(index, fetch(index, item))`` in order, optionally pipelined.
+
+    With ``prefetch=False`` this is a plain sequential loop (byte-identical
+    behaviour to the historical batch loop). With ``prefetch=True`` a
+    single background thread runs ``fetch`` for item N+1 while the caller
+    consumes item N's result — a one-batch lookahead that overlaps the
+    download phase of the next batch with the QC/composite/write phases of
+    the current one. The lookahead is exactly one: at most two fetched
+    results are alive at once (the one being consumed and the one being
+    fetched), so peak memory is bounded at ~2x a single batch.
+
+    ``fetch`` exceptions surface at the corresponding iteration, exactly as
+    they would inline. Closing the generator early cancels the queued fetch
+    and drains the in-flight one before returning.
+    """
+    n = len(items)
+    if not prefetch or n <= 1:
+        for i, item in enumerate(items, 1):
+            yield i, fetch(i, item)
+        return
+
+    from concurrent.futures import ThreadPoolExecutor
+    ex = ThreadPoolExecutor(max_workers=1, thread_name_prefix="batch-prefetch")
+    fut = None
+    try:
+        fut = ex.submit(fetch, 1, items[0])
+        for i in range(1, n + 1):
+            cur, fut = fut, None
+            if i < n:
+                fut = ex.submit(fetch, i + 1, items[i])
+            yield i, cur.result()
+    finally:
+        if fut is not None:
+            fut.cancel()
+        ex.shutdown(wait=True, cancel_futures=True)
+
+
 # ---------------------------------------------------------------------------
 # Per-tile processor
 # ---------------------------------------------------------------------------
@@ -4736,10 +4774,19 @@ def process_single_scenes_tile(
         # The blockwise smonthly writer is active when no spatial-neighbourhood
         # filter forces the legacy full-tile path; its peak memory scales with
         # the burst footprint, not a full-tile stack, so use the blockwise-aware
-        # estimate for the 'auto' batch strategy.
+        # estimate for the 'auto' batch strategy. Passing the real acquisition
+        # dates makes 'auto' demand-aware: the strategy is chosen from the PEAK
+        # batch each candidate strategy would hold, not the total scene count.
+        # Download prefetch keeps a second batch resident, so it doubles the
+        # demand the estimator must fit.
         _blockwise_active = not _spatial_filters_for_strategy
+        _prefetch_cfg = bool(
+            (config.get('memory', {}) or {}).get('download_prefetch', False)
+        )
         batch_strategy = get_memory_strategy_from_config(
-            config, n_scenes, blockwise=_blockwise_active
+            config, n_scenes, blockwise=_blockwise_active,
+            acq_dates=df_rtc_ts['acq_dt'],
+            resident_batches=2 if _prefetch_cfg else 1,
         )
         batch_strategy = _cap_batch_strategy_for_spatial_filters(
             batch_strategy, _spatial_filters_for_strategy
@@ -5055,7 +5102,18 @@ def process_single_scenes_tile(
         # downloads, and sequential VV then VH doubles wall-clock network time.
         _vv_first_qc = False
 
-        for batch_idx, batch_dates in enumerate(date_batches, 1):
+        def _fetch_batch(batch_idx: int, batch_dates: list) -> dict | None:
+            """Prepare and download ONE batch; returns its arrays or None.
+
+            This is the producer half of the batch loop, extracted so a
+            one-batch download prefetch can run it on a background thread
+            while the main thread composites the previous batch (see
+            _iter_prefetched). It is prefetch-safe: it only reads the
+            enclosing scope and appends to _incomplete_acqs (list.append is
+            atomic under the GIL). Returns None when the batch has no valid
+            URL pairs or its download failed — the historical 'continue'
+            cases.
+            """
             logger.info("--- Batch %d/%d ---", batch_idx, len(date_batches))
 
             with _phase_timer(
@@ -5089,7 +5147,7 @@ def process_single_scenes_tile(
                 logger.warning(
                     "Batch %d has no valid URL pairs, skipping", batch_idx
                 )
-                continue
+                return None
 
             # Download with batch-level retry
             _batch_success = False
@@ -5198,7 +5256,7 @@ def process_single_scenes_tile(
                 logger.warning(
                     "Batch %d skipped (download failed)", batch_idx
                 )
-                continue
+                return None
 
             _console.print(
                 f"[dim]    Batch {batch_idx}/{len(date_batches)}: "
@@ -5329,6 +5387,47 @@ def process_single_scenes_tile(
                     "full-tile mosaics (memory-intensive).",
                     len(prof_vh) if prof_vh else 0, len(final_vh)
                 )
+
+            return {
+                'df_batch': df_batch,
+                'df_input': df_input,
+                'final_vv': final_vv, 'prof_vv': prof_vv,
+                'final_vh': final_vh, 'prof_vh': prof_vh,
+                'clean_dates': clean_dates,
+                'copol_source_indices': _copol_source_indices,
+            }
+
+        # One-batch download prefetch (opt-in): while the main thread runs
+        # QC/composite/write for batch N, a background thread prepares and
+        # downloads batch N+1. Peak memory grows by ONE extra batch, so keep
+        # batch strategy sizing in mind (the demand-aware 'auto' strategy
+        # accounts for this automatically via resident_batches=2). Disabled
+        # for the sequential VV-first QC path, which re-enters the download
+        # pool mid-consume.
+        _prefetch_enabled = bool(
+            (config.get('memory', {}) or {}).get('download_prefetch', False)
+        ) and not _vv_first_qc
+        if _prefetch_enabled:
+            logger.info(
+                "[Prefetch] Download prefetch enabled: batch N+1 downloads on "
+                "a background thread while batch N is composited (one extra "
+                "batch resident in RAM)."
+            )
+
+        for batch_idx, _fetched in _iter_prefetched(
+            date_batches, _fetch_batch, _prefetch_enabled
+        ):
+            if _fetched is None:
+                continue
+            df_batch = _fetched['df_batch']
+            df_input = _fetched['df_input']
+            final_vv = _fetched['final_vv']
+            prof_vv = _fetched['prof_vv']
+            final_vh = _fetched['final_vh']
+            prof_vh = _fetched['prof_vh']
+            clean_dates = _fetched['clean_dates']
+            _copol_source_indices = _fetched['copol_source_indices']
+            del _fetched
 
             # Build master grid from the burst-footprint UNION (not the MGRS
             # tile bounds). This is the "support-before-clip" invariant: the

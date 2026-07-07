@@ -146,6 +146,70 @@ def select_batch_strategy(
     return strategy
 
 
+def peak_batch_scene_counts(acq_dates) -> dict[str, int]:
+    """Peak scenes held at once per candidate batch strategy.
+
+    ``acq_dates`` is one entry per scene row (burst acquisition) — NOT unique
+    dates — so counts reflect what a batch actually loads into RAM. Returns
+    the maximum row count over any single year / quarter / month.
+    """
+    idx = pd.DatetimeIndex(pd.to_datetime(list(acq_dates)))
+    if idx.tz is not None:
+        idx = idx.tz_convert(None)
+    if len(idx) == 0:
+        return {'yearly': 0, 'quarterly': 0, 'monthly': 0}
+    s = pd.Series(1, index=idx)
+    return {
+        'yearly': int(s.groupby(idx.year).sum().max()),
+        'quarterly': int(s.groupby([idx.year, idx.quarter]).sum().max()),
+        'monthly': int(s.groupby([idx.year, idx.month]).sum().max()),
+    }
+
+
+def select_batch_strategy_by_demand(
+    available_memory_gb: float,
+    acq_dates,
+    tile_size: tuple[int, int] = (6930, 6162),
+    *,
+    blockwise: bool = False,
+    resident_batches: int = 1,
+) -> str:
+    """Pick the coarsest batch strategy whose PEAK batch fits the RAM budget.
+
+    This is the demand-aware replacement for the threshold rules in
+    :func:`select_batch_strategy`, which gate on the TOTAL scene count of the
+    run — a quantity that says nothing about how many scenes one batch holds,
+    so any full-archive run degrades to 'monthly' regardless of RAM. Here the
+    demand model is per-batch: the actual acquisition-date histogram gives
+    the worst-case batch size under each strategy, and the coarsest strategy
+    whose estimated peak fits 80% of ``available_memory_gb`` wins.
+
+    ``resident_batches`` is the number of batches simultaneously resident:
+    1 for the plain serial loop, 2 when download prefetch overlaps batch N+1
+    with batch N's compute.
+    """
+    peaks = peak_batch_scene_counts(acq_dates)
+    resident = max(1, int(resident_batches))
+    chosen = 'monthly'
+    for strategy in ('yearly', 'quarterly', 'monthly'):
+        demand_gb = estimate_memory_demand_gb(
+            peaks[strategy], tile_size, blockwise=blockwise
+        ) * resident
+        fits = demand_gb <= available_memory_gb * 0.8
+        logger.info(
+            "Demand-aware strategy check: %s peak=%d scenes -> %.1f GB "
+            "(x%d resident, %s path) vs budget %.1f GB -> %s",
+            strategy, peaks[strategy], demand_gb, resident,
+            "blockwise" if blockwise else "full-tile",
+            available_memory_gb * 0.8, "fits" if fits else "too large",
+        )
+        if fits:
+            chosen = strategy
+            break
+    logger.info("Selected strategy: %s (demand-aware)", chosen)
+    return chosen
+
+
 def chunk_time_by_strategy(
     dates: list[pd.Timestamp],
     strategy: str
@@ -214,7 +278,8 @@ def chunk_time_by_strategy(
 
 
 def get_memory_strategy_from_config(
-    config: dict, n_scenes: int = 100, *, blockwise: bool = False
+    config: dict, n_scenes: int = 100, *, blockwise: bool = False,
+    acq_dates=None, resident_batches: int = 1,
 ) -> str:
     """
     Get or automatically select memory strategy from configuration file
@@ -225,6 +290,12 @@ def get_memory_strategy_from_config(
         blockwise: When True, use the blockwise-aware memory estimate for the
             'auto' path (the blockwise smonthly writer never builds a full-tile
             stack, so it can sustain a coarser batch strategy at the same RAM).
+        acq_dates: Optional per-scene acquisition timestamps. When provided,
+            'auto' uses the demand-aware selector (peak-batch demand from the
+            real date histogram) instead of the legacy total-scene-count
+            thresholds, which degrade every full-archive run to 'monthly'.
+        resident_batches: Batches simultaneously resident (2 with download
+            prefetch enabled). Demand-aware path only.
 
     Returns:
         'yearly' | 'quarterly' | 'monthly'
@@ -242,7 +313,15 @@ def get_memory_strategy_from_config(
             available_mem = float(max_memory_gb)
             logger.info("Using configured memory limit: %.1f GB", available_mem)
 
-        strategy = select_batch_strategy(available_mem, n_scenes, blockwise=blockwise)
+        if acq_dates is not None and len(acq_dates) > 0:
+            strategy = select_batch_strategy_by_demand(
+                available_mem, acq_dates,
+                blockwise=blockwise, resident_batches=resident_batches,
+            )
+        else:
+            strategy = select_batch_strategy(
+                available_mem, n_scenes, blockwise=blockwise
+            )
     else:
         # Use manually configured strategy
         strategy = batch_strategy

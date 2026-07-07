@@ -70,6 +70,7 @@ KNOWN_KEYS: dict = {
         "max_memory_gb": None,
         "batch_strategy": None,
         "max_download_workers": None,
+        "download_prefetch": None,
         "burst_cache_dir": None,
         "clear_cache_per_batch": None,
         "batch_max_retries": None,
