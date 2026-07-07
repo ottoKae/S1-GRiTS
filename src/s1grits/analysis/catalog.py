@@ -691,9 +691,19 @@ def _resync_locked(output_root, _skip_dirs, write_stac, stac_format) -> Dict[str
                     track_val = int(_tk_str.split('-')[0]) if '-' in _tk_str else int(_tk_str)
                 else:
                     track_val = None
+                # n_bursts appears in scenes/static store names (_N{nn}); the
+                # smonthly store keys on the track alone (time-varying bursts),
+                # carrying n_bursts as Zarr provenance instead. Fall back to the
+                # attr, and keep the _N segment out of the identity IDs whenever
+                # the store name omits it so a track-only store is not crash-
+                # formatted (None:02d) nor split by a fabricated burst count.
                 n_bursts_val = int(_nn_match.group(1)) if _nn_match else None
+                if n_bursts_val is None:
+                    _attr_nb = g.attrs.get('n_bursts', None)
+                    n_bursts_val = int(_attr_nb) if _attr_nb else None
+                _nn_suffix = f"_N{int(_nn_match.group(1)):02d}" if _nn_match else ""
 
-                item_id = f"{tile_id}_{flight_direction or 'UNK'}_TK{track_val}_N{n_bursts_val:02d}_{product_type}" if track_val else f"{tile_id}_{flight_direction or 'UNK'}_{product_type}"
+                item_id = f"{tile_id}_{flight_direction or 'UNK'}_TK{track_val}{_nn_suffix}_{product_type}" if track_val else f"{tile_id}_{flight_direction or 'UNK'}_{product_type}"
 
                 # Check for COG files
                 cog_dir = prod_dir / 'cog'
@@ -718,7 +728,7 @@ def _resync_locked(output_root, _skip_dirs, write_stac, stac_format) -> Dict[str
                     'start_datetime': start_dt,
                     'end_datetime': end_dt,
                     'month': dt_val.strftime('%Y-%m') if dt_val else None,
-                    'geometry_group_id': f"{tile_id}_{flight_direction or 'UNK'}_TK{track_val}_N{n_bursts_val:02d}" if track_val else None,
+                    'geometry_group_id': f"{tile_id}_{flight_direction or 'UNK'}_TK{track_val}{_nn_suffix}" if track_val else None,
                     'track': track_val,
                     'n_bursts': n_bursts_val,
                     'n_scenes': len(time_steps) if time_steps else None,

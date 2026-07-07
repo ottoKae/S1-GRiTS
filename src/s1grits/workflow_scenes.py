@@ -21,9 +21,9 @@ Output structure:
           cog/s1grits_scenes_{TILE}_{DIR}_TK{tk}_N{nn}_{DT}.tif
           preview/s1grits_scenes_{TILE}_{DIR}_TK{tk}_N{nn}_{DT}.png
         smonthly_{DIR}_{bands}/
-          zarr/s1grits_smonthly_{TILE}_{DIR}_monthly.zarr
-          cog/s1grits_smonthly_{TILE}_{DIR}_{YYYY-MM}.tif
-          preview/s1grits_smonthly_{TILE}_{DIR}_{YYYY-MM}.png
+          zarr/s1grits_smonthly_{TILE}_{DIR}_TK{tk}.zarr
+          cog/s1grits_smonthly_{TILE}_{DIR}_TK{tk}_{YYYY-MM}.tif
+          preview/s1grits_smonthly_{TILE}_{DIR}_TK{tk}_{YYYY-MM}.png
         items/{product_label}/{id}.json
 
 CLI entry point: s1grits process_scenes --config config.yaml
@@ -3394,7 +3394,8 @@ def _generate_cog_preview_from_zarr(
     track_token : str
         Track token for file naming
     n_bursts_track : int
-        Number of bursts for this track
+        Number of bursts for this track. Time-varying provenance only; it is
+        NOT part of the asset name (assets key on the track alone).
     target_crs : str
         Target CRS (e.g., EPSG:32617)
     tile_clip : bool
@@ -3423,9 +3424,12 @@ def _generate_cog_preview_from_zarr(
     # check below cannot drift apart.
     _cog_dir = tile_dir / product_label / 'cog'
     _png_dir = tile_dir / product_label / 'preview'
+    # Asset names key on the track only, matching the store identity (see
+    # _write_smonthly_one_track). n_bursts is time-varying provenance, not part
+    # of the filename, so a single track's assets never fragment across batches.
     _asset_stem = (
         f"s1grits_smonthly_{mgrs_tile_id}_{direction_label}_"
-        f"TK{track_token}_N{n_bursts_track:02d}_{month_str}"
+        f"TK{track_token}_{month_str}"
     )
     cog_path = _cog_dir / f"{_asset_stem}.tif"
     png_path = _png_dir / f"{_asset_stem}.png"
@@ -3654,14 +3658,15 @@ def _write_smonthly_one_track(
 ) -> list[dict]:
     """
     Compute monthly composites for ONE acquisition-group track and write
-    smonthly/zarr/s1grits_smonthly_{TILE}_{DIR}_TK{tok}_N{nn}.zarr (plus optional
+    smonthly/zarr/s1grits_smonthly_{TILE}_{DIR}_TK{tok}.zarr (plus optional
     cog/preview). Writes one STAC Item per month.
 
     The caller passes ``df_batch`` already filtered to a single ``track_token``
     (acq group) and sets ``restrict_to_group=True``; the month loop then keeps
     only the acquisitions belonging to that group, so each track_token gets its
     own per-track product files (mirroring the scenes/static per-track layout).
-    ``track_token``/``n_bursts_track`` drive the file naming. When
+    ``track_token`` drives the file naming; ``n_bursts_track`` is recorded as
+    per-month catalog provenance only (never embedded in the store name). When
     ``restrict_to_group`` is False all acquisitions are used (single-product
     degrade, e.g. when no track metadata is available).
     The master grid is passed in from the caller and shared with the scenes
@@ -3669,7 +3674,13 @@ def _write_smonthly_one_track(
 
     Returns catalog records with product_type='smonthly'.
     """
-    _tk_suffix = f"_TK{track_token}_N{n_bursts_track:02d}"
+    # Store identity keys on the track ONLY. n_bursts is time-varying: bursts
+    # drop in/out of a track's acquisitions between batches, so embedding it in
+    # the store name splits ONE track across multiple fragmented .zarr stores
+    # (e.g. _TK18_N09 vs _TK18_N10), each holding a disjoint slice of the time
+    # series instead of appending to a single store. n_bursts is retained as
+    # provenance on each per-month catalog record (see _add_smonthly_record).
+    _tk_suffix = f"_TK{track_token}"
     # Build product subdirectory name: smonthly_{DIR}_{bands}
     _mbp = []
     if features_ratio: _mbp.append('Ratio')
@@ -3733,6 +3744,11 @@ def _write_smonthly_one_track(
     g.attrs['product_variant'] = _smonthly_variant
     g.attrs['processing_variant_json'] = json.dumps(_smonthly_variant_vals)
     g.attrs['product_label'] = product_label
+    # n_bursts is no longer in the store name (it is time-varying and would
+    # fragment the track); record it as store-level provenance so a filesystem
+    # rescan can still recover a burst count for the track.
+    if n_bursts_track:
+        g.attrs['n_bursts'] = int(n_bursts_track)
 
     existing_months: set[str] = set()
     if g['time'].shape[0] > 0:
@@ -4398,7 +4414,7 @@ def _write_monthly_output_scenes(
 
     Enumerates the acquisition-group tracks (``track_token``) present in
     ``df_batch`` and writes one independent smonthly product per group (its own
-    ``..._TK{tok}_N{nn}.zarr``/cog/preview/catalog records), mirroring the
+    ``..._TK{tok}.zarr``/cog/preview/catalog records), mirroring the
     scenes/static per-track layout. Grouping by ``track_token`` (not
     ``track_number``) is what keeps the file naming and the grouping key
     identical — so multi-relative-orbit acq groups (e.g. "69_172") map to a
