@@ -305,7 +305,7 @@ def test_smonthly_writer_removes_empty_zarr_when_no_qc_passing_acquisitions(
         tmp_path
         / "smonthly_ASCENDING"
         / "zarr"
-        / "s1grits_smonthly_17MNU_ASCENDING_TK18_N02.zarr"
+        / "s1grits_smonthly_17MNU_ASCENDING_TK18.zarr"
     )
 
     assert records == []
@@ -388,7 +388,7 @@ def test_smonthly_blockwise_uses_global_track_coverage_order(tmp_path, monkeypat
         tmp_path
         / "smonthly_ASCENDING"
         / "zarr"
-        / "s1grits_smonthly_17MNU_ASCENDING_TK1_2_N02.zarr"
+        / "s1grits_smonthly_17MNU_ASCENDING_TK1_2.zarr"
     )
     g = zarr.open_group(str(zarr_path), mode="r", zarr_format=3)
     vv = g["VV_dB"][0]
@@ -518,7 +518,7 @@ def test_smonthly_blockwise_matches_legacy_small_array(tmp_path, monkeypatch):
             tile_dir
             / "smonthly_ASCENDING_Ratio_RVI"
             / "zarr"
-            / "s1grits_smonthly_17MNU_ASCENDING_TK1_2_N02.zarr"
+            / "s1grits_smonthly_17MNU_ASCENDING_TK1_2.zarr"
         )
         return records, zarr.open_group(str(zarr_path), mode="r", zarr_format=3)
 
@@ -538,3 +538,6 @@ def test_smonthly_blockwise_matches_legacy_small_array(tmp_path, monkeypatch):
             atol=1e-6,
             equal_nan=True,
         )
+    # The n_obs count band must agree exactly between the two paths
+    assert legacy["n_obs"].dtype == np.uint8
+    np.testing.assert_array_equal(legacy["n_obs"][:], blockwise["n_obs"][:])

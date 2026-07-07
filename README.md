@@ -358,14 +358,14 @@ S1-GRiTS uses an **acquisition group strategy** to ensure geometric consistency 
 **Example:**
 ```
 MGRS Tile 17MQV, DESCENDING orbit:
-  ├── Acquisition Group 1: Track 142, Frame N07
-  │   └── Zarr: s1grits_scenes_17MQV_DESCENDING_TK142_N07.zarr
+  ├── Acquisition Group 1: Track 142
+  │   └── Zarr: s1grits_scenes_17MQV_DESCENDING_TK142.zarr
   │       ├── 2026-01-03 acquisition
   │       ├── 2026-01-09 acquisition
   │       └── 2026-01-15 acquisition
   │
-  └── Acquisition Group 2: Track 40, Frame N13
-      └── Zarr: s1grits_scenes_17MQV_DESCENDING_TK40_N13.zarr
+  └── Acquisition Group 2: Track 40
+      └── Zarr: s1grits_scenes_17MQV_DESCENDING_TK40.zarr
           ├── 2026-01-02 acquisition
           ├── 2026-01-08 acquisition
           └── 2026-01-14 acquisition
@@ -507,23 +507,23 @@ Produce per-acquisition scene outputs suitable for:
     catalog.parquet
     scenes_{DIR}_{despeckle}_{bands}/     # e.g., scenes_DESCENDING_Ratio/
       zarr/
-        s1grits_scenes_{TILE}_{DIR}_TK{track}_N{bursts}.zarr/   # Per-track cube
+        s1grits_scenes_{TILE}_{DIR}_TK{track}.zarr/   # Per-track cube
           ├── Ratio/     (time, y, x)      # All acquisitions for this track
           ├── VV_dB/     (time, y, x)
           ├── VH_dB/     (time, y, x)
           ├── RVI/       (time, y, x)
           └── time/      [2026-01-03, 2026-01-09, 2026-01-15, ...]
       cog/
-        s1grits_scenes_{TILE}_{DIR}_TK{track}_N{bursts}_{DATE}.tif
+        s1grits_scenes_{TILE}_{DIR}_TK{track}_{DATE}.tif
       preview/
-        s1grits_scenes_{TILE}_{DIR}_TK{track}_N{bursts}_{DATE}.png
+        s1grits_scenes_{TILE}_{DIR}_TK{track}_{DATE}.png
     smonthly_{DIR}_{bands}/               # If monthly.enabled: true
       zarr/
-        s1grits_smonthly_{TILE}_{DIR}_monthly.zarr/
+        s1grits_smonthly_{TILE}_{DIR}_TK{track}.zarr/   # Per-track cube
       cog/
-        s1grits_smonthly_{TILE}_{DIR}_{YYYY-MM}.tif
+        s1grits_smonthly_{TILE}_{DIR}_TK{track}_{YYYY-MM}.tif
       preview/
-        s1grits_smonthly_{TILE}_{DIR}_{YYYY-MM}.png
+        s1grits_smonthly_{TILE}_{DIR}_TK{track}_{YYYY-MM}.png
     items/
       scenes_{DIR}_{bands}/
         {TILE}_{DIR}_{DATE}.json          # STAC Item per scene
@@ -558,15 +558,18 @@ processing:
 
 #### Acquisition Group Output
 
-Each acquisition group (track + frame combination) produces **one Zarr data cube** containing all time steps:
+Each acquisition group (track) produces **one Zarr data cube** containing all
+time steps. Store names key on the track only — the per-acquisition burst
+count is time-varying (edge truncation, ASF gaps) and is recorded as
+`n_bursts` provenance in the catalog, never in the filename:
 
-**Example for Track 142, Frame N07:**
-- Zarr: `s1grits_scenes_17MQV_DESCENDING_TK142_N07.zarr`
+**Example for Track 142:**
+- Zarr: `s1grits_scenes_17MQV_DESCENDING_TK142.zarr`
 - Time dimension: 5 acquisitions in January 2026
 - Perfect spatial alignment across all time steps
 
-**Example for Track 40, Frame N13:**
-- Zarr: `s1grits_scenes_17MQV_DESCENDING_TK40_N13.zarr`
+**Example for Track 40:**
+- Zarr: `s1grits_scenes_17MQV_DESCENDING_TK40.zarr`
 - Time dimension: 4 acquisitions in January 2026
 - Different spatial footprint (non-overlapping with TK142)
 
@@ -759,20 +762,20 @@ print(ds)
 
 #### Scenes Workflow Zarr
 
-**Path:** `{base_dir}/{TILE}/scenes_{DIR}_{bands}/zarr/s1grits_scenes_{TILE}_{DIR}_TK{track}_N{bursts}.zarr`
+**Path:** `{base_dir}/{TILE}/scenes_{DIR}_{bands}/zarr/s1grits_scenes_{TILE}_{DIR}_TK{track}.zarr`
 
 **Per-Track Organization:**
-- Each acquisition group (track + frame) produces **one Zarr store**
+- Each acquisition group (track) produces **one Zarr store**
 - Time dimension accumulates all acquisitions for that track
 - Perfect spatial alignment within each track
 
 **Example:**
 ```
 17MQV/scenes_DESCENDING_Ratio/zarr/
-  ├── s1grits_scenes_17MQV_DESCENDING_TK142_N07.zarr/   # Track 142
+  ├── s1grits_scenes_17MQV_DESCENDING_TK142.zarr/   # Track 142
   │   ├── Dimensions: (time: 5, y: 3660, x: 3660)
   │   └── Acquisitions: 2026-01-03, 01-09, 01-15, 01-21, 01-27
-  └── s1grits_scenes_17MQV_DESCENDING_TK40_N13.zarr/    # Track 40
+  └── s1grits_scenes_17MQV_DESCENDING_TK40.zarr/    # Track 40
       ├── Dimensions: (time: 4, y: 3660, x: 3660)
       └── Acquisitions: 2026-01-02, 01-08, 01-14, 01-20
 ```
@@ -816,8 +819,8 @@ Example: 17MPV_S1_Monthly_ASCENDING_2024-01.tif
 
 **Scenes workflow:**
 ```
-s1grits_scenes_{TILE}_{DIR}_TK{track}_N{bursts}_{DATE}.tif
-Example: s1grits_scenes_17MQV_DESCENDING_TK142_N07_20260103.tif
+s1grits_scenes_{TILE}_{DIR}_TK{track}_{DATE}.tif
+Example: s1grits_scenes_17MQV_DESCENDING_TK142_20260103.tif
 ```
 
 **Static workflow:**
@@ -1005,26 +1008,26 @@ output/
 │   ├── catalog.parquet
 │   ├── scenes_DESCENDING_Ratio/
 │   │   ├── zarr/
-│   │   │   ├── s1grits_scenes_17MQV_DESCENDING_TK142_N07.zarr/
+│   │   │   ├── s1grits_scenes_17MQV_DESCENDING_TK142.zarr/
 │   │   │   │   ├── Ratio/ (time, y, x)      # All acquisitions for track 142
 │   │   │   │   ├── VV_dB/ (time, y, x)
 │   │   │   │   ├── VH_dB/ (time, y, x)
 │   │   │   │   ├── RVI/ (time, y, x)
 │   │   │   │   └── time/ [2026-01-03, 2026-01-09, ...]
-│   │   │   └── s1grits_scenes_17MQV_DESCENDING_TK40_N13.zarr/
+│   │   │   └── s1grits_scenes_17MQV_DESCENDING_TK40.zarr/
 │   │   │       └── ...                       # All acquisitions for track 40
 │   │   ├── cog/
-│   │   │   ├── s1grits_scenes_17MQV_DESCENDING_TK142_N07_20260103.tif
-│   │   │   ├── s1grits_scenes_17MQV_DESCENDING_TK142_N07_20260109.tif
-│   │   │   ├── s1grits_scenes_17MQV_DESCENDING_TK40_N13_20260102.tif
+│   │   │   ├── s1grits_scenes_17MQV_DESCENDING_TK142_20260103.tif
+│   │   │   ├── s1grits_scenes_17MQV_DESCENDING_TK142_20260109.tif
+│   │   │   ├── s1grits_scenes_17MQV_DESCENDING_TK40_20260102.tif
 │   │   │   └── ...
 │   │   └── preview/
 │   │       └── ...
 │   ├── smonthly_DESCENDING_Ratio/            # If monthly.enabled: true
 │   │   ├── zarr/
-│   │   │   └── s1grits_smonthly_17MQV_DESCENDING_monthly.zarr/
+│   │   │   └── s1grits_smonthly_17MQV_DESCENDING_TK142.zarr/
 │   │   ├── cog/
-│   │   │   ├── s1grits_smonthly_17MQV_DESCENDING_2026-01.tif
+│   │   │   ├── s1grits_smonthly_17MQV_DESCENDING_TK142_2026-01.tif
 │   │   │   └── ...
 │   │   └── preview/
 │   │       └── ...
@@ -1509,7 +1512,7 @@ s1grits process_scenes --config config/s1grits_scenes.yaml
 6. Write COG + preview per scene
 7. Generate STAC Items per scene
 
-**Output:** `{base_dir}/{TILE}/scenes_{DIR}_{bands}/zarr/s1grits_scenes_{TILE}_{DIR}_TK{track}_N{bursts}.zarr`
+**Output:** `{base_dir}/{TILE}/scenes_{DIR}_{bands}/zarr/s1grits_scenes_{TILE}_{DIR}_TK{track}.zarr`
 
 **Key difference from monthly workflow:**
 - One Zarr store **per acquisition group** (not per tile)

@@ -48,7 +48,7 @@ def _make_store(tile_dir: Path):
     transform = Affine(RES, 0.0, minx, 0.0, -RES, maxy)
     x = (minx + (np.arange(w) + 0.5) * RES).astype("float64")
     y = (maxy - (np.arange(h) + 0.5) * RES).astype("float64")
-    zp = tile_dir / PRODUCT / "zarr" / f"s1grits_smonthly_{TILE}_{DIR}_TK{TK}_N{NB}.zarr"
+    zp = tile_dir / PRODUCT / "zarr" / f"s1grits_smonthly_{TILE}_{DIR}_TK{TK}.zarr"
     g = _init_zarr_2band(zp, x, y, CRS, transform, 16, 16,
                          processing_level="monthly_ARDC", band_names=BANDS)
     dt = np.datetime64(pd.Timestamp(f"{MONTH}-15").to_datetime64(), "ns")
@@ -72,7 +72,7 @@ def test_backfill_generates_missing_cog(tmp_path):
     """Zarr month exists, COG missing -> backfill creates it from Zarr."""
     tile_dir = tmp_path / TILE
     zp = _make_store(tile_dir)
-    cog = tile_dir / PRODUCT / "cog" / f"s1grits_smonthly_{TILE}_{DIR}_TK{TK}_N{NB}_{MONTH}.tif"
+    cog = tile_dir / PRODUCT / "cog" / f"s1grits_smonthly_{TILE}_{DIR}_TK{TK}_{MONTH}.tif"
     assert not cog.exists()
 
     cog_rel, _ = _gen(zp, tile_dir, generate_cog=True, generate_preview=False,
@@ -85,7 +85,7 @@ def test_backfill_is_idempotent_and_does_not_rewrite(tmp_path):
     """A present COG is returned untouched (byte-identical), not regenerated."""
     tile_dir = tmp_path / TILE
     zp = _make_store(tile_dir)
-    cog = tile_dir / PRODUCT / "cog" / f"s1grits_smonthly_{TILE}_{DIR}_TK{TK}_N{NB}_{MONTH}.tif"
+    cog = tile_dir / PRODUCT / "cog" / f"s1grits_smonthly_{TILE}_{DIR}_TK{TK}_{MONTH}.tif"
 
     rel1, _ = _gen(zp, tile_dir, generate_cog=True, generate_preview=False,
                    skip_if_exists=True)
@@ -105,8 +105,8 @@ def test_skip_if_exists_regenerates_only_the_missing_asset(tmp_path):
     zp = _make_store(tile_dir)
     # First produce the COG.
     _gen(zp, tile_dir, generate_cog=True, generate_preview=False)
-    cog = tile_dir / PRODUCT / "cog" / f"s1grits_smonthly_{TILE}_{DIR}_TK{TK}_N{NB}_{MONTH}.tif"
-    png = tile_dir / PRODUCT / "preview" / f"s1grits_smonthly_{TILE}_{DIR}_TK{TK}_N{NB}_{MONTH}.png"
+    cog = tile_dir / PRODUCT / "cog" / f"s1grits_smonthly_{TILE}_{DIR}_TK{TK}_{MONTH}.tif"
+    png = tile_dir / PRODUCT / "preview" / f"s1grits_smonthly_{TILE}_{DIR}_TK{TK}_{MONTH}.png"
     cog_mtime = cog.stat().st_mtime_ns
     assert not png.exists()
 
@@ -125,4 +125,4 @@ def test_without_skip_flag_behaviour_unchanged(tmp_path):
     cog_rel, _ = _gen(zp, tile_dir, generate_cog=True, generate_preview=False)
     assert cog_rel is not None
     assert (tile_dir / PRODUCT / "cog" /
-            f"s1grits_smonthly_{TILE}_{DIR}_TK{TK}_N{NB}_{MONTH}.tif").exists()
+            f"s1grits_smonthly_{TILE}_{DIR}_TK{TK}_{MONTH}.tif").exists()

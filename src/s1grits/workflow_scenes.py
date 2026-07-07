@@ -17,13 +17,13 @@ Output structure:
       {TILE}/
         catalog.parquet
         scenes_{DIR}_{despeckle}_{bands}/
-          zarr/s1grits_scenes_{TILE}_{DIR}_TK{tk}_N{nn}.zarr
-          cog/s1grits_scenes_{TILE}_{DIR}_TK{tk}_N{nn}_{DT}.tif
-          preview/s1grits_scenes_{TILE}_{DIR}_TK{tk}_N{nn}_{DT}.png
+          zarr/s1grits_scenes_{TILE}_{DIR}_TK{tk}.zarr
+          cog/s1grits_scenes_{TILE}_{DIR}_TK{tk}_{DT}.tif
+          preview/s1grits_scenes_{TILE}_{DIR}_TK{tk}_{DT}.png
         smonthly_{DIR}_{bands}/
-          zarr/s1grits_smonthly_{TILE}_{DIR}_monthly.zarr
-          cog/s1grits_smonthly_{TILE}_{DIR}_{YYYY-MM}.tif
-          preview/s1grits_smonthly_{TILE}_{DIR}_{YYYY-MM}.png
+          zarr/s1grits_smonthly_{TILE}_{DIR}_TK{tk}.zarr
+          cog/s1grits_smonthly_{TILE}_{DIR}_TK{tk}_{YYYY-MM}.tif
+          preview/s1grits_smonthly_{TILE}_{DIR}_TK{tk}_{YYYY-MM}.png
         items/{product_label}/{id}.json
 
 CLI entry point: s1grits process_scenes --config config.yaml
@@ -358,6 +358,14 @@ def _group_indices_by_period(dates: list, composite_mode: str) -> dict:
     return groups
 
 
+# Per-pixel valid-observation-count band written by the smonthly composite
+# writers: how many finite scene observations (from the track whose composite
+# fills each pixel) went into that month's composite value. uint8 with
+# fill_value=0 ("no observations"): a track's monthly stack depth is bounded
+# by the Sentinel-1 revisit (<= ~6 acquisitions/month), far below 255.
+N_OBS_BAND: str = "n_obs"
+
+
 def _init_zarr_2band(
     zarr_path: Path,
     x_coords: np.ndarray,
@@ -464,8 +472,14 @@ def _init_zarr_2band(
     _a.attrs['_ARRAY_DIMENSIONS'] = ['time']
     for var in band_names:
         # fill_value=NaN lets blockwise appends resize without materialising
-        # all-NaN chunks: unwritten blocks read back as NaN for free.
-        _a = g.create_array(var, shape=(0, _h, _w), chunks=(1, chunk_y, chunk_x), dtype='float32', fill_value=np.nan, overwrite=True, dimension_names=['time', 'y', 'x'])
+        # all-NaN chunks: unwritten blocks read back as NaN for free. The
+        # n_obs count band is uint8 with fill 0 — "no observations" — so
+        # unwritten blocks read back as 0 by the same mechanism.
+        if var == N_OBS_BAND:
+            _dtype, _fill = 'uint8', 0
+        else:
+            _dtype, _fill = 'float32', np.nan
+        _a = g.create_array(var, shape=(0, _h, _w), chunks=(1, chunk_y, chunk_x), dtype=_dtype, fill_value=_fill, overwrite=True, dimension_names=['time', 'y', 'x'])
         _a.attrs['_ARRAY_DIMENSIONS'] = ['time', 'y', 'x']
 
     # CF-compliant grid_mapping so generic readers (GDAL/QGIS/rioxarray) can
@@ -576,6 +590,79 @@ def _adopt_existing_master_grid(
     return grid
 
 
+def _expand_grid_to_tile_bounds(
+    transform: Affine,
+    width: int,
+    height: int,
+    x_coords: np.ndarray,
+    y_coords: np.ndarray,
+    mgrs_tile_id: str,
+    target_crs: str,
+    target_res: float,
+) -> tuple:
+    """Grow a freshly derived burst-union master grid to fully cover the tile.
+
+    The master grid comes from the FIRST batch's burst union, and batches run
+    chronologically — so a fresh full-archive run derives its grid from the
+    earliest era (e.g. 2016), whose data-take framing may miss bursts that
+    later eras have. If those bursts touch a tile edge, every later batch
+    would be silently cropped to the smaller grid for the store's lifetime.
+
+    Expanding the grid to at least the MGRS tile bounds makes it
+    era-independent where it matters: outputs are tile-clipped anyway, so
+    covering the tile is the only grid property that affects data content,
+    while the burst-union margins beyond the tile are preserved for the
+    support-before-clip invariant. Snapping the tile bounds to the
+    ``target_res`` lattice keeps the expanded grid on the same pixel lattice
+    as the input grid (both floor/ceil to multiples of the resolution).
+
+    Applies only to freshly derived grids — adopted (store-locked) grids must
+    never be modified, or they would fail their stores' grid-lock checks.
+    Returns the input tuple unchanged when the union already covers the tile
+    or the tile geometry cannot be resolved.
+    """
+    grid = (transform, width, height, x_coords, y_coords)
+    try:
+        wkt = _get_mgrs_tile_geometry_wkt(mgrs_tile_id)
+        crs_ll = pyproj.CRS.from_epsg(4326)
+        crs_t = pyproj.CRS.from_user_input(target_crs)
+        proj = pyproj.Transformer.from_crs(crs_ll, crs_t, always_xy=True).transform
+        t_minx, t_miny, t_maxx, t_maxy = shp_transform(
+            proj, shapely_wkt.loads(wkt)
+        ).bounds
+    except Exception as exc:
+        logger.warning(
+            "[Grid] Could not resolve MGRS tile bounds for %s; keeping the "
+            "burst-union grid as-is: %s",
+            mgrs_tile_id, exc,
+        )
+        return grid
+
+    res = float(target_res)
+    minx, maxy = float(transform.c), float(transform.f)
+    maxx = minx + width * res
+    miny = maxy - height * res
+    n_minx = min(minx, float(np.floor(t_minx / res) * res))
+    n_miny = min(miny, float(np.floor(t_miny / res) * res))
+    n_maxx = max(maxx, float(np.ceil(t_maxx / res) * res))
+    n_maxy = max(maxy, float(np.ceil(t_maxy / res) * res))
+    if (n_minx, n_miny, n_maxx, n_maxy) == (minx, miny, maxx, maxy):
+        return grid
+
+    new_width = int(round((n_maxx - n_minx) / res))
+    new_height = int(round((n_maxy - n_miny) / res))
+    new_transform = Affine(res, 0.0, n_minx, 0.0, -res, n_maxy)
+    new_x = (n_minx + (np.arange(new_width) + 0.5) * res).astype("float64")
+    new_y = (n_maxy - (np.arange(new_height) + 0.5) * res).astype("float64")
+    logger.warning(
+        "[Grid] First-batch burst union for %s does not cover the MGRS tile; "
+        "expanding master grid %dx%d -> %dx%d so later-era bursts inside the "
+        "tile are never cropped.",
+        mgrs_tile_id, width, height, new_width, new_height,
+    )
+    return new_transform, new_width, new_height, new_x, new_y
+
+
 def _zarr_append(g: "zarr.Group", var_name: str, data: "np.ndarray") -> None:
     """Append one slice along axis-0 to a zarr v3 array (v3 has no .append())."""
     arr = g[var_name]
@@ -616,9 +703,10 @@ def _append_zarr_timestep(
             )
 
     # Append band data first, then the time coordinate last: an interrupted
-    # band write then cannot orphan a time step.
+    # band write then cannot orphan a time step. Cast to each band's stored
+    # dtype (float32 for radiometric bands, uint8 for the n_obs count band).
     for var, arr in band_arrays:
-        _zarr_append(g, var, arr.astype(np.float32))
+        _zarr_append(g, var, arr.astype(g[var].dtype, copy=False))
     _zarr_append(g, 'time', np.array([_new_key], dtype='int64'))
 
 
@@ -1051,7 +1139,16 @@ def _track_composite_block(
     composite_method: str,
     trim_fraction: float,
     scene_bounds: list | None = None,
-) -> np.ndarray | None:
+    with_count: bool = False,
+):
+    """Composite one track's scenes for a spatial block.
+
+    Returns the composite array (or ``None`` when no scene contributes).
+    With ``with_count=True`` returns ``(composite, count)`` instead, where
+    ``count`` is the per-pixel number of finite scene observations in the
+    stack (float32; the caller writes it into the uint8 ``n_obs`` band) —
+    computed from the already-aligned stack so it adds no extra warps.
+    """
     stack = []
     for idx in idxs:
         arr = _mosaic_align_window(
@@ -1061,7 +1158,15 @@ def _track_composite_block(
         )
         if arr is not None:
             stack.append(arr)
-    return _monthly_composite_block(stack, composite_method, trim_fraction)
+    composite = _monthly_composite_block(stack, composite_method, trim_fraction)
+    if not with_count:
+        return composite
+    if composite is None:
+        return None, None
+    count = np.zeros(composite.shape, dtype=np.float32)
+    for arr in stack:
+        count += np.isfinite(arr)
+    return composite, count
 
 
 def _track_valid_mask_block(
@@ -1244,10 +1349,12 @@ def _begin_zarr_timestep_blockwise(
                 f"time ({t}); cannot append safely."
             )
         arr.resize((t + 1,) + arr.shape[1:])
-        if not _fill_value_is_nan(arr):
-            # Legacy stores were created with fill_value=0, so the new slot
-            # must be NaN-initialised explicitly.  NaN-filled stores get the
-            # same semantics from resize alone, without writing any chunks.
+        if not _fill_value_is_nan(arr) and np.issubdtype(arr.dtype, np.floating):
+            # Legacy FLOAT stores were created with fill_value=0, so the new
+            # slot must be NaN-initialised explicitly.  NaN-filled stores get
+            # the same semantics from resize alone, without writing any chunks.
+            # Integer bands (n_obs, fill 0) get "no data" from resize alone —
+            # and cannot hold NaN.
             arr[t, :, :] = np.nan
     return t, int(new_key)
 
@@ -1379,9 +1486,16 @@ def _write_smonthly_block_bands(
     block_bands: dict[str, np.ndarray],
 ) -> None:
     for name in band_names:
-        g[name][time_index, y_slice, x_slice] = block_bands[name].astype(
-            np.float32, copy=False
-        )
+        dst = g[name]
+        arr = block_bands[name]
+        if np.issubdtype(dst.dtype, np.integer):
+            # Count bands (n_obs) travel through the block pipeline as float32
+            # so _apply_block_clip can NaN them like every other band; NaN
+            # means "no observations" and lands as 0 in the integer store.
+            arr = np.nan_to_num(arr, nan=0.0).astype(dst.dtype)
+        else:
+            arr = arr.astype(np.float32, copy=False)
+        dst[time_index, y_slice, x_slice] = arr
 
 
 # GLCM co-occurrence support radius (window_size//2 + distance) for the fixed
@@ -1611,11 +1725,12 @@ def _write_smonthly_month_zarr_blockwise_single_track(
                 block_num, total_blocks,
             )
 
-        cvv = _track_composite_block(
+        cvv, cnt = _track_composite_block(
             track_indices, final_vv, prof_vv, height, width,
             transform, target_crs, y_slice, x_slice,
             composite_method, trim_fraction,
             scene_bounds=bounds_vv,
+            with_count=True,
         )
         if cvv is None:
             return 0
@@ -1635,6 +1750,8 @@ def _write_smonthly_month_zarr_blockwise_single_track(
             features_ratio, features_rvi,
             ratio_name, rvi_name,
         )
+        if N_OBS_BAND in band_names:
+            block_bands[N_OBS_BAND] = cnt
         _apply_block_clip(block_bands, clip_geom, transform, y_slice, x_slice)
         _write_smonthly_block_bands(
             g, time_index, y_slice, x_slice, band_names, block_bands
@@ -2237,11 +2354,15 @@ def _write_scenes_output(
             _r_str = pd.Timestamp(r['acq_dt']).tz_convert('UTC').strftime('%Y%m%dT%H%M%S')
             indices.extend(_dt_str_to_clean_idx.get(_r_str, []))
 
-        # Per-group Zarr path
+        # Per-group Zarr path. Store identity keys on the track ONLY: n_bursts
+        # here is len(rows) for THIS acquisition, so it varies date-to-date
+        # (edge truncation, ASF gaps). Embedding it in the store name would
+        # split one track's time series across fragmented stores (the smonthly
+        # _TK18_N09/_N10 bug); n_bursts stays per-scene catalog provenance.
         _track_tok_raw = str(rows[0]['track_token']) if rows else 'UNK'
         _track_tok = _track_tok_raw.replace('_', '-')
         n_bursts = len(rows)
-        zarr_name = f"s1grits_scenes_{mgrs_tile_id}_{direction_label}_TK{_track_tok}_N{n_bursts:02d}.zarr"
+        zarr_name = f"s1grits_scenes_{mgrs_tile_id}_{direction_label}_TK{_track_tok}.zarr"
         zarr_path_group = scenes_zarr_dir / zarr_name
 
         console.print(
@@ -2484,7 +2605,7 @@ def _write_scenes_output(
                 + _extra_bands_cog
                 + _glcm_bands_cog
             )
-            fname = f"s1grits_scenes_{mgrs_tile_id}_{direction_label}_TK{_track_tok}_N{n_bursts:02d}_{dt_str}.tif"
+            fname = f"s1grits_scenes_{mgrs_tile_id}_{direction_label}_TK{_track_tok}_{dt_str}.tif"
             cog_path = scenes_cog_dir / fname
             prof = {
                 'driver': 'GTiff', 'dtype': 'float32', 'nodata': float('nan'),
@@ -2510,7 +2631,7 @@ def _write_scenes_output(
                 10.0, (_arr_vh_cog[_valid_cog] - _arr_vv_cog[_valid_cog]) / 10.0
             ).astype(np.float32)
 
-            png_name = f"s1grits_scenes_{mgrs_tile_id}_{direction_label}_TK{_track_tok}_N{n_bursts:02d}_{dt_str}.png"
+            png_name = f"s1grits_scenes_{mgrs_tile_id}_{direction_label}_TK{_track_tok}_{dt_str}.png"
             png_path = scenes_png_dir / png_name
             _generate_preview_png(
                 vv_db=_arr_vv_cog,
@@ -2560,7 +2681,7 @@ def _write_scenes_output(
             'start_datetime': _acq_naive,
             'end_datetime':   _acq_naive,
             'month':         acq_ts.strftime('%Y-%m') if hasattr(acq_ts, 'strftime') else str(acq_ts)[:7],
-            'geometry_group_id': f"{mgrs_tile_id}_{direction_label}_TK{_track_tok}_N{n_bursts:02d}",
+            'geometry_group_id': f"{mgrs_tile_id}_{direction_label}_TK{_track_tok}",
             'track':         track_number,
             'n_bursts':      n_bursts,
             'n_scenes':      None,
@@ -3288,15 +3409,19 @@ def _write_smonthly_month_zarr_blockwise(
         bw = int((x_slice.stop or 0) - (x_slice.start or 0))
         composite_vv_lin = np.full((bh, bw), np.nan, dtype=np.float32)
         composite_vh_lin = np.full((bh, bw), np.nan, dtype=np.float32)
+        # n_obs mirrors the priority fill: each pixel records the observation
+        # count of the track that supplied its composite value (0 = no data).
+        composite_nobs = np.zeros((bh, bw), dtype=np.float32)
         filled = np.zeros((bh, bw), dtype=bool)
 
         for tk in track_order:
             tk_idxs = idx_by_track.get(tk, [])
-            cvv = _track_composite_block(
+            cvv, cnt = _track_composite_block(
                 tk_idxs, final_vv, prof_vv, height, width,
                 transform, target_crs, y_slice, x_slice,
                 composite_method, trim_fraction,
                 scene_bounds=bounds_vv,
+                with_count=True,
             )
             if cvv is None:
                 continue
@@ -3313,8 +3438,9 @@ def _write_smonthly_month_zarr_blockwise(
             if take.any():
                 composite_vv_lin[take] = cvv[take]
                 composite_vh_lin[take] = cvh[take]
+                composite_nobs[take] = cnt[take]
                 filled |= take
-            del cvv, cvh
+            del cvv, cvh, cnt
             if filled.all():
                 break
 
@@ -3324,6 +3450,8 @@ def _write_smonthly_month_zarr_blockwise(
             features_ratio, features_rvi,
             ratio_name, rvi_name,
         )
+        if N_OBS_BAND in band_names:
+            block_bands[N_OBS_BAND] = composite_nobs
         _apply_block_clip(block_bands, clip_geom, transform, y_slice, x_slice)
         _write_smonthly_block_bands(
             g, time_index, y_slice, x_slice, band_names, block_bands
@@ -3394,7 +3522,8 @@ def _generate_cog_preview_from_zarr(
     track_token : str
         Track token for file naming
     n_bursts_track : int
-        Number of bursts for this track
+        Number of bursts for this track. Time-varying provenance only; it is
+        NOT part of the asset name (assets key on the track alone).
     target_crs : str
         Target CRS (e.g., EPSG:32617)
     tile_clip : bool
@@ -3418,14 +3547,21 @@ def _generate_cog_preview_from_zarr(
     if not generate_cog and not generate_preview:
         return None, None
 
+    # n_obs is a Zarr-only analysis band (uint8 count): keep it out of the
+    # float32 COG/preview exports so their band sets stay radiometric.
+    band_names = [b for b in band_names if b != N_OBS_BAND]
+
     # Deterministic asset paths (naming depends only on the args, not on Zarr
     # contents), computed once so the generate blocks and the skip-if-exists
     # check below cannot drift apart.
     _cog_dir = tile_dir / product_label / 'cog'
     _png_dir = tile_dir / product_label / 'preview'
+    # Asset names key on the track only, matching the store identity (see
+    # _write_smonthly_one_track). n_bursts is time-varying provenance, not part
+    # of the filename, so a single track's assets never fragment across batches.
     _asset_stem = (
         f"s1grits_smonthly_{mgrs_tile_id}_{direction_label}_"
-        f"TK{track_token}_N{n_bursts_track:02d}_{month_str}"
+        f"TK{track_token}_{month_str}"
     )
     cog_path = _cog_dir / f"{_asset_stem}.tif"
     png_path = _png_dir / f"{_asset_stem}.png"
@@ -3654,14 +3790,15 @@ def _write_smonthly_one_track(
 ) -> list[dict]:
     """
     Compute monthly composites for ONE acquisition-group track and write
-    smonthly/zarr/s1grits_smonthly_{TILE}_{DIR}_TK{tok}_N{nn}.zarr (plus optional
+    smonthly/zarr/s1grits_smonthly_{TILE}_{DIR}_TK{tok}.zarr (plus optional
     cog/preview). Writes one STAC Item per month.
 
     The caller passes ``df_batch`` already filtered to a single ``track_token``
     (acq group) and sets ``restrict_to_group=True``; the month loop then keeps
     only the acquisitions belonging to that group, so each track_token gets its
     own per-track product files (mirroring the scenes/static per-track layout).
-    ``track_token``/``n_bursts_track`` drive the file naming. When
+    ``track_token`` drives the file naming; ``n_bursts_track`` is recorded as
+    per-month catalog provenance only (never embedded in the store name). When
     ``restrict_to_group`` is False all acquisitions are used (single-product
     degrade, e.g. when no track metadata is available).
     The master grid is passed in from the caller and shared with the scenes
@@ -3669,7 +3806,13 @@ def _write_smonthly_one_track(
 
     Returns catalog records with product_type='smonthly'.
     """
-    _tk_suffix = f"_TK{track_token}_N{n_bursts_track:02d}"
+    # Store identity keys on the track ONLY. n_bursts is time-varying: bursts
+    # drop in/out of a track's acquisitions between batches, so embedding it in
+    # the store name splits ONE track across multiple fragmented .zarr stores
+    # (e.g. _TK18_N09 vs _TK18_N10), each holding a disjoint slice of the time
+    # series instead of appending to a single store. n_bursts is retained as
+    # provenance on each per-month catalog record (see _add_smonthly_record).
+    _tk_suffix = f"_TK{track_token}"
     # Build product subdirectory name: smonthly_{DIR}_{bands}
     _mbp = []
     if features_ratio: _mbp.append('Ratio')
@@ -3701,6 +3844,11 @@ def _write_smonthly_one_track(
         _blockwise_tex_cfg = _smonthly_texture_cfg(copol_name, crosspol_name)
         _glcm_band_names = _get_texture_band_names(_blockwise_tex_cfg)
         _band_names.extend(_glcm_band_names)
+    # Per-pixel valid-observation count (uint8), always written alongside the
+    # composite so downstream time-series work can confidence-weight each
+    # month. Kept out of _core_band_names: the writers handle it explicitly
+    # (it is a count, not a composited radiometric band).
+    _band_names.append(N_OBS_BAND)
 
     # ---- Compute smonthly product instance metadata ----
     _composite_method = monthly_cfg.get('composite_method', 'median') if monthly_cfg else 'median'
@@ -3733,6 +3881,11 @@ def _write_smonthly_one_track(
     g.attrs['product_variant'] = _smonthly_variant
     g.attrs['processing_variant_json'] = json.dumps(_smonthly_variant_vals)
     g.attrs['product_label'] = product_label
+    # n_bursts is no longer in the store name (it is time-varying and would
+    # fragment the track); record it as store-level provenance so a filesystem
+    # rescan can still recover a burst count for the track.
+    if n_bursts_track:
+        g.attrs['n_bursts'] = int(n_bursts_track)
 
     existing_months: set[str] = set()
     if g['time'].shape[0] > 0:
@@ -4010,7 +4163,7 @@ def _write_smonthly_one_track(
                 target_crs=target_crs,
                 chunk_y=chunk_y,
                 chunk_x=chunk_x,
-                band_names=_core_band_names,
+                band_names=_core_band_names + [N_OBS_BAND],
                 copol_name=copol_name,
                 crosspol_name=crosspol_name,
                 features_ratio=features_ratio,
@@ -4070,7 +4223,7 @@ def _write_smonthly_one_track(
             )
             continue
 
-        def _track_composite(idxs, final_arr, prof_arr):
+        def _track_composite(idxs, final_arr, prof_arr, with_count=False):
             _stack = []
             for _i in idxs:
                 _arr = _mosaic_align(
@@ -4080,16 +4233,25 @@ def _write_smonthly_one_track(
                 if _arr is not None:
                     _stack.append(_arr)
             if not _stack:
-                return None
+                return (None, None) if with_count else None
             with warnings.catch_warnings():
                 warnings.filterwarnings('ignore', 'All-NaN slice')
                 warnings.filterwarnings('ignore', 'Mean of empty slice')
-                return _monthly_composite(_stack, composite_method).astype(np.float32)
+                _comp = _monthly_composite(_stack, composite_method).astype(np.float32)
+            if not with_count:
+                return _comp
+            # Per-pixel finite-observation count from the already-aligned
+            # stack (no extra warps); feeds the uint8 n_obs band.
+            _cnt = np.zeros(_comp.shape, dtype=np.uint8)
+            for _arr in _stack:
+                _cnt += np.isfinite(_arr)
+            return _comp, _cnt
 
         _per_track_vv: dict[int, np.ndarray] = {}
         _per_track_vh: dict[int, np.ndarray] = {}
+        _per_track_cnt: dict[int, np.ndarray] = {}
         for _tk, _tk_idxs in _idx_by_track.items():
-            _cvv = _track_composite(_tk_idxs, final_vv, prof_vv)
+            _cvv, _ccnt = _track_composite(_tk_idxs, final_vv, prof_vv, with_count=True)
             if _cvv is None:
                 continue
             _cvh = _track_composite(_tk_idxs, final_vh, prof_vh)
@@ -4097,6 +4259,7 @@ def _write_smonthly_one_track(
                 continue
             _per_track_vv[_tk] = _cvv
             _per_track_vh[_tk] = _cvh
+            _per_track_cnt[_tk] = _ccnt
 
         if not _per_track_vv:
             logger.warning(
@@ -4117,22 +4280,26 @@ def _write_smonthly_one_track(
         if len(_track_order) == 1:
             composite_vv_lin = _per_track_vv[_track_order[0]]
             composite_vh_lin = _per_track_vh[_track_order[0]]
+            _m_nobs = _per_track_cnt[_track_order[0]].copy()
         else:
             composite_vv_lin = np.full((height, width), np.nan, dtype=np.float32)
             composite_vh_lin = np.full((height, width), np.nan, dtype=np.float32)
+            _m_nobs = np.zeros((height, width), dtype=np.uint8)
             _filled = np.zeros((height, width), dtype=bool)
             for _tk in _track_order:
                 # VV drives the per-pixel source choice so VV and VH stay co-sourced
                 _take = ~_filled & np.isfinite(_per_track_vv[_tk])
                 composite_vv_lin[_take] = _per_track_vv[_tk][_take]
                 composite_vh_lin[_take] = _per_track_vh[_tk][_take]
+                # n_obs records the winning track's observation depth per pixel
+                _m_nobs[_take] = _per_track_cnt[_tk][_take]
                 _filled |= _take
             logger.info(
                 "Month %s: priority mosaic of %d tracks (VV coverage) %s",
                 month_str, len(_track_order),
                 ", ".join(f"TK{_tk}={_track_cov[_tk]}" for _tk in _track_order),
             )
-        del _per_track_vv, _per_track_vh
+        del _per_track_vv, _per_track_vh, _per_track_cnt
         gc.collect()
 
         # Track-coverage provenance for this month's priority mosaic: the base
@@ -4208,6 +4375,7 @@ def _write_smonthly_one_track(
             _m_inv_mask = ~_m_clip_mask
             arr_vv_db[_m_inv_mask] = np.nan
             arr_vh_db[_m_inv_mask] = np.nan
+            _m_nobs[_m_inv_mask] = 0
             for _, _arr in _m_extra_bands:
                 _arr[_m_inv_mask] = np.nan
             for _, _arr in _m_glcm_bands:
@@ -4222,6 +4390,7 @@ def _write_smonthly_one_track(
         _m_band_arrays = [(copol_name, arr_vv_db), (crosspol_name, arr_vh_db)]
         _m_band_arrays.extend(_m_extra_bands)
         _m_band_arrays.extend(_m_glcm_bands)
+        _m_band_arrays.append((N_OBS_BAND, _m_nobs))
 
         # Write to Zarr (always enabled — Zarr is the primary Data Cube product)
         # Validate new arrays against Zarr grid before any mutation
@@ -4398,7 +4567,7 @@ def _write_monthly_output_scenes(
 
     Enumerates the acquisition-group tracks (``track_token``) present in
     ``df_batch`` and writes one independent smonthly product per group (its own
-    ``..._TK{tok}_N{nn}.zarr``/cog/preview/catalog records), mirroring the
+    ``..._TK{tok}.zarr``/cog/preview/catalog records), mirroring the
     scenes/static per-track layout. Grouping by ``track_token`` (not
     ``track_number``) is what keeps the file naming and the grouping key
     identical — so multi-relative-orbit acq groups (e.g. "69_172") map to a
@@ -4661,7 +4830,9 @@ def process_single_scenes_tile(
                 import re as _re
                 for _, _row in _cat.iterrows():
                     _ggid = str(_row.get('geometry_group_id') or '')
-                    _m = _re.search(r'_TK(.+?)_N\d+', _ggid)
+                    # geometry_group_id is {TILE}_{DIR}_TK{tok} (track-only,
+                    # current) or {TILE}_{DIR}_TK{tok}_N{nn} (legacy records).
+                    _m = _re.search(r'_TK([\d\-]+)(?:_N\d+)?$', _ggid)
                     if not _m:
                         continue
                     _tok = _m.group(1).replace('-', '_')  # dashed in name -> underscore token
@@ -5179,6 +5350,21 @@ def process_single_scenes_tile(
                         _master_x_coords, _master_y_coords = (
                             _build_grid_from_bursts(
                                 prof_vv, target_crs, target_res
+                            )
+                        )
+                    # Era-independence guard: batch 1 is the earliest era,
+                    # whose data-take framing may miss tile-edge bursts that
+                    # later eras have. Grow the fresh grid to at least the
+                    # MGRS tile bounds so no later-era data inside the tile
+                    # can ever be cropped. (Adopted store-locked grids above
+                    # are never expanded — they must match their stores.)
+                    _master_transform, _master_width, _master_height, \
+                        _master_x_coords, _master_y_coords = (
+                            _expand_grid_to_tile_bounds(
+                                _master_transform, _master_width,
+                                _master_height, _master_x_coords,
+                                _master_y_coords, mgrs_tile_id, target_crs,
+                                target_res,
                             )
                         )
                 _grid_built = True
