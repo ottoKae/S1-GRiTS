@@ -267,11 +267,14 @@ def test_blockwise_progress_logging(tmp_path, caplog, monkeypatch):
     call_count = {"n": 0}
 
     def fake_composite(idxs, final_arr, prof_arr, h, w, tfm, crs, y_sl, x_sl,
-                       method, trim, scene_bounds=None):
+                       method, trim, scene_bounds=None, with_count=False):
         call_count["n"] += 1
         bh = (y_sl.stop or 0) - (y_sl.start or 0)
         bw = (x_sl.stop or 0) - (x_sl.start or 0)
-        return np.ones((bh, bw), dtype=np.float32)
+        comp = np.ones((bh, bw), dtype=np.float32)
+        if with_count:
+            return comp, np.ones((bh, bw), dtype=np.float32)
+        return comp
 
     monkeypatch.setattr(ws, '_track_composite_block', fake_composite)
 
@@ -343,11 +346,14 @@ def test_blockwise_multitrack_stops_when_block_filled(tmp_path, monkeypatch):
     mask_call_count = {"n": 0}
 
     def fake_composite(idxs, final_arr, prof_arr, h, w, tfm, crs, y_sl, x_sl,
-                       method, trim, scene_bounds=None):
+                       method, trim, scene_bounds=None, with_count=False):
         call_count["n"] += 1
         bh = (y_sl.stop or 0) - (y_sl.start or 0)
         bw = (x_sl.stop or 0) - (x_sl.start or 0)
-        return np.ones((bh, bw), dtype=np.float32)
+        comp = np.ones((bh, bw), dtype=np.float32)
+        if with_count:
+            return comp, np.ones((bh, bw), dtype=np.float32)
+        return comp
 
     def fake_valid_mask(idxs, final_arr, prof_arr, h, w, tfm, crs, y_sl, x_sl,
                         scene_bounds=None):

@@ -538,3 +538,6 @@ def test_smonthly_blockwise_matches_legacy_small_array(tmp_path, monkeypatch):
             atol=1e-6,
             equal_nan=True,
         )
+    # The n_obs count band must agree exactly between the two paths
+    assert legacy["n_obs"].dtype == np.uint8
+    np.testing.assert_array_equal(legacy["n_obs"][:], blockwise["n_obs"][:])

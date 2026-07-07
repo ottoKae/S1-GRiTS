@@ -358,6 +358,14 @@ def _group_indices_by_period(dates: list, composite_mode: str) -> dict:
     return groups
 
 
+# Per-pixel valid-observation-count band written by the smonthly composite
+# writers: how many finite scene observations (from the track whose composite
+# fills each pixel) went into that month's composite value. uint8 with
+# fill_value=0 ("no observations"): a track's monthly stack depth is bounded
+# by the Sentinel-1 revisit (<= ~6 acquisitions/month), far below 255.
+N_OBS_BAND: str = "n_obs"
+
+
 def _init_zarr_2band(
     zarr_path: Path,
     x_coords: np.ndarray,
@@ -464,8 +472,14 @@ def _init_zarr_2band(
     _a.attrs['_ARRAY_DIMENSIONS'] = ['time']
     for var in band_names:
         # fill_value=NaN lets blockwise appends resize without materialising
-        # all-NaN chunks: unwritten blocks read back as NaN for free.
-        _a = g.create_array(var, shape=(0, _h, _w), chunks=(1, chunk_y, chunk_x), dtype='float32', fill_value=np.nan, overwrite=True, dimension_names=['time', 'y', 'x'])
+        # all-NaN chunks: unwritten blocks read back as NaN for free. The
+        # n_obs count band is uint8 with fill 0 — "no observations" — so
+        # unwritten blocks read back as 0 by the same mechanism.
+        if var == N_OBS_BAND:
+            _dtype, _fill = 'uint8', 0
+        else:
+            _dtype, _fill = 'float32', np.nan
+        _a = g.create_array(var, shape=(0, _h, _w), chunks=(1, chunk_y, chunk_x), dtype=_dtype, fill_value=_fill, overwrite=True, dimension_names=['time', 'y', 'x'])
         _a.attrs['_ARRAY_DIMENSIONS'] = ['time', 'y', 'x']
 
     # CF-compliant grid_mapping so generic readers (GDAL/QGIS/rioxarray) can
@@ -616,9 +630,10 @@ def _append_zarr_timestep(
             )
 
     # Append band data first, then the time coordinate last: an interrupted
-    # band write then cannot orphan a time step.
+    # band write then cannot orphan a time step. Cast to each band's stored
+    # dtype (float32 for radiometric bands, uint8 for the n_obs count band).
     for var, arr in band_arrays:
-        _zarr_append(g, var, arr.astype(np.float32))
+        _zarr_append(g, var, arr.astype(g[var].dtype, copy=False))
     _zarr_append(g, 'time', np.array([_new_key], dtype='int64'))
 
 
@@ -1051,7 +1066,16 @@ def _track_composite_block(
     composite_method: str,
     trim_fraction: float,
     scene_bounds: list | None = None,
-) -> np.ndarray | None:
+    with_count: bool = False,
+):
+    """Composite one track's scenes for a spatial block.
+
+    Returns the composite array (or ``None`` when no scene contributes).
+    With ``with_count=True`` returns ``(composite, count)`` instead, where
+    ``count`` is the per-pixel number of finite scene observations in the
+    stack (float32; the caller writes it into the uint8 ``n_obs`` band) —
+    computed from the already-aligned stack so it adds no extra warps.
+    """
     stack = []
     for idx in idxs:
         arr = _mosaic_align_window(
@@ -1061,7 +1085,15 @@ def _track_composite_block(
         )
         if arr is not None:
             stack.append(arr)
-    return _monthly_composite_block(stack, composite_method, trim_fraction)
+    composite = _monthly_composite_block(stack, composite_method, trim_fraction)
+    if not with_count:
+        return composite
+    if composite is None:
+        return None, None
+    count = np.zeros(composite.shape, dtype=np.float32)
+    for arr in stack:
+        count += np.isfinite(arr)
+    return composite, count
 
 
 def _track_valid_mask_block(
@@ -1244,10 +1276,12 @@ def _begin_zarr_timestep_blockwise(
                 f"time ({t}); cannot append safely."
             )
         arr.resize((t + 1,) + arr.shape[1:])
-        if not _fill_value_is_nan(arr):
-            # Legacy stores were created with fill_value=0, so the new slot
-            # must be NaN-initialised explicitly.  NaN-filled stores get the
-            # same semantics from resize alone, without writing any chunks.
+        if not _fill_value_is_nan(arr) and np.issubdtype(arr.dtype, np.floating):
+            # Legacy FLOAT stores were created with fill_value=0, so the new
+            # slot must be NaN-initialised explicitly.  NaN-filled stores get
+            # the same semantics from resize alone, without writing any chunks.
+            # Integer bands (n_obs, fill 0) get "no data" from resize alone —
+            # and cannot hold NaN.
             arr[t, :, :] = np.nan
     return t, int(new_key)
 
@@ -1379,9 +1413,16 @@ def _write_smonthly_block_bands(
     block_bands: dict[str, np.ndarray],
 ) -> None:
     for name in band_names:
-        g[name][time_index, y_slice, x_slice] = block_bands[name].astype(
-            np.float32, copy=False
-        )
+        dst = g[name]
+        arr = block_bands[name]
+        if np.issubdtype(dst.dtype, np.integer):
+            # Count bands (n_obs) travel through the block pipeline as float32
+            # so _apply_block_clip can NaN them like every other band; NaN
+            # means "no observations" and lands as 0 in the integer store.
+            arr = np.nan_to_num(arr, nan=0.0).astype(dst.dtype)
+        else:
+            arr = arr.astype(np.float32, copy=False)
+        dst[time_index, y_slice, x_slice] = arr
 
 
 # GLCM co-occurrence support radius (window_size//2 + distance) for the fixed
@@ -1611,11 +1652,12 @@ def _write_smonthly_month_zarr_blockwise_single_track(
                 block_num, total_blocks,
             )
 
-        cvv = _track_composite_block(
+        cvv, cnt = _track_composite_block(
             track_indices, final_vv, prof_vv, height, width,
             transform, target_crs, y_slice, x_slice,
             composite_method, trim_fraction,
             scene_bounds=bounds_vv,
+            with_count=True,
         )
         if cvv is None:
             return 0
@@ -1635,6 +1677,8 @@ def _write_smonthly_month_zarr_blockwise_single_track(
             features_ratio, features_rvi,
             ratio_name, rvi_name,
         )
+        if N_OBS_BAND in band_names:
+            block_bands[N_OBS_BAND] = cnt
         _apply_block_clip(block_bands, clip_geom, transform, y_slice, x_slice)
         _write_smonthly_block_bands(
             g, time_index, y_slice, x_slice, band_names, block_bands
@@ -3292,15 +3336,19 @@ def _write_smonthly_month_zarr_blockwise(
         bw = int((x_slice.stop or 0) - (x_slice.start or 0))
         composite_vv_lin = np.full((bh, bw), np.nan, dtype=np.float32)
         composite_vh_lin = np.full((bh, bw), np.nan, dtype=np.float32)
+        # n_obs mirrors the priority fill: each pixel records the observation
+        # count of the track that supplied its composite value (0 = no data).
+        composite_nobs = np.zeros((bh, bw), dtype=np.float32)
         filled = np.zeros((bh, bw), dtype=bool)
 
         for tk in track_order:
             tk_idxs = idx_by_track.get(tk, [])
-            cvv = _track_composite_block(
+            cvv, cnt = _track_composite_block(
                 tk_idxs, final_vv, prof_vv, height, width,
                 transform, target_crs, y_slice, x_slice,
                 composite_method, trim_fraction,
                 scene_bounds=bounds_vv,
+                with_count=True,
             )
             if cvv is None:
                 continue
@@ -3317,8 +3365,9 @@ def _write_smonthly_month_zarr_blockwise(
             if take.any():
                 composite_vv_lin[take] = cvv[take]
                 composite_vh_lin[take] = cvh[take]
+                composite_nobs[take] = cnt[take]
                 filled |= take
-            del cvv, cvh
+            del cvv, cvh, cnt
             if filled.all():
                 break
 
@@ -3328,6 +3377,8 @@ def _write_smonthly_month_zarr_blockwise(
             features_ratio, features_rvi,
             ratio_name, rvi_name,
         )
+        if N_OBS_BAND in band_names:
+            block_bands[N_OBS_BAND] = composite_nobs
         _apply_block_clip(block_bands, clip_geom, transform, y_slice, x_slice)
         _write_smonthly_block_bands(
             g, time_index, y_slice, x_slice, band_names, block_bands
@@ -3422,6 +3473,10 @@ def _generate_cog_preview_from_zarr(
     """
     if not generate_cog and not generate_preview:
         return None, None
+
+    # n_obs is a Zarr-only analysis band (uint8 count): keep it out of the
+    # float32 COG/preview exports so their band sets stay radiometric.
+    band_names = [b for b in band_names if b != N_OBS_BAND]
 
     # Deterministic asset paths (naming depends only on the args, not on Zarr
     # contents), computed once so the generate blocks and the skip-if-exists
@@ -3716,6 +3771,11 @@ def _write_smonthly_one_track(
         _blockwise_tex_cfg = _smonthly_texture_cfg(copol_name, crosspol_name)
         _glcm_band_names = _get_texture_band_names(_blockwise_tex_cfg)
         _band_names.extend(_glcm_band_names)
+    # Per-pixel valid-observation count (uint8), always written alongside the
+    # composite so downstream time-series work can confidence-weight each
+    # month. Kept out of _core_band_names: the writers handle it explicitly
+    # (it is a count, not a composited radiometric band).
+    _band_names.append(N_OBS_BAND)
 
     # ---- Compute smonthly product instance metadata ----
     _composite_method = monthly_cfg.get('composite_method', 'median') if monthly_cfg else 'median'
@@ -4030,7 +4090,7 @@ def _write_smonthly_one_track(
                 target_crs=target_crs,
                 chunk_y=chunk_y,
                 chunk_x=chunk_x,
-                band_names=_core_band_names,
+                band_names=_core_band_names + [N_OBS_BAND],
                 copol_name=copol_name,
                 crosspol_name=crosspol_name,
                 features_ratio=features_ratio,
@@ -4090,7 +4150,7 @@ def _write_smonthly_one_track(
             )
             continue
 
-        def _track_composite(idxs, final_arr, prof_arr):
+        def _track_composite(idxs, final_arr, prof_arr, with_count=False):
             _stack = []
             for _i in idxs:
                 _arr = _mosaic_align(
@@ -4100,16 +4160,25 @@ def _write_smonthly_one_track(
                 if _arr is not None:
                     _stack.append(_arr)
             if not _stack:
-                return None
+                return (None, None) if with_count else None
             with warnings.catch_warnings():
                 warnings.filterwarnings('ignore', 'All-NaN slice')
                 warnings.filterwarnings('ignore', 'Mean of empty slice')
-                return _monthly_composite(_stack, composite_method).astype(np.float32)
+                _comp = _monthly_composite(_stack, composite_method).astype(np.float32)
+            if not with_count:
+                return _comp
+            # Per-pixel finite-observation count from the already-aligned
+            # stack (no extra warps); feeds the uint8 n_obs band.
+            _cnt = np.zeros(_comp.shape, dtype=np.uint8)
+            for _arr in _stack:
+                _cnt += np.isfinite(_arr)
+            return _comp, _cnt
 
         _per_track_vv: dict[int, np.ndarray] = {}
         _per_track_vh: dict[int, np.ndarray] = {}
+        _per_track_cnt: dict[int, np.ndarray] = {}
         for _tk, _tk_idxs in _idx_by_track.items():
-            _cvv = _track_composite(_tk_idxs, final_vv, prof_vv)
+            _cvv, _ccnt = _track_composite(_tk_idxs, final_vv, prof_vv, with_count=True)
             if _cvv is None:
                 continue
             _cvh = _track_composite(_tk_idxs, final_vh, prof_vh)
@@ -4117,6 +4186,7 @@ def _write_smonthly_one_track(
                 continue
             _per_track_vv[_tk] = _cvv
             _per_track_vh[_tk] = _cvh
+            _per_track_cnt[_tk] = _ccnt
 
         if not _per_track_vv:
             logger.warning(
@@ -4137,22 +4207,26 @@ def _write_smonthly_one_track(
         if len(_track_order) == 1:
             composite_vv_lin = _per_track_vv[_track_order[0]]
             composite_vh_lin = _per_track_vh[_track_order[0]]
+            _m_nobs = _per_track_cnt[_track_order[0]].copy()
         else:
             composite_vv_lin = np.full((height, width), np.nan, dtype=np.float32)
             composite_vh_lin = np.full((height, width), np.nan, dtype=np.float32)
+            _m_nobs = np.zeros((height, width), dtype=np.uint8)
             _filled = np.zeros((height, width), dtype=bool)
             for _tk in _track_order:
                 # VV drives the per-pixel source choice so VV and VH stay co-sourced
                 _take = ~_filled & np.isfinite(_per_track_vv[_tk])
                 composite_vv_lin[_take] = _per_track_vv[_tk][_take]
                 composite_vh_lin[_take] = _per_track_vh[_tk][_take]
+                # n_obs records the winning track's observation depth per pixel
+                _m_nobs[_take] = _per_track_cnt[_tk][_take]
                 _filled |= _take
             logger.info(
                 "Month %s: priority mosaic of %d tracks (VV coverage) %s",
                 month_str, len(_track_order),
                 ", ".join(f"TK{_tk}={_track_cov[_tk]}" for _tk in _track_order),
             )
-        del _per_track_vv, _per_track_vh
+        del _per_track_vv, _per_track_vh, _per_track_cnt
         gc.collect()
 
         # Track-coverage provenance for this month's priority mosaic: the base
@@ -4228,6 +4302,7 @@ def _write_smonthly_one_track(
             _m_inv_mask = ~_m_clip_mask
             arr_vv_db[_m_inv_mask] = np.nan
             arr_vh_db[_m_inv_mask] = np.nan
+            _m_nobs[_m_inv_mask] = 0
             for _, _arr in _m_extra_bands:
                 _arr[_m_inv_mask] = np.nan
             for _, _arr in _m_glcm_bands:
@@ -4242,6 +4317,7 @@ def _write_smonthly_one_track(
         _m_band_arrays = [(copol_name, arr_vv_db), (crosspol_name, arr_vh_db)]
         _m_band_arrays.extend(_m_extra_bands)
         _m_band_arrays.extend(_m_glcm_bands)
+        _m_band_arrays.append((N_OBS_BAND, _m_nobs))
 
         # Write to Zarr (always enabled — Zarr is the primary Data Cube product)
         # Validate new arrays against Zarr grid before any mutation
