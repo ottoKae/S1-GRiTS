@@ -590,6 +590,79 @@ def _adopt_existing_master_grid(
     return grid
 
 
+def _expand_grid_to_tile_bounds(
+    transform: Affine,
+    width: int,
+    height: int,
+    x_coords: np.ndarray,
+    y_coords: np.ndarray,
+    mgrs_tile_id: str,
+    target_crs: str,
+    target_res: float,
+) -> tuple:
+    """Grow a freshly derived burst-union master grid to fully cover the tile.
+
+    The master grid comes from the FIRST batch's burst union, and batches run
+    chronologically — so a fresh full-archive run derives its grid from the
+    earliest era (e.g. 2016), whose data-take framing may miss bursts that
+    later eras have. If those bursts touch a tile edge, every later batch
+    would be silently cropped to the smaller grid for the store's lifetime.
+
+    Expanding the grid to at least the MGRS tile bounds makes it
+    era-independent where it matters: outputs are tile-clipped anyway, so
+    covering the tile is the only grid property that affects data content,
+    while the burst-union margins beyond the tile are preserved for the
+    support-before-clip invariant. Snapping the tile bounds to the
+    ``target_res`` lattice keeps the expanded grid on the same pixel lattice
+    as the input grid (both floor/ceil to multiples of the resolution).
+
+    Applies only to freshly derived grids — adopted (store-locked) grids must
+    never be modified, or they would fail their stores' grid-lock checks.
+    Returns the input tuple unchanged when the union already covers the tile
+    or the tile geometry cannot be resolved.
+    """
+    grid = (transform, width, height, x_coords, y_coords)
+    try:
+        wkt = _get_mgrs_tile_geometry_wkt(mgrs_tile_id)
+        crs_ll = pyproj.CRS.from_epsg(4326)
+        crs_t = pyproj.CRS.from_user_input(target_crs)
+        proj = pyproj.Transformer.from_crs(crs_ll, crs_t, always_xy=True).transform
+        t_minx, t_miny, t_maxx, t_maxy = shp_transform(
+            proj, shapely_wkt.loads(wkt)
+        ).bounds
+    except Exception as exc:
+        logger.warning(
+            "[Grid] Could not resolve MGRS tile bounds for %s; keeping the "
+            "burst-union grid as-is: %s",
+            mgrs_tile_id, exc,
+        )
+        return grid
+
+    res = float(target_res)
+    minx, maxy = float(transform.c), float(transform.f)
+    maxx = minx + width * res
+    miny = maxy - height * res
+    n_minx = min(minx, float(np.floor(t_minx / res) * res))
+    n_miny = min(miny, float(np.floor(t_miny / res) * res))
+    n_maxx = max(maxx, float(np.ceil(t_maxx / res) * res))
+    n_maxy = max(maxy, float(np.ceil(t_maxy / res) * res))
+    if (n_minx, n_miny, n_maxx, n_maxy) == (minx, miny, maxx, maxy):
+        return grid
+
+    new_width = int(round((n_maxx - n_minx) / res))
+    new_height = int(round((n_maxy - n_miny) / res))
+    new_transform = Affine(res, 0.0, n_minx, 0.0, -res, n_maxy)
+    new_x = (n_minx + (np.arange(new_width) + 0.5) * res).astype("float64")
+    new_y = (n_maxy - (np.arange(new_height) + 0.5) * res).astype("float64")
+    logger.warning(
+        "[Grid] First-batch burst union for %s does not cover the MGRS tile; "
+        "expanding master grid %dx%d -> %dx%d so later-era bursts inside the "
+        "tile are never cropped.",
+        mgrs_tile_id, width, height, new_width, new_height,
+    )
+    return new_transform, new_width, new_height, new_x, new_y
+
+
 def _zarr_append(g: "zarr.Group", var_name: str, data: "np.ndarray") -> None:
     """Append one slice along axis-0 to a zarr v3 array (v3 has no .append())."""
     arr = g[var_name]
@@ -5277,6 +5350,21 @@ def process_single_scenes_tile(
                         _master_x_coords, _master_y_coords = (
                             _build_grid_from_bursts(
                                 prof_vv, target_crs, target_res
+                            )
+                        )
+                    # Era-independence guard: batch 1 is the earliest era,
+                    # whose data-take framing may miss tile-edge bursts that
+                    # later eras have. Grow the fresh grid to at least the
+                    # MGRS tile bounds so no later-era data inside the tile
+                    # can ever be cropped. (Adopted store-locked grids above
+                    # are never expanded — they must match their stores.)
+                    _master_transform, _master_width, _master_height, \
+                        _master_x_coords, _master_y_coords = (
+                            _expand_grid_to_tile_bounds(
+                                _master_transform, _master_width,
+                                _master_height, _master_x_coords,
+                                _master_y_coords, mgrs_tile_id, target_crs,
+                                target_res,
                             )
                         )
                 _grid_built = True
