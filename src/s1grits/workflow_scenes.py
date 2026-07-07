@@ -17,9 +17,9 @@ Output structure:
       {TILE}/
         catalog.parquet
         scenes_{DIR}_{despeckle}_{bands}/
-          zarr/s1grits_scenes_{TILE}_{DIR}_TK{tk}_N{nn}.zarr
-          cog/s1grits_scenes_{TILE}_{DIR}_TK{tk}_N{nn}_{DT}.tif
-          preview/s1grits_scenes_{TILE}_{DIR}_TK{tk}_N{nn}_{DT}.png
+          zarr/s1grits_scenes_{TILE}_{DIR}_TK{tk}.zarr
+          cog/s1grits_scenes_{TILE}_{DIR}_TK{tk}_{DT}.tif
+          preview/s1grits_scenes_{TILE}_{DIR}_TK{tk}_{DT}.png
         smonthly_{DIR}_{bands}/
           zarr/s1grits_smonthly_{TILE}_{DIR}_TK{tk}.zarr
           cog/s1grits_smonthly_{TILE}_{DIR}_TK{tk}_{YYYY-MM}.tif
@@ -2237,11 +2237,15 @@ def _write_scenes_output(
             _r_str = pd.Timestamp(r['acq_dt']).tz_convert('UTC').strftime('%Y%m%dT%H%M%S')
             indices.extend(_dt_str_to_clean_idx.get(_r_str, []))
 
-        # Per-group Zarr path
+        # Per-group Zarr path. Store identity keys on the track ONLY: n_bursts
+        # here is len(rows) for THIS acquisition, so it varies date-to-date
+        # (edge truncation, ASF gaps). Embedding it in the store name would
+        # split one track's time series across fragmented stores (the smonthly
+        # _TK18_N09/_N10 bug); n_bursts stays per-scene catalog provenance.
         _track_tok_raw = str(rows[0]['track_token']) if rows else 'UNK'
         _track_tok = _track_tok_raw.replace('_', '-')
         n_bursts = len(rows)
-        zarr_name = f"s1grits_scenes_{mgrs_tile_id}_{direction_label}_TK{_track_tok}_N{n_bursts:02d}.zarr"
+        zarr_name = f"s1grits_scenes_{mgrs_tile_id}_{direction_label}_TK{_track_tok}.zarr"
         zarr_path_group = scenes_zarr_dir / zarr_name
 
         console.print(
@@ -2484,7 +2488,7 @@ def _write_scenes_output(
                 + _extra_bands_cog
                 + _glcm_bands_cog
             )
-            fname = f"s1grits_scenes_{mgrs_tile_id}_{direction_label}_TK{_track_tok}_N{n_bursts:02d}_{dt_str}.tif"
+            fname = f"s1grits_scenes_{mgrs_tile_id}_{direction_label}_TK{_track_tok}_{dt_str}.tif"
             cog_path = scenes_cog_dir / fname
             prof = {
                 'driver': 'GTiff', 'dtype': 'float32', 'nodata': float('nan'),
@@ -2510,7 +2514,7 @@ def _write_scenes_output(
                 10.0, (_arr_vh_cog[_valid_cog] - _arr_vv_cog[_valid_cog]) / 10.0
             ).astype(np.float32)
 
-            png_name = f"s1grits_scenes_{mgrs_tile_id}_{direction_label}_TK{_track_tok}_N{n_bursts:02d}_{dt_str}.png"
+            png_name = f"s1grits_scenes_{mgrs_tile_id}_{direction_label}_TK{_track_tok}_{dt_str}.png"
             png_path = scenes_png_dir / png_name
             _generate_preview_png(
                 vv_db=_arr_vv_cog,
@@ -2560,7 +2564,7 @@ def _write_scenes_output(
             'start_datetime': _acq_naive,
             'end_datetime':   _acq_naive,
             'month':         acq_ts.strftime('%Y-%m') if hasattr(acq_ts, 'strftime') else str(acq_ts)[:7],
-            'geometry_group_id': f"{mgrs_tile_id}_{direction_label}_TK{_track_tok}_N{n_bursts:02d}",
+            'geometry_group_id': f"{mgrs_tile_id}_{direction_label}_TK{_track_tok}",
             'track':         track_number,
             'n_bursts':      n_bursts,
             'n_scenes':      None,

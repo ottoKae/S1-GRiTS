@@ -691,12 +691,13 @@ def _resync_locked(output_root, _skip_dirs, write_stac, stac_format) -> Dict[str
                     track_val = int(_tk_str.split('-')[0]) if '-' in _tk_str else int(_tk_str)
                 else:
                     track_val = None
-                # n_bursts appears in scenes/static store names (_N{nn}); the
-                # smonthly store keys on the track alone (time-varying bursts),
-                # carrying n_bursts as Zarr provenance instead. Fall back to the
-                # attr, and keep the _N segment out of the identity IDs whenever
-                # the store name omits it so a track-only store is not crash-
-                # formatted (None:02d) nor split by a fabricated burst count.
+                # n_bursts appears in static store names (_N{nn}) and in legacy
+                # scenes/smonthly stores; current scenes/smonthly stores key on
+                # the track alone (n_bursts is time-varying) and carry n_bursts
+                # as Zarr provenance instead. Fall back to the attr, and keep
+                # the _N segment out of the identity IDs whenever the store
+                # name omits it so a track-only store is not crash-formatted
+                # (None:02d) nor split by a fabricated burst count.
                 n_bursts_val = int(_nn_match.group(1)) if _nn_match else None
                 if n_bursts_val is None:
                     _attr_nb = g.attrs.get('n_bursts', None)

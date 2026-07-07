@@ -10,13 +10,15 @@
 #   {base_dir}/
 #     {TILE}/
 #       catalog.parquet
-#       scenes_{DESPECKLE}_{BANDS}/zarr/s1grits_scenes_{TILE}_{DIR}_TK{tk}_N{nn}.zarr
-#       scenes_{DESPECKLE}_{BANDS}/cog/{TILE}_{DIR}_{ACQDT}.tif
-#       scenes_{DESPECKLE}_{BANDS}/preview/{TILE}_{DIR}_{ACQDT}.png
+#       scenes_{DESPECKLE}_{BANDS}/zarr/s1grits_scenes_{TILE}_{DIR}_TK{tk}.zarr
+#       scenes_{DESPECKLE}_{BANDS}/cog/s1grits_scenes_{TILE}_{DIR}_TK{tk}_{ACQDT}.tif
+#       scenes_{DESPECKLE}_{BANDS}/preview/s1grits_scenes_{TILE}_{DIR}_TK{tk}_{ACQDT}.png
 #       smonthly_{DESPECKLE}_{BANDS}/                                       (if monthly.enabled)
-#         zarr/s1grits_smonthly_{TILE}_{DIR}_TK{tk}_N{nn}.zarr   (one per track)
-#         cog/s1grits_smonthly_{TILE}_{DIR}_TK{tk}_N{nn}_{YYYY-MM}.tif
-#         preview/s1grits_smonthly_{TILE}_{DIR}_TK{tk}_N{nn}_{YYYY-MM}.png
+#         zarr/s1grits_smonthly_{TILE}_{DIR}_TK{tk}.zarr   (one per track)
+#         cog/s1grits_smonthly_{TILE}_{DIR}_TK{tk}_{YYYY-MM}.tif
+#         preview/s1grits_smonthly_{TILE}_{DIR}_TK{tk}_{YYYY-MM}.png
+#       (store identity keys on the track only; n_bursts is time-varying and
+#        lives in the catalog as provenance, never in the filename)
 #   catalog.parquet
 #   (STAC is produced only by `s1grits catalog resync`, under collections/)
 # =============================================================================

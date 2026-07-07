@@ -56,7 +56,7 @@ COLLECTION_PRODUCT_MAPPING = {
 # ---------------------------------------------------------------------------
 CANONICAL_CATALOG_COLUMNS: list[str] = [
     # ---- Identity ----
-    "item_id",              # str: {TILE}_{DIR}_TK{tk}_N{nn}_{product} | null
+    "item_id",              # str: {TILE}_{DIR}_TK{tk}[_N{nn}]_{product} | null (_N{nn} legacy/static only)
     "collection_id",        # str: s1grits-scenes / s1grits-smonthly / s1grits-static / s1grits-monthly
     "product_type",         # str: scenes | smonthly | static | monthly
     "product_label",        # str: e.g. scenes_DESCENDING_tvbregman5_Ratio
@@ -82,7 +82,7 @@ CANONICAL_CATALOG_COLUMNS: list[str] = [
     "month",                # str: YYYY-MM or null (static = null; scenes use acq month)
 
     # ---- Grouping ----
-    "geometry_group_id",    # str: {TILE}_{DIR}_TK{tk}_N{nn} | null
+    "geometry_group_id",    # str: {TILE}_{DIR}_TK{tk}[_N{nn}] | null (_N{nn} legacy/static only)
     "track",                # int or null (monthly = null)
     "n_bursts",             # int or null (monthly = null)
     "n_scenes",             # int or null (only smonthly/monthly)
