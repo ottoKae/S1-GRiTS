@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "s1grits"
-version = "2.3.1"
+version = "2.3.2"
 description = "S1-GRiTS: Sentinel-1 Gridded Radiometrically Terrain-Corrected gamma0 Monthly Composite Time Series"
 readme = "README.md"
 # Pinned to Python 3.12. The package itself is pure Python, but the geoscience
@@ -129,10 +129,10 @@ all = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/ottoKae/S1-GRiTS-V100"
-Documentation = "https://github.com/ottoKae/S1-GRiTS-V100/blob/main/README.md"
-Repository = "https://github.com/ottoKae/S1-GRiTS-V100"
-Issues = "https://github.com/ottoKae/S1-GRiTS-V100/issues"
+Homepage = "https://github.com/ottoKae/S1-GRiTS"
+Documentation = "https://github.com/ottoKae/S1-GRiTS/blob/main/README.md"
+Repository = "https://github.com/ottoKae/S1-GRiTS"
+Issues = "https://github.com/ottoKae/S1-GRiTS/issues"
 
 [project.scripts]
 s1grits     = "s1grits.cli:main"
