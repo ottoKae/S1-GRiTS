@@ -199,22 +199,36 @@ parallel:
 # MEMORY MANAGEMENT
 # =============================================================================
 memory:
-  # Maximum memory (GB): 'auto' (detect from the machine via psutil) or a number.
+  # Maximum memory (GB): 'auto' (detect from the machine via psutil) or a
+  # number. On clusters with a job memory cap (SLURM/PBS cgroups), set the
+  # job's real limit explicitly — psutil reports NODE-available memory, which
+  # can be far above what your job may use.
   max_memory_gb: 'auto'
   # Batch strategy: 'auto', 'yearly', 'quarterly', 'monthly'. Controls how many
-  # months of scenes are held in memory per tile at once. With 'auto', the
-  # estimator is blockwise-aware: the blockwise smonthly writer holds only a
-  # burst-footprint working set (~1/4 of a full-tile stack), so a large-RAM box
-  # is allowed a bigger batch than the old full-tile heuristic. When a spatial
-  # neighbourhood filter forces the legacy full-array scenes path (despeckle),
-  # the batch is capped at quarterly to bound peak RSS.
-  batch_strategy: 'quarterly'
+  # months of scenes are held in memory per tile at once. 'auto' is
+  # DEMAND-AWARE: it computes the peak batch each candidate strategy would
+  # hold from the run's actual acquisition-date histogram (blockwise-aware,
+  # doubled when download_prefetch keeps a second batch resident) and picks
+  # the coarsest strategy that fits 80% of the per-worker memory budget. A
+  # manual value is honoured unchanged — no safety checks are applied to it.
+  # When a spatial neighbourhood filter forces the legacy full-array scenes
+  # path (despeckle), the batch is capped at quarterly to bound peak RSS.
+  batch_strategy: 'auto'
   # Parallel ASF download connections per tile worker. An integer is used
   # as-is; "auto" divides a global 16-connection budget across the tile-level
   # worker pool (parallel.max_workers), floored at 4 and capped at 8, to stay
   # polite to ASF's CDN while keeping the pipe full. Downloads already stream
   # in 1 MiB chunks.
   max_download_workers: 4
+  # One-batch download prefetch: while batch N is being composited/written,
+  # batch N+1 is prepared and downloaded on a background thread. Removes the
+  # download<->compute alternation stalls (network idle during writes, CPU
+  # idle during downloads) at the cost of ONE extra batch resident in RAM
+  # (~2x per-worker batch memory). The demand-aware 'auto' batch strategy
+  # accounts for this automatically; with a manual strategy, size it so
+  # 2 x peak-batch fits the per-worker budget. Default false (no change to
+  # memory behaviour unless you opt in).
+  download_prefetch: false
   # Optional on-disk cache for downloaded burst GeoTIFFs, keyed by URL. When
   # set to a directory, bursts shared between adjacent MGRS tiles (and re-runs)
   # are downloaded once and reused from disk. null (default) disables it, so

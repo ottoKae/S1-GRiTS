@@ -60,6 +60,39 @@ _NOT_FOUND_RETRIES: dict = {}
 # HTTPAdapter + Retry object on every call.
 _thread_local: threading.local = threading.local()
 
+# Process-wide persistent download pool. Sessions live in thread-local storage,
+# so a pool that is torn down between batches discards every warmed session and
+# re-pays the TLS handshake + Earthdata URS auth redirect chain on the next
+# batch — a fixed ramp that dominates small (monthly) batches. Keeping ONE pool
+# alive for the process lifetime lets the per-thread sessions (and their
+# keep-alive connections) survive across batches. The pool is idle between
+# batches; it is resized (drain + recreate) only when a different worker count
+# is requested, which never happens mid-download.
+_download_executor: concurrent.futures.ThreadPoolExecutor | None = None
+_download_executor_workers: int = 0
+_download_executor_lock = threading.Lock()
+
+
+def _get_download_executor(max_workers: int) -> concurrent.futures.ThreadPoolExecutor:
+    """Return the persistent download pool, (re)creating it on size change.
+
+    Thread-safe. The previous pool (if any) is drained with ``wait=True``
+    before replacement; callers only request a resize between batches, when
+    the pool is idle, so the drain is instantaneous in practice.
+    """
+    global _download_executor, _download_executor_workers
+    max_workers = max(1, int(max_workers))
+    with _download_executor_lock:
+        if (_download_executor is None
+                or _download_executor_workers != max_workers):
+            if _download_executor is not None:
+                _download_executor.shutdown(wait=True)
+            _download_executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=max_workers, thread_name_prefix="s1grits-dl"
+            )
+            _download_executor_workers = max_workers
+        return _download_executor
+
 # =========================================================
 #  Part 0: MGRS to UTM Conversion Helper
 # =========================================================
@@ -279,14 +312,16 @@ def read_asf_rtc_image_data(urls: list, max_workers: int = 2, retry_timeout_seco
     N = len(urls)
     results = [(None, None, None)] * N
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
-        fut2idx = {ex.submit(read_one_asf, url, retry_timeout_seconds): i for i, url in enumerate(urls)}
-        for fut in tqdm(concurrent.futures.as_completed(fut2idx), total=N, desc="Downloading"):
-            i = fut2idx[fut]
-            try:
-                results[i] = fut.result()
-            except Exception:
-                results[i] = (None, None, "network_error")
+    # Persistent pool: threads (and their warmed thread-local sessions)
+    # survive across batches instead of re-paying TLS + URS auth per batch.
+    ex = _get_download_executor(max_workers)
+    fut2idx = {ex.submit(read_one_asf, url, retry_timeout_seconds): i for i, url in enumerate(urls)}
+    for fut in tqdm(concurrent.futures.as_completed(fut2idx), total=N, desc="Downloading"):
+        i = fut2idx[fut]
+        try:
+            results[i] = fut.result()
+        except Exception:
+            results[i] = (None, None, "network_error")
 
     arrs = [r[0] for r in results]
     profs = [r[1] for r in results]
@@ -376,37 +411,39 @@ def _run_paired_download_jobs(
     if not jobs:
         return
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
-        fut2job = {
-            ex.submit(read_one_asf, url, retry_timeout_seconds=retry_timeout_seconds): (
+    # Persistent pool: threads (and their warmed thread-local sessions)
+    # survive across batches instead of re-paying TLS + URS auth per batch.
+    ex = _get_download_executor(max_workers)
+    fut2job = {
+        ex.submit(read_one_asf, url, retry_timeout_seconds=retry_timeout_seconds): (
+            label,
+            i,
+            url,
+            dt,
+        )
+        for label, i, url, dt in jobs
+    }
+    for fut in tqdm(
+        concurrent.futures.as_completed(fut2job),
+        total=len(jobs),
+        desc=desc,
+    ):
+        label, i, _url, dt = fut2job[fut]
+        try:
+            arr, prof, err = fut.result()
+        except Exception as exc:
+            logging.error(
+                "[%s] Download job failed for scene %d (%s): %s",
                 label,
                 i,
-                url,
                 dt,
+                exc,
             )
-            for label, i, url, dt in jobs
-        }
-        for fut in tqdm(
-            concurrent.futures.as_completed(fut2job),
-            total=len(jobs),
-            desc=desc,
-        ):
-            label, i, _url, dt = fut2job[fut]
-            try:
-                arr, prof, err = fut.result()
-            except Exception as exc:
-                logging.error(
-                    "[%s] Download job failed for scene %d (%s): %s",
-                    label,
-                    i,
-                    dt,
-                    exc,
-                )
-                arr, prof, err = None, None, "network_error"
+            arr, prof, err = None, None, "network_error"
 
-            raw_by_label[label][i] = arr
-            prof_by_label[label][i] = prof
-            err_by_label[label][i] = err
+        raw_by_label[label][i] = arr
+        prof_by_label[label][i] = prof
+        err_by_label[label][i] = err
 
 
 def _download_paired_with_retry(
