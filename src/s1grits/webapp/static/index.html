@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>S1-GRiTS · Workspace</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛰️</text></svg>">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-logo">S1</span>
+      <span class="brand-name">S1-GRiTS</span>
+      <span class="brand-badge" id="version-badge">v2.3</span>
+    </div>
+    <div class="workspace-chips" id="workspace-chips" title="Workspace summary"></div>
+    <div class="topbar-actions">
+      <button id="btn-refresh" class="btn ghost" title="Reload workspace">⟳ Refresh</button>
+      <button id="btn-jobs" class="btn primary">Jobs <span id="jobs-active-badge" class="badge hidden">0</span></button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- ============ Sidebar: filters + tiles ============ -->
+    <aside class="sidebar" id="sidebar">
+      <section class="panel">
+        <h2>Filters</h2>
+        <label>Tile
+          <select id="f-tile"><option value="">All tiles</option></select>
+        </label>
+        <label>Product
+          <select id="f-product"><option value="">All products</option></select>
+        </label>
+        <label>Direction
+          <select id="f-direction"><option value="">All directions</option></select>
+        </label>
+        <label>Track
+          <select id="f-track"><option value="">All tracks</option></select>
+        </label>
+        <div class="range-row">
+          <label>From <input type="month" id="f-from"></label>
+          <label>To <input type="month" id="f-to"></label>
+        </div>
+        <button id="btn-clear-filters" class="btn ghost small">Clear filters</button>
+      </section>
+
+      <section class="panel">
+        <h2>Tiles</h2>
+        <ul class="tile-list" id="tile-list"></ul>
+      </section>
+    </aside>
+
+    <!-- ============ Main: map + timeline + table ============ -->
+    <section class="content">
+      <div class="map-wrap panel">
+        <div id="map"></div>
+        <div class="map-hint" id="map-hint">Click a tile to filter · click inside a highlighted tile to probe its time series</div>
+      </div>
+
+      <div class="panel timeline-panel">
+        <div class="panel-head">
+          <h2>Monthly coverage</h2>
+          <span class="muted" id="timeline-caption"></span>
+        </div>
+        <canvas id="timeline" height="56"></canvas>
+      </div>
+
+      <div class="panel table-panel">
+        <div class="panel-head">
+          <h2>Datasets <span class="muted" id="items-count"></span></h2>
+          <div class="pager">
+            <button id="pg-prev" class="btn ghost small">‹</button>
+            <span id="pg-label" class="muted"></span>
+            <button id="pg-next" class="btn ghost small">›</button>
+          </div>
+        </div>
+        <div class="table-scroll">
+          <table id="items-table">
+            <thead><tr>
+              <th>Item</th><th>Tile</th><th>Product</th><th>Track</th>
+              <th>Month</th><th>Scenes</th><th>Assets</th>
+            </tr></thead>
+            <tbody id="items-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ Detail / probe panel ============ -->
+    <aside class="detail" id="detail-panel" hidden>
+      <div class="panel">
+        <div class="panel-head">
+          <h2 id="detail-title">Item</h2>
+          <button class="btn ghost small" id="detail-close">✕</button>
+        </div>
+        <img id="detail-preview" class="detail-preview" alt="" hidden>
+        <dl class="detail-meta" id="detail-meta"></dl>
+        <div class="detail-actions" id="detail-actions"></div>
+      </div>
+      <div class="panel" id="probe-panel" hidden>
+        <div class="panel-head">
+          <h2>Point time series</h2><span class="muted" id="probe-caption"></span>
+        </div>
+        <canvas id="probe-chart" height="220"></canvas>
+        <canvas id="probe-nobs" height="46" title="n_obs — observations behind each composite"></canvas>
+      </div>
+    </aside>
+  </main>
+
+  <!-- ============ Jobs drawer ============ -->
+  <div class="drawer-scrim hidden" id="drawer-scrim"></div>
+  <aside class="drawer hidden" id="jobs-drawer">
+    <div class="panel-head">
+      <h2>Download manager</h2>
+      <div>
+        <button class="btn primary small" id="btn-new-job">＋ New job</button>
+        <button class="btn ghost small" id="drawer-close">✕</button>
+      </div>
+    </div>
+    <ul class="job-list" id="job-list"></ul>
+    <div class="job-log-wrap hidden" id="job-log-wrap">
+      <div class="panel-head"><h3 id="job-log-title">Log</h3>
+        <button class="btn ghost small" id="job-log-close">✕</button></div>
+      <pre class="job-log" id="job-log"></pre>
+    </div>
+  </aside>
+
+  <!-- ============ New job modal ============ -->
+  <div class="modal hidden" id="job-modal">
+    <div class="modal-card">
+      <div class="panel-head"><h2>New job</h2>
+        <button class="btn ghost small" id="job-modal-close">✕</button></div>
+      <label>Type
+        <select id="job-type"></select>
+      </label>
+      <label>Title <input type="text" id="job-title" placeholder="e.g. 11-tile monthly run"></label>
+      <label id="job-config-label">Config (YAML)
+        <textarea id="job-config" rows="16" spellcheck="false"></textarea>
+      </label>
+      <p class="muted small-note">output.base_dir is pinned to the server workspace.
+        Headless equivalent: <code>s1grits &lt;type&gt; --config cfg.yaml</code></p>
+      <div class="modal-actions">
+        <button class="btn ghost" id="job-cancel">Cancel</button>
+        <button class="btn primary" id="job-submit">Queue job</button>
+      </div>
+      <div class="error hidden" id="job-error"></div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

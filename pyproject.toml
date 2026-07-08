@@ -119,13 +119,19 @@ notebook = [
     "ipywidgets>=8.0.0",
 ]
 gui = [
+    # Legacy v1.0 Streamlit desktop GUI (superseded by the 'web' extra)
     "streamlit>=1.20.0",
     "streamlit-folium>=0.18.0",
     "folium>=0.16.0",
     "plotly>=5.18.0",
 ]
+web = [
+    # v2.3 web UI: `s1grits serve` (see docs/webapp.md)
+    "fastapi>=0.110.0",
+    "uvicorn>=0.29.0",
+]
 all = [
-    "s1grits[dev,notebook,gui]",
+    "s1grits[dev,notebook,gui,web]",
 ]
 
 [project.urls]
@@ -146,6 +152,12 @@ where = ["src"]
     # Static data files
     "data/*.parquet",
     "py.typed",
+]
+"s1grits.webapp" = [
+    # v2.3 web UI frontend (zero-build static SPA)
+    "static/*.html",
+    "static/*.css",
+    "static/*.js",
 ]
 "s1grits.analysis" = ["*.py"]
 "gui" = ["*.py"]
