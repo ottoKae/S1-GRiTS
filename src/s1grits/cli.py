@@ -14,6 +14,7 @@ Provides a professional CLI interface with subcommands:
 """
 
 import argparse
+import os
 import sys
 from pathlib import Path
 from rich.console import Console
@@ -928,6 +929,22 @@ def cmd_mosaic_scenes(args):
     sys.exit(0)
 
 
+def cmd_serve(args):
+    """Run the v2.3 web UI + API over a workspace directory."""
+    try:
+        from s1grits.webapp.server import serve
+    except ImportError as exc:
+        console.print(
+            "[red]The web UI requires the optional 'web' extra:[/red] "
+            "pip install 's1grits\\[web]'"
+        )
+        raise SystemExit(1) from exc
+    serve(
+        root=args.root, host=args.host, port=args.port, token=args.token,
+        max_concurrent_jobs=args.max_concurrent_jobs, insecure=args.insecure,
+    )
+
+
 def main():
     """Main CLI entry point"""
     parser = argparse.ArgumentParser(
@@ -1167,6 +1184,34 @@ Examples:
         help='Destination directory for mosaic output (default: analysis_results/mosaic_scenes/)'
     )
     parser_mosaic_scenes.set_defaults(func=cmd_mosaic_scenes)
+
+    # ── serve (v2.3 web UI) ───────────────────────────────────────────────────
+    parser_serve = subparsers.add_parser(
+        'serve',
+        help='Run the web UI + API over a workspace (requires s1grits[web])'
+    )
+    parser_serve.add_argument(
+        '--root', required=True,
+        help='Workspace directory (the output.base_dir of your runs)'
+    )
+    parser_serve.add_argument(
+        '--host', default='127.0.0.1',
+        help='Bind address (default 127.0.0.1; non-local requires --token)'
+    )
+    parser_serve.add_argument('--port', type=int, default=8765)
+    parser_serve.add_argument(
+        '--token', default=os.environ.get('S1GRITS_WEB_TOKEN') or None,
+        help='Bearer token required on /api (default: $S1GRITS_WEB_TOKEN)'
+    )
+    parser_serve.add_argument(
+        '--max-concurrent-jobs', type=int, default=1,
+        help='Concurrent pipeline jobs (default 1; runs parallelise internally)'
+    )
+    parser_serve.add_argument(
+        '--insecure', action='store_true',
+        help='Allow non-localhost bind without a token (not recommended)'
+    )
+    parser_serve.set_defaults(func=cmd_serve)
 
     # ── dispatch ──────────────────────────────────────────────────────────────
     args = parser.parse_args()
