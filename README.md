@@ -8,7 +8,7 @@
 <!-- <h1 align="center">S1-GRiTS: Sentinel-1 Gridded RTC Time Series Data Cube</h1> -->
 
 <p align="center">
-  <em>Sentinel-1 spatiotemporal data, ready for direct agentic access .</em>
+  <em>Sentinel-1 spatiotemporal data, ready for direct agentic access.</em>
   <br>
   <em>Each pixel knows where it came from. Geometry is not erased.</em>
 </p>
