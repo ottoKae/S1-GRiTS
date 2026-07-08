@@ -8,6 +8,8 @@
 <!-- <h1 align="center">S1-GRiTS: Sentinel-1 Gridded RTC Time Series Data Cube</h1> -->
 
 <p align="center">
+  <em>Sentinel-1 spatiotemporal DataCube, ready for direct agentic access.</em>
+  <br>
   <em>Each pixel knows where it came from. Geometry is not erased.</em>
 </p>
 <p align="center">
@@ -25,7 +27,7 @@
 ---
 
 <p align="center">
-  S1-GRiTS (Sentinel-1 Gridded RTC Time Series Data Cube) is a Python package for generating analysis-ready Sentinel-1 SAR time series data cubes from ASF OPERA RTC-S1 products.
+  S1-GRiTS (Sentinel-1 Gridded RTC Time Series) is a Python package for generating analysis-ready Sentinel-1 SAR time series data cubes from ASF OPERA RTC-S1 products.
   It converts burst-level observations into MGRS-aligned, temporally consistent Zarr/COG data cubes.
 </p>
 
