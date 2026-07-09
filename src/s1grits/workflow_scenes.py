@@ -84,7 +84,7 @@ from s1grits.memory_manager import (
     detect_system_memory,
     estimate_memory_demand_gb,
 )
-from s1grits.asf_output_writing import _build_grid_from_bursts, _mosaic_align, _generate_preview_png, _get_mgrs_tile_geometry_wkt, _clip_arrays_to_wkt_4326, _check_tile_integrity, _zarr_delete_timestep
+from s1grits.asf_output_writing import _build_grid_from_bursts, _build_grid_from_geoms, _mosaic_align, _generate_preview_png, _get_mgrs_tile_geometry_wkt, _clip_arrays_to_wkt_4326, _check_tile_integrity, _zarr_delete_timestep
 from s1grits.stac_builder import (
     _utm_extent_to_wgs84,
     _epsg_int,
@@ -299,6 +299,67 @@ def _missing_interior_bursts(footprint_ids, present_ids) -> list[str]:
         if ps and min(ps) < idx < max(ps):
             interior.append(b)
     return sorted(interior)
+
+
+def _estimate_interior_hole_frac(
+    interior_missing: list[str],
+    present_ids: list[str],
+    burst_geoms: dict,
+    tile_geom,
+    n_footprint_bursts: int,
+) -> tuple[float | None, str | None]:
+    """Metadata-only estimate of the tile-area fraction an interior-missing
+    burst leaves uncovered, so the prefilter can honour
+    ``interior_hole_max_frac`` instead of dropping on ANY interior gap.
+
+    Exact where the missing burst's footprint is known from other acquisitions
+    (OPERA burst footprints are fixed per burst id): the hole is the missing
+    footprint ∩ tile minus the union of the acquisition's present bursts
+    (along-track neighbours overlap and fill part of the gap). For a burst
+    that is absent from the ENTIRE query (never seen -> no geometry, the
+    common ASF_MISSING_STALE case), fall back to a per-burst share proxy:
+    (track's tile coverage) / (footprint burst count) per unknown burst.
+
+    All geometries are EPSG:4326; the area RATIO is what matters, and the
+    distortion across a single 110 km tile is negligible for a threshold test.
+
+    Returns (fraction, basis) with basis in {"geometry", "proxy",
+    "geometry+proxy"}; (None, None) when nothing can be estimated (no burst
+    geometry at all) — the caller then keeps its conservative behaviour.
+    """
+    try:
+        from shapely.ops import unary_union
+    except ImportError:
+        return None, None
+    if tile_geom is None or not burst_geoms:
+        return None, None
+    tile_area = float(tile_geom.area)
+    if tile_area <= 0:
+        return None, None
+
+    known = [burst_geoms[b] for b in interior_missing if b in burst_geoms]
+    unknown = [b for b in interior_missing if b not in burst_geoms]
+    present_geoms = [burst_geoms[str(b)] for b in present_ids
+                     if str(b) in burst_geoms]
+
+    frac = 0.0
+    basis: list[str] = []
+    if known:
+        hole = unary_union(known).intersection(tile_geom)
+        if present_geoms and not hole.is_empty:
+            hole = hole.difference(unary_union(present_geoms))
+        frac += float(hole.area) / tile_area
+        basis.append("geometry")
+    if unknown:
+        if not present_geoms:
+            return None, None
+        track_in_tile = unary_union(present_geoms).intersection(tile_geom)
+        per_burst = float(track_in_tile.area) / max(int(n_footprint_bursts), 1)
+        frac += len(unknown) * per_burst / tile_area
+        basis.append("proxy")
+    if not basis:
+        return None, None
+    return frac, "+".join(basis)
 
 
 def _load_footprint_cache(cache_path, key: dict, ttl_days: float):
@@ -2932,12 +2993,24 @@ def _prefilter_metadata_incomplete_acquisitions(
     incomplete_policy: str = "skip",
     incomplete_sink: list | None = None,
     console_obj: Console | None = None,
+    interior_hole_max_frac: float = 0.0,
+    burst_geoms: dict | None = None,
+    tile_geom=None,
 ) -> pd.DataFrame:
     """Drop acquisitions that fail metadata-only interior-burst QC.
 
     This runs before raster download in smonthly-only mode. It can only catch
     footprint/interior-burst omissions; raster interior NoData still requires
     the later VV-only mosaic QC.
+
+    When ``burst_geoms``/``tile_geom`` are provided, the interior gap's tile
+    area is ESTIMATED from burst footprints and the acquisition is dropped
+    only when the estimate exceeds ``interior_hole_max_frac`` — honouring the
+    same threshold the raster QC enforces. Previously any interior-missing
+    burst dropped the acquisition regardless of hole size, which discarded
+    entire multi-year eras of a track over a single permanently-missing burst
+    covering a few percent of the tile (the 17MPV/17MPT canary finding).
+    Without geometry, the legacy conservative drop is kept.
     """
     if df_rtc_ts.empty or not track_footprint_ids:
         return df_rtc_ts
@@ -2970,6 +3043,23 @@ def _prefilter_metadata_incomplete_acquisitions(
         if not interior_missing:
             continue
 
+        # Threshold test: estimate the gap's tile-area share from burst
+        # footprints; keep the acquisition when it is within the configured
+        # tolerance (the later raster QC re-measures the real NoData).
+        _est_frac, _est_basis = _estimate_interior_hole_frac(
+            interior_missing, jpl_burst_ids,
+            burst_geoms or {}, tile_geom, expected_full,
+        )
+        if _est_frac is not None and _est_frac <= interior_hole_max_frac:
+            logger.info(
+                "[Hole] Scene %s TK%s: %d interior burst(s) missing but "
+                "estimated hole %.2f%% of tile <= threshold %.2f%% (%s); "
+                "keeping for download (raster QC re-checks).",
+                date_label, track_tok_raw, len(interior_missing),
+                _est_frac * 100, interior_hole_max_frac * 100, _est_basis,
+            )
+            continue
+
         try:
             age_days = int((pd.Timestamp.now(tz='UTC') - acq_ts).days)
         except Exception:
@@ -2994,7 +3084,10 @@ def _prefilter_metadata_incomplete_acquisitions(
             "metadata_bursts": n_bursts,
             "footprint_bursts": expected_full,
             "interior_missing_bursts": len(interior_missing),
-            "interior_hole_pct": 0.0,
+            # Estimated from burst footprints at the metadata stage (no raster
+            # yet); 0.0 only when no geometry was available to estimate from.
+            "interior_hole_pct": round((_est_frac or 0.0) * 100, 3),
+            "hole_estimate_basis": _est_basis or "none",
             "network_missing": 0,
             "asf_missing": max(0, expected_full - n_bursts),
             "age_days": age_days,
@@ -4947,6 +5040,26 @@ def process_single_scenes_tile(
                 except Exception as _le:
                     logger.warning("Footprint look-back query failed for %s: %s", mgrs_tile_id, _le)
         _track_footprint = {k: len(v) for k, v in _fp_ids.items()}
+        # Burst-footprint geometries (fixed per OPERA burst id) + tile geometry,
+        # built once per tile so the metadata prefilter can ESTIMATE an interior
+        # gap's tile-area share instead of dropping on any interior-missing
+        # burst. The geometry column exists when df_rtc_ts is the CMR
+        # GeoDataFrame; without it the prefilter keeps its conservative drop.
+        _burst_geoms: dict = {}
+        _tile_geom_4326 = None
+        try:
+            if hasattr(df_rtc_ts, 'geometry') and 'jpl_burst_id' in df_rtc_ts.columns:
+                for _bid, _geom in zip(df_rtc_ts['jpl_burst_id'], df_rtc_ts.geometry):
+                    _b = str(_bid)
+                    if _b not in _burst_geoms and _geom is not None:
+                        _burst_geoms[_b] = _geom
+            from shapely import wkt as _shp_wkt
+            _tile_geom_4326 = _shp_wkt.loads(
+                _get_mgrs_tile_geometry_wkt(mgrs_tile_id)
+            )
+        except Exception as _ge:
+            logger.debug("Hole-estimate geometry unavailable: %s", _ge)
+            _burst_geoms, _tile_geom_4326 = {}, None
         _incomplete_acqs: list[dict] = []
         group_mode = 'acq_group'  # always acq_group mode
         features_ratio = processing_config.get('features_ratio', False)
@@ -5136,6 +5249,9 @@ def process_single_scenes_tile(
                         incomplete_policy=incomplete_policy,
                         incomplete_sink=_incomplete_acqs,
                         console_obj=_console,
+                        interior_hole_max_frac=interior_hole_max_frac,
+                        burst_geoms=_burst_geoms,
+                        tile_geom=_tile_geom_4326,
                     )
                 df_batch['_source_row'] = np.arange(len(df_batch), dtype=np.int64)
             df_input = adapt_enumerator_to_distmetrics(df_batch)
@@ -5445,11 +5561,37 @@ def process_single_scenes_tile(
                     batch=f"{batch_idx}/{len(date_batches)}",
                     profiles=len(prof_vv),
                 ):
-                    _master_transform, _master_width, _master_height, \
-                        _master_x_coords, _master_y_coords = (
-                            _build_grid_from_bursts(
-                                prof_vv, target_crs, target_res
+                    # Prefer the FULL-WINDOW footprint union (every burst in
+                    # the whole query, from CMR metadata) over the first
+                    # batch's downloaded profiles: the first batch may be an
+                    # early, sparser era (e.g. 2016-Q4) whose union would
+                    # crop bursts that only exist in later eras. Both
+                    # builders snap to the same lattice, so resume-grid
+                    # adoption keeps working across the change.
+                    if _burst_geoms:
+                        _master_transform, _master_width, _master_height, \
+                            _master_x_coords, _master_y_coords = (
+                                _build_grid_from_geoms(
+                                    list(_burst_geoms.values()),
+                                    target_crs, target_res,
+                                )
                             )
+                        logger.info(
+                            "Master grid from FULL-WINDOW footprint union "
+                            "(%d bursts, all eras): %dx%d",
+                            len(_burst_geoms), _master_width, _master_height,
+                        )
+                    else:
+                        _master_transform, _master_width, _master_height, \
+                            _master_x_coords, _master_y_coords = (
+                                _build_grid_from_bursts(
+                                    prof_vv, target_crs, target_res
+                                )
+                            )
+                        logger.info(
+                            "Master grid from %d burst footprints (batch 1 "
+                            "fallback; no metadata geometry): %dx%d",
+                            len(prof_vv), _master_width, _master_height,
                         )
                     # Era-independence guard: batch 1 is the earliest era,
                     # whose data-take framing may miss tile-edge bursts that
@@ -5467,10 +5609,6 @@ def process_single_scenes_tile(
                             )
                         )
                 _grid_built = True
-                logger.info(
-                    "Master grid from %d burst footprints: %dx%d",
-                    len(prof_vv), _master_width, _master_height,
-                )
 
             valid_clean_indices: set[int] | None = None
 

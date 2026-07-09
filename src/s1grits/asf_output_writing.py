@@ -209,6 +209,53 @@ def _build_grid_from_bursts(profiles, target_crs, target_res, align_pixels=True)
     return transform, width, height, x_coords, y_coords
 
 
+def _build_grid_from_geoms(geoms, target_crs, target_res, align_pixels=True):
+    """Grid from the union of EPSG:4326 footprint geometries — the FULL-query
+    variant of ``_build_grid_from_bursts``.
+
+    ``_build_grid_from_bursts`` unions the raster profiles of the first
+    downloaded batch, so the master grid depended on which era (and which
+    download luck) that batch happened to cover: an early, sparser era (e.g.
+    2016-Q4 in a full-archive run) could lock a grid that crops bursts only
+    present in later, stabler eras. This builder instead unions the CMR
+    metadata footprints of EVERY burst in the whole query window — available
+    before any download — so the grid is era-independent and deterministic
+    for a given query. Snapping is identical (floor/ceil to the resolution
+    lattice), so grids from either builder stay mutually aligned.
+    """
+    glob_minx, glob_miny = float('inf'), float('inf')
+    glob_maxx, glob_maxy = float('-inf'), float('-inf')
+    valid = False
+    for g in geoms:
+        if g is None or getattr(g, 'is_empty', False):
+            continue
+        try:
+            dst_b = transform_bounds("EPSG:4326", target_crs, *g.bounds)
+            glob_minx = min(glob_minx, dst_b[0]); glob_miny = min(glob_miny, dst_b[1])
+            glob_maxx = max(glob_maxx, dst_b[2]); glob_maxy = max(glob_maxy, dst_b[3])
+            valid = True
+        except Exception as _exc:
+            logging.debug("Skipping geometry during grid union: %s", _exc)
+            continue
+    if not valid:
+        raise ValueError("Grid generation failed (no usable geometries).")
+
+    res = float(target_res)
+    if align_pixels:
+        glob_minx = np.floor(glob_minx / res) * res
+        glob_miny = np.floor(glob_miny / res) * res
+        glob_maxx = np.ceil(glob_maxx / res) * res
+        glob_maxy = np.ceil(glob_maxy / res) * res
+
+    width = int(round((glob_maxx - glob_minx) / res))
+    height = int(round((glob_maxy - glob_miny) / res))
+    transform = Affine(res, 0.0, glob_minx, 0.0, -res, glob_maxy)
+
+    x_coords = (glob_minx + (np.arange(width) + 0.5) * res).astype("float64")
+    y_coords = (glob_maxy - (np.arange(height) + 0.5) * res).astype("float64")
+    return transform, width, height, x_coords, y_coords
+
+
 def _build_grid_from_mgrs_tile(
     mgrs_tile_id: str,
     target_crs: str,
