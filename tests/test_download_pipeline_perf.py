@@ -43,20 +43,31 @@ def test_download_executor_is_persistent_and_resizes():
 
 def test_download_threads_and_sessions_survive_across_batches():
     """Two 'batches' of work reuse the same threads => same cached Sessions."""
+    import threading
     from s1grits import asf_io
 
     ex = asf_io._get_download_executor(2)
+
+    # ThreadPoolExecutor spawns worker threads LAZILY: a round of instant
+    # tasks may run entirely on one thread, leaving the second thread (and
+    # its session) to be created in round 2 — which is not a persistence
+    # violation. Warm BOTH workers deterministically with a barrier so every
+    # pool thread's session exists before round 1 is measured.
+    barrier = threading.Barrier(2)
+
+    def _warm_session_id(_):
+        barrier.wait(timeout=10)   # both threads must be alive at once
+        return id(asf_io._get_session())
 
     def _session_id(_):
         # _get_session caches per-thread; reused thread => same object id.
         return id(asf_io._get_session())
 
-    batch1 = {f.result() for f in [ex.submit(_session_id, i) for i in range(8)]}
+    batch1 = {f.result() for f in [ex.submit(_warm_session_id, i) for i in range(2)]}
     batch2 = {f.result() for f in [ex.submit(_session_id, i) for i in range(8)]}
-    assert len(batch1) <= 2
-    # Instant tasks may all drain on one thread in round 2, so batch2 can be
-    # a strict subset — the invariant is that round 2 creates NO NEW sessions
-    # (every session was already warmed in round 1 and persisted).
+    assert len(batch1) == 2
+    # Round 2 must create NO NEW sessions: every pool thread's session was
+    # warmed in round 1 and persisted (no TLS/auth re-handshake per batch).
     assert batch2 <= batch1, (
         "sessions must persist across batches (no TLS/auth re-handshake)"
     )

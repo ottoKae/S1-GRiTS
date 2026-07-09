@@ -291,6 +291,112 @@ class Workspace:
         }
 
     # ------------------------------------------------------------------
+    # Asset footprints (for map overlays)
+    # ------------------------------------------------------------------
+
+    def asset_bounds(self, tile: str, relpath: str) -> dict:
+        """True WGS84 footprint of a served asset, for Leaflet overlays.
+
+        The catalog row's ``transform/width/height`` describe the FULL
+        master grid (the burst-union support grid), but COG/preview assets
+        cover only the tile-clipped crop — overlaying a preview on the grid
+        bounds misplaces and stretches it. Resolution order:
+
+        1. ``.tif`` → the file's own georeferencing (authoritative);
+        2. ``.png`` → the sibling COG's georeferencing when it exists
+           (previews are exported alongside COGs with the same stem);
+        3. otherwise → the tile-clip estimate: MGRS tile bbox (in the item
+           CRS) ∩ grid bounds, mirroring the writer's clip;
+        4. last resort → the grid bounds themselves.
+
+        Returns ``{"bounds4326": [[s, w], [n, e]] | None, "source": str}``.
+        Results are cached by (path, mtime).
+        """
+        path = self._resolve_asset(tile, relpath)
+        cache_key = (str(path), path.stat().st_mtime_ns)
+        with self._lock:
+            if not hasattr(self, "_asset_bounds_cache"):
+                self._asset_bounds_cache: dict = {}
+            hit = self._asset_bounds_cache.get(cache_key)
+        if hit is not None:
+            return hit
+
+        result = None
+        # (1)/(2): a georeferenced file, directly or via the sibling COG.
+        geo_path = None
+        if path.suffix.lower() in (".tif", ".tiff"):
+            geo_path = path
+        elif path.suffix.lower() == ".png":
+            sibling = path.parent.parent / "cog" / (path.stem + ".tif")
+            if sibling.is_file():
+                geo_path = sibling
+        if geo_path is not None:
+            try:
+                import rasterio
+                from rasterio.warp import transform_bounds
+                with rasterio.open(geo_path) as src:
+                    w, s, e, n = transform_bounds(
+                        src.crs, "EPSG:4326", *src.bounds
+                    )
+                result = {"bounds4326": [[s, w], [n, e]], "source": "georef"}
+            except Exception as exc:
+                logger.debug("asset_bounds georef failed for %s: %s",
+                             geo_path, exc)
+
+        # (3): tile-clip estimate from the catalog row's grid + MGRS bbox.
+        if result is None:
+            row = self._find_row_for_asset(tile, relpath)
+            if row is not None:
+                result = self._tile_clip_bounds(tile, row)
+
+        if result is None:
+            result = {"bounds4326": None, "source": "unknown"}
+        with self._lock:
+            self._asset_bounds_cache[cache_key] = result
+        return result
+
+    def _find_row_for_asset(self, tile: str, relpath: str):
+        df = self._load_tile_catalog(tile)
+        if df is None or df.empty:
+            return None
+        for col in ("preview_path", "cog_path", "zarr_path"):
+            if col in df.columns:
+                hits = df[df[col] == relpath]
+                if len(hits):
+                    return hits.iloc[0]
+        return None
+
+    def _tile_clip_bounds(self, tile: str, row) -> dict | None:
+        """MGRS tile bbox ∩ grid bounds in WGS84 (mirrors the writer's clip)."""
+        try:
+            from affine import Affine
+            from rasterio.transform import array_bounds
+            from rasterio.warp import transform_bounds
+            from s1grits.asf_output_writing import _get_mgrs_tile_geometry_wkt
+            from shapely import wkt as shp_wkt
+
+            crs = str(row["crs"])
+            t = Affine(*[float(v) for v in list(row["transform"])[:6]])
+            gl, gb, gr, gt = array_bounds(int(row["height"]),
+                                          int(row["width"]), t)
+            tw, ts, te, tn = transform_bounds(
+                "EPSG:4326", crs,
+                *shp_wkt.loads(_get_mgrs_tile_geometry_wkt(tile)).bounds,
+            )
+            # Intersect (in the item CRS), exactly like the writer's crop.
+            il, ib = max(gl, tw), max(gb, ts)
+            ir, it = min(gr, te), min(gt, tn)
+            if ir <= il or it <= ib:  # no overlap -> the clip never fired
+                w, s, e, n = transform_bounds(crs, "EPSG:4326", gl, gb, gr, gt)
+                return {"bounds4326": [[s, w], [n, e]], "source": "grid"}
+            w, s, e, n = transform_bounds(crs, "EPSG:4326", il, ib, ir, it)
+            return {"bounds4326": [[s, w], [n, e]], "source": "tile-clip"}
+        except Exception as exc:
+            logger.debug("tile-clip bounds failed for %s: %s", tile, exc)
+            b = row.get("bounds4326")
+            return {"bounds4326": b, "source": "grid"} if b else None
+
+    # ------------------------------------------------------------------
     # Safe asset access
     # ------------------------------------------------------------------
 

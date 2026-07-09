@@ -296,3 +296,90 @@ def test_jobs_api_roundtrip(client):
     assert log2["lines"] == []
     assert client.get("/api/jobs").json()[0]["id"] == job_id
     assert client.post("/api/jobs", json={"type": "nope"}).status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Asset bounds (map overlay placement)
+# ---------------------------------------------------------------------------
+
+def test_asset_bounds_prefers_cog_georeferencing(client, workspace):
+    """A .tif's own georeferencing is authoritative; the sibling COG also
+    resolves a preview PNG's true footprint (the catalog grid bounds would
+    stretch the clipped image over the whole master grid)."""
+    import rasterio
+    product = "smonthly_ASCENDING"
+    cog_dir = workspace / TILE / product / "cog"
+    cog_dir.mkdir(parents=True, exist_ok=True)
+    # A COG deliberately SMALLER than the catalog grid (the tile-clipped crop):
+    # 10x8 px at the grid origin instead of the full 40x32.
+    crop = Affine(RES, 0.0, MINX, 0.0, -RES, MAXY)
+    cog_rel = f"{product}/cog/s1grits_smonthly_{TILE}_ASCENDING_TK18_2026-01.tif"
+    with rasterio.open(
+        workspace / TILE / cog_rel, "w", driver="GTiff", width=10, height=8,
+        count=1, dtype="float32", crs=CRS, transform=crop,
+    ) as dst:
+        dst.write(np.zeros((1, 8, 10), np.float32))
+
+    # Direct .tif query
+    r = client.get(f"/api/asset-bounds/{TILE}/{cog_rel}")
+    assert r.status_code == 200
+    b = r.json()
+    assert b["source"] == "georef"
+    (s, w), (n, e) = b["bounds4326"]
+    assert s < n and w < e
+
+    # Preview PNG resolves via the sibling COG (same stem).
+    prel = f"{product}/preview/s1grits_smonthly_{TILE}_ASCENDING_TK18_2026-01.png"
+    r2 = client.get(f"/api/asset-bounds/{TILE}/{prel}")
+    assert r2.status_code == 200
+    assert r2.json()["source"] == "georef"
+    assert r2.json()["bounds4326"] == b["bounds4326"]
+
+    # The crop bounds must be strictly smaller than the full-grid bounds the
+    # catalog row reports — the exact mismatch this endpoint exists to fix.
+    items = client.get("/api/items").json()["items"]
+    grid = next(i["bounds4326"] for i in items if i["bounds4326"])
+    assert (n - s) < (grid[1][0] - grid[0][0])
+    assert (e - w) < (grid[1][1] - grid[0][1])
+
+
+def test_asset_bounds_png_without_cog_estimates_tile_clip(client):
+    """No sibling COG -> tile-clip estimate from the catalog grid + MGRS bbox
+    (never the raw grid bounds for a clipped product)."""
+    prel = ("smonthly_ASCENDING/preview/"
+            f"s1grits_smonthly_{TILE}_ASCENDING_TK18_2026-01.png")
+    r = client.get(f"/api/asset-bounds/{TILE}/{prel}")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["source"] in ("tile-clip", "grid")
+    assert data["bounds4326"] is not None
+
+
+def test_asset_bounds_traversal_and_missing(client):
+    assert client.get(
+        f"/api/asset-bounds/{TILE}/..%2F..%2Fetc%2Fpasswd").status_code in (403, 404)
+    assert client.get(
+        f"/api/asset-bounds/{TILE}/smonthly_ASCENDING/preview/nope.png"
+    ).status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Job-type wiring (datacube processing panel)
+# ---------------------------------------------------------------------------
+
+def test_resync_job_uses_the_real_cli_flag():
+    """The CLI flag is --output-dir; a --dir job dies at argparse before
+    doing anything (the reported 'GUI lacks integration' symptom)."""
+    from s1grits.webapp.jobs import JOB_TYPES
+    args = JOB_TYPES["catalog_resync"]["args"]
+    assert "--output-dir" in args
+    assert "--dir" not in args
+
+
+def test_job_types_cover_datacube_lifecycle(client):
+    types = client.get("/api/job-types").json()
+    for expected in ("process_scenes", "process", "process_static",
+                     "catalog_resync", "doctor"):
+        assert expected in types, f"missing job type {expected}"
+    assert types["process_static"]["needs_config"] is True
+    assert types["catalog_resync"]["needs_config"] is False
