@@ -187,6 +187,22 @@ def create_app(root: Path | str, token: str | None = None,
         return FileResponse(path, media_type=media,
                             headers={"Cache-Control": "private, max-age=3600"})
 
+    @app.get("/api/asset-bounds/{tile}/{relpath:path}", tags=["visualisation"])
+    def asset_bounds(tile: str, relpath: str):
+        """True WGS84 footprint of an asset (for correctly-placed overlays).
+
+        Catalog rows carry the FULL master-grid geometry; COG/preview files
+        cover only the tile-clipped crop. This endpoint returns the asset's
+        actual bounds so the client does not stretch a clipped image over
+        the whole grid footprint.
+        """
+        try:
+            return workspace.asset_bounds(tile, relpath)
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc))
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc))
+
     # -- jobs ------------------------------------------------------------
     @app.get("/api/job-types", tags=["jobs"])
     def job_types():

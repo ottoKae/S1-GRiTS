@@ -137,6 +137,41 @@
         <select id="job-type"></select>
       </label>
       <label>Title <input type="text" id="job-title" placeholder="e.g. 11-tile monthly run"></label>
+
+      <fieldset class="quickfill" id="job-quickfill">
+        <legend>Quick fill — datacube download &amp; processing</legend>
+        <div class="qf-grid">
+          <label>MGRS tiles (comma-separated)
+            <input type="text" id="qf-tiles" placeholder="17MPU, 17MPV, 17NQA">
+          </label>
+          <label>Direction
+            <select id="qf-direction">
+              <option value="ASCENDING">ASCENDING</option>
+              <option value="DESCENDING">DESCENDING</option>
+            </select>
+          </label>
+          <label>Time mode
+            <select id="qf-time-mode">
+              <option value="full">Full archive (to year)</option>
+              <option value="years">Specific years/months</option>
+            </select>
+          </label>
+          <label>Year(s)
+            <input type="text" id="qf-years" placeholder="2026 or 2024, 2025">
+          </label>
+          <label>Months (1–12, optional)
+            <input type="text" id="qf-months" placeholder="1, 2, 3" disabled>
+          </label>
+          <label class="qf-checks">Outputs
+            <span>
+              <label class="inline"><input type="checkbox" id="qf-cog" checked> COG</label>
+              <label class="inline"><input type="checkbox" id="qf-preview" checked> Preview</label>
+            </span>
+          </label>
+        </div>
+        <button type="button" id="qf-apply" class="btn small">Apply to YAML ↓</button>
+      </fieldset>
+
       <label id="job-config-label">Config (YAML)
         <textarea id="job-config" rows="16" spellcheck="false"></textarea>
       </label>

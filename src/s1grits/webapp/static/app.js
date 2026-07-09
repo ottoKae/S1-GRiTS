@@ -117,15 +117,25 @@ function renderTiles() {
   }
 }
 
-function showPreviewOverlay(item) {
+async function showPreviewOverlay(item) {
   if (previewOverlay) { map.removeLayer(previewOverlay); previewOverlay = null; }
-  if (item && item.preview_path && item.bounds4326) {
-    previewOverlay = L.imageOverlay(
-      assetUrl(item.tile_id, item.preview_path), item.bounds4326,
-      { opacity: 0.85, interactive: false },
-    ).addTo(map);
-    map.fitBounds(item.bounds4326, { padding: [30, 30] });
-  }
+  if (!(item && item.preview_path)) return;
+  // The catalog row's bounds4326 describe the FULL master grid; the preview
+  // PNG covers only the tile-clipped crop. Ask the server for the asset's
+  // TRUE footprint so the image is not stretched over the grid extent.
+  let bounds = item.bounds4326;
+  try {
+    const b = await api(
+      `/api/asset-bounds/${encodeURIComponent(item.tile_id)}/${item.preview_path}`);
+    if (b.bounds4326) bounds = b.bounds4326;
+  } catch { /* fall back to grid bounds */ }
+  if (!bounds) return;
+  if (state.selected !== item) return;  // stale response after re-selection
+  previewOverlay = L.imageOverlay(
+    assetUrl(item.tile_id, item.preview_path), bounds,
+    { opacity: 0.85, interactive: false },
+  ).addTo(map);
+  map.fitBounds(bounds, { padding: [30, 30] });
 }
 
 async function onMapClick(e) {
@@ -551,9 +561,84 @@ $("btn-new-job").onclick = async () => {
 };
 function syncConfigVisibility() {
   const sel = $("job-type").selectedOptions[0];
-  $("job-config-label").style.display =
-    sel && sel.dataset.needsConfig === "true" ? "" : "none";
+  const needs = sel && sel.dataset.needsConfig === "true";
+  $("job-config-label").style.display = needs ? "" : "none";
+  $("job-quickfill").style.display = needs ? "" : "none";
 }
+
+/* --- quick-fill: form -> YAML (bridges the panel to the CLI config) --- */
+function composeQuickfillYaml() {
+  const tiles = $("qf-tiles").value.split(",").map((t) => t.trim().toUpperCase())
+    .filter(Boolean);
+  const dir = $("qf-direction").value;
+  const mode = $("qf-time-mode").value;
+  const years = $("qf-years").value.split(",").map((y) => parseInt(y, 10))
+    .filter((y) => y >= 2014 && y <= 2100);
+  const months = $("qf-months").value.split(",").map((m) => parseInt(m, 10))
+    .filter((m) => m >= 1 && m <= 12);
+  const cog = $("qf-cog").checked, png = $("qf-preview").checked;
+  if (!tiles.length) throw new Error("Quick fill: enter at least one MGRS tile");
+  if (mode === "years" && !years.length) throw new Error("Quick fill: enter year(s)");
+
+  const time = mode === "full"
+    ? `  full: ${years[0] || new Date().getFullYear()}`
+    : `  years: [${years.join(", ")}]`
+      + (months.length ? `\n  months: [${months.join(", ")}]` : "");
+  return `workflow: "scenes"
+
+roi:
+  manual_mgrs_tiles:
+${tiles.map((t) => `    - "${t}"`).join("\n")}
+  flight_direction: "${dir}"
+  polarization: "VV+VH"
+
+time:
+${time}
+
+output:
+  base_dir: "."          # forced to the server workspace on submit
+  existing_store: "resume"
+  existing_month: "skip"
+  formats: {cog: ${cog}, preview: ${png}}
+
+processing:
+  target_resolution: 30.0
+  tile_clip: true
+  monthly:
+    enabled: true
+    only: true
+    composite_method: "nanmedian"
+    generate_cog: ${cog}
+    generate_preview: ${png}
+    blockwise_threads: 2
+
+memory:
+  max_memory_gb: 'auto'
+  batch_strategy: 'auto'
+  max_download_workers: 8
+
+parallel:
+  enabled: true
+  max_workers: 2
+`;
+}
+$("qf-apply").onclick = () => {
+  const box = $("job-error");
+  try {
+    $("job-config").value = composeQuickfillYaml();
+    box.classList.add("hidden");
+    if (!$("job-title").value) {
+      $("job-title").value =
+        `${$("qf-tiles").value.split(",").length} tile(s) · ${$("qf-time-mode").value}`;
+    }
+  } catch (err) {
+    box.textContent = err.message;
+    box.classList.remove("hidden");
+  }
+};
+$("qf-time-mode").onchange = () => {
+  $("qf-months").disabled = $("qf-time-mode").value === "full";
+};
 $("job-type").onchange = syncConfigVisibility;
 const closeModal = () => modal.classList.add("hidden");
 $("job-modal-close").onclick = closeModal;

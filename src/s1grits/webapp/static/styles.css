@@ -50,6 +50,8 @@ body {
 .chip {
   background: var(--panel-2); border: 1px solid var(--line);
   border-radius: 999px; padding: 3px 10px; font-size: .78rem; color: var(--muted);
+  /* long workspace paths must truncate, not push the topbar apart */
+  max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .chip b { color: var(--text); font-weight: 600; }
 .topbar-actions { display: flex; gap: 8px; align-items: center; }
@@ -89,7 +91,11 @@ body {
 }
 .panel h2 { margin: 0 0 10px; font-size: .95rem; letter-spacing: .3px; }
 .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
-.panel-head h2, .panel-head h3 { margin: 0; }
+.panel-head h2, .panel-head h3 {
+  margin: 0;
+  /* long item ids (detail title) must wrap inside the panel, not overflow it */
+  min-width: 0; overflow-wrap: anywhere;
+}
 
 /* ---------- filters ---------- */
 .sidebar label { display: block; font-size: .8rem; color: var(--muted); margin-bottom: 8px; }
@@ -121,6 +127,8 @@ body {
   position: absolute; bottom: 8px; left: 8px; z-index: 900;
   background: rgba(14, 20, 32, .85); border: 1px solid var(--line);
   padding: 4px 10px; border-radius: 999px; font-size: .72rem; color: var(--muted);
+  /* never wider than the map it annotates */
+  max-width: calc(100% - 16px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .leaflet-container { font: inherit; }
 
@@ -145,7 +153,10 @@ body {
 .detail-preview { width: 100%; border-radius: 8px; border: 1px solid var(--line); }
 .detail-meta { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: .8rem; margin: 10px 0; }
 .detail-meta dt { color: var(--muted); }
-.detail-meta dd { margin: 0; overflow: hidden; text-overflow: ellipsis; }
+/* Unbroken tokens (item ids, CRS strings, band lists) previously escaped the
+   box: text-overflow needs nowrap to ever apply, and without overflow-wrap a
+   long token widens the grid column past the panel. Wrap anywhere instead. */
+.detail-meta dd { margin: 0; min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
 .detail-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 #probe-chart, #probe-nobs { width: 100%; display: block; }
 
@@ -165,8 +176,10 @@ body {
   background: var(--panel-2);
 }
 .job-card .j-head { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
-.job-card .j-title { font-weight: 600; font-size: .88rem; }
-.job-card .j-sub { color: var(--muted); font-size: .74rem; margin-top: 2px; }
+/* Job titles are user input and error strings can be long paths: contain
+   them inside the card instead of widening the drawer. */
+.job-card .j-title { font-weight: 600; font-size: .88rem; min-width: 0; overflow-wrap: anywhere; }
+.job-card .j-sub { color: var(--muted); font-size: .74rem; margin-top: 2px; overflow-wrap: anywhere; }
 .job-card .j-actions { display: flex; gap: 6px; margin-top: 8px; }
 .status-pill { border-radius: 999px; padding: 1px 9px; font-size: .72rem; font-weight: 700; }
 .status-queued   { background: #33415c; color: var(--muted); }
@@ -195,6 +208,18 @@ body {
 }
 .modal label { display: block; font-size: .8rem; color: var(--muted); margin-bottom: 10px; }
 .modal textarea { font: .78rem/1.5 ui-monospace, Consolas, monospace; resize: vertical; }
+
+/* quick-fill (datacube job composer) */
+.quickfill {
+  border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px 12px 10px; margin: 0 0 12px; min-width: 0;
+}
+.quickfill legend { font-size: .78rem; color: var(--accent-2); padding: 0 6px; }
+.qf-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 10px; }
+.qf-grid label { margin-bottom: 6px; min-width: 0; }
+.quickfill .inline { display: inline-flex; align-items: center; gap: 4px; margin: 4px 12px 0 0; }
+.quickfill .inline input { width: auto; margin: 0; }
+@media (max-width: 560px) { .qf-grid { grid-template-columns: 1fr; } }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 .small-note { font-size: .74rem; }
 .small-note code { color: var(--accent-2); }
