@@ -206,6 +206,9 @@ class Workspace:
                 "n_items": int(len(df)),
                 "bounds4326": bounds,
                 "outline4326": outline,
+                # Exact MGRS boundary from reference data (map footprint);
+                # the grid-derived outline stays as processing-extent fallback.
+                "mgrs_geojson": self.mgrs_geometry(tile_id),
                 "product_types": sorted(df["product_type"].dropna().unique().tolist())
                 if "product_type" in df.columns else [],
                 "directions": sorted(df["flight_direction"].dropna().unique().tolist())
@@ -291,13 +294,15 @@ class Workspace:
             tiles.append({"tile_id": tile_id, "months": months})
         return {"tiles": tiles, "months_all": sorted(all_months)}
 
-    def bursts(self, tile_ids: list[str], max_tiles: int = 20) -> dict:
+    def bursts(self, tile_ids: list[str], direction: str | None = None,
+               max_tiles: int = 20) -> dict:
         """Raw OPERA burst footprints overlapping the given MGRS tiles, as a
         GeoJSON FeatureCollection (EPSG:4326, from the packaged burst LUT).
-        Static reference data — cached per tile set."""
+        Static reference data — cached per tile set; ``direction`` filters to
+        one orbit pass (the LUT's ``orbit_pass``: ASCENDING/DESCENDING)."""
         from shapely.geometry import mapping
         from s1grits.mgrs_burst_data import (
-            get_burst_ids_in_mgrs_tiles, get_burst_table,
+            get_burst_table, get_lut_by_mgrs_tile_ids,
         )
         tile_ids = sorted(set(tile_ids))[:max_tiles]
         cache_key = tuple(tile_ids)
@@ -305,40 +310,75 @@ class Workspace:
             if not hasattr(self, "_burst_cache"):
                 self._burst_cache: dict = {}
             hit = self._burst_cache.get(cache_key)
-        if hit is not None:
-            return hit
-        features = []
-        for tile in tile_ids:
-            try:
-                bids = get_burst_ids_in_mgrs_tiles([tile])
-                bt = get_burst_table(bids)
-            except Exception as exc:
-                logger.debug("burst lookup failed for %s: %s", tile, exc)
-                continue
-            for bid, geom in zip(bt["jpl_burst_id"], bt.geometry):
-                track = None
+        if hit is None:
+            features = []
+            for tile in tile_ids:
                 try:
-                    track = int(str(bid)[1:4])  # 'T018-...' -> 18
-                except (ValueError, IndexError):
-                    pass
-                features.append({
-                    "type": "Feature",
-                    "geometry": mapping(geom),
-                    "properties": {"jpl_burst_id": str(bid), "track": track,
-                                   "tile_id": tile},
-                })
-        # Dedup bursts shared by adjacent tiles (same id -> same footprint).
-        seen: set[str] = set()
-        unique = []
-        for f in features:
-            bid = f["properties"]["jpl_burst_id"]
-            if bid not in seen:
-                seen.add(bid)
-                unique.append(f)
-        result = {"type": "FeatureCollection", "features": unique}
+                    # The LUT (not the geometry table) carries orbit_pass and
+                    # the authoritative track_number per (tile, burst).
+                    lut = get_lut_by_mgrs_tile_ids([tile])
+                    lut = lut.drop_duplicates(subset=["jpl_burst_id"])
+                    bt = get_burst_table(lut["jpl_burst_id"].tolist())
+                except Exception as exc:
+                    logger.debug("burst lookup failed for %s: %s", tile, exc)
+                    continue
+                meta = lut.set_index("jpl_burst_id")
+                for bid, geom in zip(bt["jpl_burst_id"], bt.geometry):
+                    row = meta.loc[str(bid)]
+                    features.append({
+                        "type": "Feature",
+                        "geometry": mapping(geom),
+                        "properties": {
+                            "jpl_burst_id": str(bid),
+                            "track": int(row["track_number"]),
+                            "orbit_pass": str(row["orbit_pass"]),
+                            "tile_id": tile,
+                        },
+                    })
+            # Dedup bursts shared by adjacent tiles (same id -> same footprint).
+            seen: set[str] = set()
+            unique = []
+            for f in features:
+                bid = f["properties"]["jpl_burst_id"]
+                if bid not in seen:
+                    seen.add(bid)
+                    unique.append(f)
+            hit = {"type": "FeatureCollection", "features": unique}
+            with self._lock:
+                self._burst_cache[cache_key] = hit
+        if direction:
+            direction = direction.upper()
+            return {"type": "FeatureCollection",
+                    "features": [f for f in hit["features"]
+                                 if f["properties"]["orbit_pass"] == direction]}
+        return hit
+
+    def mgrs_geometry(self, tile_id: str):
+        """Definitive WGS84 geometry of an MGRS tile from the packaged
+        ``mgrs.parquet`` reference table, as a GeoJSON geometry dict.
+
+        This is the ground-truth tile boundary. It is NOT derivable from the
+        catalog/Zarr grid: the processing grid is the burst-UNION master grid,
+        which deliberately overshoots the tile — drawing it as "the tile" made
+        footprints look wrong. MultiPolygons here also handle tiles split by
+        the antimeridian, which a projected-grid outline cannot."""
+        tile_id = str(tile_id).upper()
         with self._lock:
-            self._burst_cache[cache_key] = result
-        return result
+            if not hasattr(self, "_mgrs_geom_cache"):
+                self._mgrs_geom_cache: dict = {}
+            if tile_id in self._mgrs_geom_cache:
+                return self._mgrs_geom_cache[tile_id]
+        geom = None
+        try:
+            from shapely.geometry import mapping
+            from s1grits.mgrs_burst_data import get_mgrs_tile_table_by_ids
+            row = get_mgrs_tile_table_by_ids([tile_id]).iloc[0]
+            geom = mapping(row.geometry)
+        except Exception as exc:
+            logger.debug("MGRS geometry lookup failed for %s: %s", tile_id, exc)
+        with self._lock:
+            self._mgrs_geom_cache[tile_id] = geom
+        return geom
 
     # ------------------------------------------------------------------
     # Zarr point probe

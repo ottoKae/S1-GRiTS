@@ -101,19 +101,24 @@ function renderTiles() {
     li.onclick = () => { setFilter("tile", state.filters.tile === t.tile_id ? "" : t.tile_id); };
     list.appendChild(li);
 
-    // Map footprint. outline4326 is the DENSIFIED TRUE PERIMETER of the UTM
-    // grid reprojected to WGS84 — a rectangle from bounds4326 would be the
-    // axis-aligned bbox of that quad and render visibly skewed/oversized.
-    if (t.bounds4326 || t.outline4326) {
+    // Map footprint. Preference order:
+    //  1. mgrs_geojson — the DEFINITIVE tile boundary from the packaged MGRS
+    //     reference table (never derived from the Zarr/catalog grid, which is
+    //     the burst-union master grid and overshoots the tile);
+    //  2. outline4326 — the reprojected processing-grid perimeter (fallback);
+    //  3. bounds4326 — axis-aligned bbox (last resort).
+    if (t.mgrs_geojson || t.bounds4326 || t.outline4326) {
       const active = state.filters.tile === t.tile_id;
       const style = {
         color: active ? "#6fe3b4" : "#4da3ff",
         weight: active ? 2.5 : 1.2,
         fillOpacity: active ? 0.12 : 0.05,
       };
-      const shape = t.outline4326
-        ? L.polygon(t.outline4326, style)
-        : L.rectangle(t.bounds4326, style);
+      const shape = t.mgrs_geojson
+        ? L.geoJSON({ type: "Feature", geometry: t.mgrs_geojson, properties: {} },
+                    { style })
+        : (t.outline4326 ? L.polygon(t.outline4326, style)
+                         : L.rectangle(t.bounds4326, style));
       shape.addTo(tileLayerGroup);
       boundsAll.push(shape.getBounds());
       shape.bindTooltip(`${t.tile_id} · ${t.n_items} items`, { sticky: true });
@@ -178,20 +183,31 @@ async function updateBurstLayer() {
   try {
     if (!burstCache || burstCache.key !== key) {
       $("map-hint").textContent = "Loading burst footprints…";
+      // Fetch BOTH passes once; the direction dropdown filters client-side
+      // (features carry orbit_pass from the LUT), so toggling is instant.
       const geojson = await api(`/api/bursts?tiles=${encodeURIComponent(key)}`);
       burstCache = { key, geojson };
     }
     if (!$("layer-bursts").checked) return;   // toggled off while loading
+    const dir = $("burst-direction").value;
+    const PASS_COLORS = { ASCENDING: "#ffb454", DESCENDING: "#c792ea" };
+    let n = 0;
     burstLayer = L.geoJSON(burstCache.geojson, {
-      style: { color: "#ffb454", weight: 1, dashArray: "4 3", fill: false, opacity: 0.75 },
+      filter: (f) => !dir || f.properties.orbit_pass === dir,
+      style: (f) => ({
+        color: PASS_COLORS[f.properties.orbit_pass] || "#ffb454",
+        weight: 1, dashArray: "4 3", fill: false, opacity: 0.75,
+      }),
       onEachFeature: (f, layer) => {
+        n++;
         layer.bindTooltip(
-          `${f.properties.jpl_burst_id} · TK${f.properties.track}`, { sticky: true });
+          `${f.properties.jpl_burst_id} · TK${f.properties.track} · ${f.properties.orbit_pass}`,
+          { sticky: true });
         layer.on("click", (e) => onMapClick(e));   // keep probing usable through the overlay
       },
     }).addTo(map);
-    const n = (burstCache.geojson.features || []).length;
-    $("map-hint").textContent = `${n} burst footprint(s) · ${DEFAULT_HINT}`;
+    const dirLabel = dir ? dir.toLowerCase() : "asc+desc";
+    $("map-hint").textContent = `${n} burst footprint(s) (${dirLabel}) · ${DEFAULT_HINT}`;
   } catch (err) {
     $("map-hint").textContent = `Burst layer: ${err.message}`;
   }
@@ -324,17 +340,29 @@ async function loadCoverage() {
   drawCoverage();
 }
 
+/* Layout: a fixed tile-label column (HTML, outside the scroll) + a
+ * horizontally scrollable canvas with a MINIMUM cell width, so a decade of
+ * months (2016–2026 ≈ 132 columns) scrolls instead of being squeezed into
+ * sub-pixel cells with overlapping labels. Header = alternating year bands
+ * with centred year labels + month ticks whose density adapts to zoom. */
+
+const COV = { rowH: 18, headH: 30, minCellW: 14 };
+
 function drawCoverage() {
   const canvas = $("coverage-matrix");
+  const scroll = $("coverage-scroll");
+  const labels = $("cov-labels");
   const ctx = canvas.getContext("2d");
   const dpr = devicePixelRatio;
   const tiles = state.coverage ? state.coverage.tiles : [];
   const monthsAll = state.coverage ? state.coverage.months_all : [];
   state.gaps = [];
+  labels.innerHTML = "";
   if (!tiles.length || !monthsAll.length) {
-    canvas.width = canvas.clientWidth * dpr;
-    canvas.height = 24 * dpr;
+    canvas.style.width = "100%";
     canvas.style.height = "24px";
+    canvas.width = (scroll.clientWidth || 300) * dpr;
+    canvas.height = 24 * dpr;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     $("coverage-caption").textContent = "no coverage yet — queue a download to populate the workspace";
     canvas._grid = null;
@@ -342,33 +370,82 @@ function drawCoverage() {
   }
 
   const axis = monthAxis(monthsAll[0], monthsAll[monthsAll.length - 1]);
-  const rowH = 16, topPad = 14, gutter = 58;
-  const cssH = topPad + tiles.length * rowH + 2;
-  const W = canvas.width = canvas.clientWidth * dpr;
-  canvas.height = cssH * dpr;
+  const { rowH, headH } = COV;
+  // Few months: stretch to fill the panel. Many months: fixed width + scroll.
+  const avail = Math.max(scroll.clientWidth - 2, 200);
+  const cellW = Math.max(COV.minCellW, Math.floor(avail / axis.length));
+  const cssW = axis.length * cellW;
+  const cssH = headH + tiles.length * rowH + 2;
+  canvas.style.width = `${cssW}px`;
   canvas.style.height = `${cssH}px`;
-  ctx.clearRect(0, 0, W, canvas.height);
-  const cw = (W - gutter * dpr) / axis.length;
+  canvas.width = cssW * dpr;
+  canvas.height = cssH * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);   // draw in CSS pixels
+  ctx.clearRect(0, 0, cssW, cssH);
 
-  // Year ticks along the top
-  ctx.fillStyle = "#93a1b8";
-  ctx.font = `${9 * dpr}px sans-serif`;
+  // ---- header: year bands + month ticks --------------------------------
+  const yearOf = (mo) => mo.slice(0, 4);
+  let i0 = 0;
+  ctx.textBaseline = "middle";
+  while (i0 < axis.length) {
+    const yr = yearOf(axis[i0]);
+    let i1 = i0;
+    while (i1 + 1 < axis.length && yearOf(axis[i1 + 1]) === yr) i1++;
+    const x = i0 * cellW, w = (i1 - i0 + 1) * cellW;
+    // Alternating band over the whole column block, so year boundaries stay
+    // readable even when scrolled to the middle of the range.
+    ctx.fillStyle = (+yr % 2) ? "rgba(77,163,255,.05)" : "rgba(0,0,0,0)";
+    ctx.fillRect(x, 0, w, cssH);
+    ctx.fillStyle = "#c8d3e6";
+    ctx.font = "bold 10px sans-serif";
+    ctx.textAlign = "center";
+    if (w >= 34) ctx.fillText(yr, x + w / 2, 8);
+    else if (i0 === 0 || axis[i0].endsWith("-01")) {
+      ctx.textAlign = "left";
+      ctx.fillText(`’${yr.slice(2)}`, x + 2, 8);
+    }
+    // year separator
+    ctx.strokeStyle = "#2a3549";
+    ctx.beginPath(); ctx.moveTo(x + 0.5, 0); ctx.lineTo(x + 0.5, cssH); ctx.stroke();
+    i0 = i1 + 1;
+  }
+  // Month ticks: every month if roomy, quarters when tight.
+  const labelEvery = cellW >= 22 ? 1 : 3;
+  ctx.font = "9px sans-serif";
+  ctx.textAlign = "center";
   axis.forEach((mo, i) => {
-    if (mo.endsWith("-01")) {
-      ctx.fillText(mo.slice(0, 4), gutter * dpr + i * cw, 10 * dpr);
+    const m = +mo.slice(5);
+    const x = i * cellW;
+    ctx.strokeStyle = "#2a3549";
+    ctx.beginPath();
+    ctx.moveTo(x + 0.5, headH - (m === 1 ? 10 : 5));
+    ctx.lineTo(x + 0.5, headH - 1);
+    ctx.stroke();
+    if ((m - 1) % labelEvery === 0) {
+      ctx.fillStyle = "#93a1b8";
+      ctx.fillText(String(m), x + cellW / 2, headH - 10);
     }
   });
 
+  // ---- rows: coverage cells + external label column ---------------------
   const maxCount = Math.max(1, ...tiles.flatMap((t) => Object.values(t.months)));
   let nGaps = 0;
+  const head = document.createElement("div");
+  head.className = "cov-label cov-label-head";
+  head.style.height = `${headH}px`;
+  labels.appendChild(head);
   tiles.forEach((t, r) => {
-    const y = (topPad + r * rowH) * dpr;
+    const lab = document.createElement("div");
+    lab.className = "cov-label" + (state.filters.tile === t.tile_id ? " active" : "");
+    lab.style.height = `${rowH}px`;
+    lab.textContent = t.tile_id;
+    lab.title = `${t.tile_id} — click to filter`;
+    lab.onclick = () => setFilter("tile", state.filters.tile === t.tile_id ? "" : t.tile_id);
+    labels.appendChild(lab);
+
+    const y = headH + r * rowH;
     const have = Object.keys(t.months).filter((m) => t.months[m] > 0).sort();
     const span = have.length ? [have[0], have[have.length - 1]] : null;
-    // Tile label; highlighted when it's the active filter
-    ctx.fillStyle = state.filters.tile === t.tile_id ? "#6fe3b4" : "#93a1b8";
-    ctx.font = `${10 * dpr}px sans-serif`;
-    ctx.fillText(t.tile_id, 2 * dpr, y + 12 * dpr);
     axis.forEach((mo, i) => {
       const count = t.months[mo] || 0;
       const inSpan = span && mo >= span[0] && mo <= span[1];
@@ -381,30 +458,50 @@ function drawCoverage() {
       } else {
         ctx.fillStyle = "#1d2739";                 // outside span: nothing expected
       }
-      ctx.fillRect(gutter * dpr + i * cw + 0.5, y, Math.max(cw - 1, 1), (rowH - 2) * dpr);
+      ctx.fillRect(i * cellW + 1, y + 1, cellW - 2, rowH - 3);
     });
   });
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
   $("coverage-caption").textContent = nGaps
     ? `${nGaps} gap month(s) detected — use “Patch coverage gaps” to queue a fill run`
-    : "each row is a tile; no temporal gaps inside any tile's span";
-  canvas._grid = { axis, tiles, rowH, topPad, gutter, cw, dpr };
+    : `${axis[0]} → ${axis[axis.length - 1]} · no temporal gaps inside any tile's span`;
+  canvas._grid = { axis, tiles, rowH, headH, cellW };
+
+  // First render of a new range: jump to the most recent months.
+  const sig = `${axis[0]}:${axis[axis.length - 1]}:${tiles.length}`;
+  if (canvas._axisSig !== sig) {
+    canvas._axisSig = sig;
+    scroll.scrollLeft = scroll.scrollWidth;
+  }
+}
+
+function _covCell(e) {
+  const g = $("coverage-matrix")._grid;
+  if (!g) return null;
+  const col = Math.floor(e.offsetX / g.cellW);
+  const row = Math.floor((e.offsetY - g.headH) / g.rowH);
+  if (col < 0 || col >= g.axis.length || row < 0 || row >= g.tiles.length) return null;
+  return { tile: g.tiles[row], month: g.axis[col] };
 }
 
 function bindCoverage() {
-  $("coverage-matrix").onclick = (e) => {
-    const g = $("coverage-matrix")._grid;
-    if (!g) return;
-    const x = e.offsetX * g.dpr, y = e.offsetY;
-    if (x < g.gutter * g.dpr || y < g.topPad) return;
-    const col = Math.min(g.axis.length - 1, Math.floor((x - g.gutter * g.dpr) / g.cw));
-    const row = Math.floor((y - g.topPad) / g.rowH);
-    if (row < 0 || row >= g.tiles.length) return;
+  const canvas = $("coverage-matrix");
+  canvas.onclick = (e) => {
+    const c = _covCell(e);
+    if (!c) return;
     // Drill into that tile+month in the datasets table below
-    state.filters.tile = g.tiles[row].tile_id;
-    state.filters.from = state.filters.to = g.axis[col];
+    state.filters.tile = c.tile.tile_id;
+    state.filters.from = state.filters.to = c.month;
     state.page.offset = 0;
     syncFilterControls();
     refresh();
+  };
+  canvas.onmousemove = (e) => {
+    const c = _covCell(e);
+    canvas.title = c
+      ? `${c.tile.tile_id} · ${c.month} · ${c.tile.months[c.month] || 0} item(s)`
+      : "";
   };
 }
 
@@ -623,27 +720,56 @@ function drawNobs(ts, x) {
 
 /* ==================== job composer (Download tab) ==================== */
 
+/* Pure-form composer: the user never sees or edits YAML. Each job type maps
+ * to a workflow config shape; composeConfigYaml() builds it from the form at
+ * Execute time and sends it to the server, which pins output.base_dir to the
+ * workspace. NOTHING here reads or writes files on the user's machine —
+ * "Save as YAML" is an explicit, separate download for headless CLI use.
+ *
+ * Per-type form spec: which field groups apply, and the `workflow:` value
+ * the CLI enforces for that subcommand (see cli.py's workflow checks). */
+const TYPE_FORM = {
+  process_scenes: { workflow: "scenes",  time: true,  outputs: true,  gaps: true },
+  process:        { workflow: "monthly", time: true,  outputs: true,  gaps: false },
+  process_static: { workflow: "static",  time: false, outputs: false, gaps: false },
+  doctor:         { workflow: "scenes",  time: true,  outputs: true,  gaps: false },
+};
+let jobTypes = {};          // /api/job-types payload: {type: {title, needs_config}}
+
 async function initComposer() {
-  const types = await api("/api/job-types");
-  $("job-type").innerHTML = Object.entries(types)
-    .map(([k, v]) => `<option value="${esc(k)}" data-needs-config="${v.needs_config}">${esc(v.title)} (${esc(k)})</option>`)
+  jobTypes = await api("/api/job-types");
+  $("job-type").innerHTML = Object.entries(jobTypes)
+    .map(([k, v]) => `<option value="${esc(k)}">${esc(v.title)} (${esc(k)})</option>`)
     .join("");
-  if (!$("job-config").value) {
-    $("job-config").value = (await api("/api/config-template")).yaml;
-  }
-  syncConfigVisibility();
+  syncJobForm();
 }
 
-function syncConfigVisibility() {
-  const sel = $("job-type").selectedOptions[0];
-  const needs = sel && sel.dataset.needsConfig === "true";
-  $("job-config-label").style.display = needs ? "" : "none";
+function syncJobForm() {
+  const type = $("job-type").value;
+  const needs = !!(jobTypes[type] && jobTypes[type].needs_config);
+  const spec = TYPE_FORM[type] || TYPE_FORM.process_scenes;
   $("job-quickfill").style.display = needs ? "" : "none";
+  $("btn-save-yaml").style.display = needs ? "" : "none";
+  $("job-noparams").classList.toggle("hidden", needs);
+  if (!needs) return;
+  const show = (id, on) => {
+    const el = $(id);
+    (el.closest("label") || el).style.display = on ? "" : "none";
+  };
+  show("qf-time-mode", spec.time);
+  show("qf-years", spec.time);
+  show("qf-months", spec.time);
+  $("qf-outputs-row").style.display = spec.outputs ? "" : "none";
+  $("btn-patch-gaps").style.display = spec.gaps ? "" : "none";
 }
-$("job-type").onchange = syncConfigVisibility;
+$("job-type").onchange = syncJobForm;
+$("qf-time-mode").onchange = () => {
+  $("qf-months").disabled = $("qf-time-mode").value === "full";
+};
 
-/* --- quick-fill: form -> YAML (bridges the panel to the CLI config) --- */
-function composeQuickfillYaml() {
+/* --- form -> YAML (generated at Execute time; the CLI contract) --- */
+function composeConfigYaml(type) {
+  const spec = TYPE_FORM[type] || TYPE_FORM.process_scenes;
   const tiles = $("qf-tiles").value.split(",").map((t) => t.trim().toUpperCase())
     .filter(Boolean);
   const dir = $("qf-direction").value;
@@ -652,33 +778,53 @@ function composeQuickfillYaml() {
     .filter((y) => y >= 2014 && y <= 2100);
   const months = $("qf-months").value.split(",").map((m) => parseInt(m, 10))
     .filter((m) => m >= 1 && m <= 12);
+  const res = Math.min(500, Math.max(10, parseFloat($("qf-resolution").value) || 30));
   const cog = $("qf-cog").checked, png = $("qf-preview").checked;
-  if (!tiles.length) throw new Error("Quick fill: enter at least one MGRS tile");
-  if (mode === "years" && !years.length) throw new Error("Quick fill: enter year(s)");
+  if (!tiles.length) throw new Error("Enter at least one MGRS tile");
+  if (spec.time && mode === "years" && !years.length) throw new Error("Enter year(s)");
+
+  const roi = `roi:
+  manual_mgrs_tiles:
+${tiles.map((t) => `    - "${t}"`).join("\n")}
+  flight_direction: "${dir}"
+  polarization: "VV+VH"`;
+
+  if (spec.workflow === "static") {
+    return `workflow: "static"
+
+${roi}
+
+output:
+  base_dir: "."          # forced to the server workspace on submit
+
+processing:
+  target_resolution: ${res.toFixed(1)}
+`;
+  }
 
   const time = mode === "full"
     ? `  full: ${years[0] || new Date().getFullYear()}`
     : `  years: [${years.join(", ")}]`
       + (months.length ? `\n  months: [${months.join(", ")}]` : "");
-  return `workflow: "scenes"
+  // The scenes workflow takes the v3 policy keys; the legacy monthly
+  // workflow natively reads the v2 `overwrite` key instead.
+  const policy = spec.workflow === "scenes"
+    ? `  existing_store: "resume"\n  existing_month: "skip"`
+    : `  overwrite: false`;
+  return `workflow: "${spec.workflow}"
 
-roi:
-  manual_mgrs_tiles:
-${tiles.map((t) => `    - "${t}"`).join("\n")}
-  flight_direction: "${dir}"
-  polarization: "VV+VH"
+${roi}
 
 time:
 ${time}
 
 output:
   base_dir: "."          # forced to the server workspace on submit
-  existing_store: "resume"
-  existing_month: "skip"
+${policy}
   formats: {cog: ${cog}, preview: ${png}}
 
 processing:
-  target_resolution: 30.0
+  target_resolution: ${res.toFixed(1)}
   tile_clip: true
   monthly:
     enabled: true
@@ -699,24 +845,6 @@ parallel:
 `;
 }
 
-$("qf-apply").onclick = () => {
-  const box = $("job-error");
-  try {
-    $("job-config").value = composeQuickfillYaml();
-    box.classList.add("hidden");
-    if (!$("job-title").value) {
-      $("job-title").value =
-        `${$("qf-tiles").value.split(",").length} tile(s) · ${$("qf-time-mode").value}`;
-    }
-  } catch (err) {
-    box.textContent = err.message;
-    box.classList.remove("hidden");
-  }
-};
-$("qf-time-mode").onchange = () => {
-  $("qf-months").disabled = $("qf-time-mode").value === "full";
-};
-
 /* --- gap fill: coverage matrix red cells -> prefilled download run ---
  * Requests the UNION of gap years × gap months, a superset of the exact
  * (tile, month) holes — harmless because existing_month: "skip" makes the
@@ -735,45 +863,94 @@ $("btn-patch-gaps").onclick = () => {
   const tiles = [...new Set(gaps.map((g) => g.tile_id))];
   const years = [...new Set(gaps.map((g) => g.month.slice(0, 4)))].sort();
   const months = [...new Set(gaps.map((g) => +g.month.slice(5)))].sort((a, b) => a - b);
+  $("job-type").value = "process_scenes";
+  syncJobForm();
   $("qf-tiles").value = tiles.join(", ");
   $("qf-time-mode").value = "years";
   $("qf-months").disabled = false;
   $("qf-years").value = years.join(", ");
   $("qf-months").value = months.join(", ");
+  if (!$("job-title").value) {
+    $("job-title").value = `Gap fill · ${tiles.join("+")} · ${gaps.length} month(s)`;
+  }
+  box.classList.add("hidden");
+  switchTab("download");
+};
+
+/* --- Save as YAML: explicit export for headless `s1grits --config` use --- */
+$("btn-save-yaml").onclick = () => {
+  const box = $("job-error");
   try {
-    $("job-config").value = composeQuickfillYaml();
-    if (!$("job-title").value) {
-      $("job-title").value = `Gap fill · ${tiles.join("+")} · ${gaps.length} month(s)`;
-    }
+    const type = $("job-type").value;
+    const blob = new Blob([composeConfigYaml(type)], { type: "text/yaml" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `s1grits_${type}.yaml`;
+    a.click();
+    URL.revokeObjectURL(a.href);
     box.classList.add("hidden");
-    switchTab("download");
   } catch (err) {
     box.textContent = err.message;
     box.classList.remove("hidden");
   }
 };
 
+/* --- Execute: form -> job -> live CLI log in the panel terminal --- */
 $("job-submit").onclick = async () => {
-  const sel = $("job-type").selectedOptions[0];
+  const type = $("job-type").value;
   const box = $("job-error");
   try {
-    await api("/api/jobs", {
-      method: "POST",
-      body: JSON.stringify({
-        type: $("job-type").value,
-        title: $("job-title").value || undefined,
-        config_yaml: sel.dataset.needsConfig === "true" ? $("job-config").value : undefined,
-      }),
+    const body = { type, title: $("job-title").value || undefined };
+    if (jobTypes[type] && jobTypes[type].needs_config) {
+      body.config_yaml = composeConfigYaml(type);
+    }
+    const job = await api("/api/jobs", {
+      method: "POST", body: JSON.stringify(body),
     });
     box.classList.add("hidden");
     $("job-title").value = "";
-    await pollJobs();
-    openDrawer();          // show the queued job's progress immediately
+    startPanelLog(job);
+    pollJobs();
   } catch (err) {
     box.textContent = err.message;
     box.classList.remove("hidden");
   }
 };
+
+/* --- terminal-style live log of the job launched from this panel --- */
+const panelLog = { jobId: null, after: 0, timer: null };
+
+function startPanelLog(job) {
+  if (panelLog.timer) clearTimeout(panelLog.timer);
+  panelLog.jobId = job.id;
+  panelLog.after = 0;
+  const pre = $("panel-log");
+  pre.textContent = `$ s1grits ${job.type}    # job ${job.id}\n`;
+  $("panel-log-status").textContent = "queued…";
+  const tick = async () => {
+    if (panelLog.jobId !== job.id) return;      // superseded by a newer run
+    try {
+      const data = await api(`/api/jobs/${job.id}/log?after=${panelLog.after}`);
+      if (data.lines.length) {
+        pre.textContent += data.lines.join("\n") + "\n";
+        pre.scrollTop = pre.scrollHeight;
+        panelLog.after = data.next;
+      }
+      const j = state.jobs.find((x) => x.id === job.id);
+      const pct = j && j.progress ? j.progress.pct : null;
+      if (data.status === "running" || data.status === "queued") {
+        $("panel-log-status").textContent =
+          `${data.status}${pct != null ? ` · ${pct}%` : ""}${j ? ` · ${fmtDuration(j)}` : ""}`;
+        panelLog.timer = setTimeout(tick, 1500);
+      } else {
+        pre.textContent += `\n— job ${data.status} —\n`;
+        pre.scrollTop = pre.scrollHeight;
+        $("panel-log-status").textContent = data.status;
+      }
+    } catch { /* job gone or auth lost; stop polling */ }
+  };
+  tick();
+}
 
 /* ============================ jobs drawer ============================ */
 
@@ -918,6 +1095,7 @@ async function refresh() {
 
 $("btn-refresh").onclick = () => { loadWorkspace(); refresh(); };
 $("layer-bursts").onchange = () => updateBurstLayer();
+$("burst-direction").onchange = () => updateBurstLayer();
 window.addEventListener("resize", () => { drawTimeline(); drawCoverage(); });
 
 initMap();

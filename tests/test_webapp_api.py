@@ -440,6 +440,7 @@ def test_bursts_endpoint_returns_geojson_footprints(client):
         p = f["properties"]
         assert p["jpl_burst_id"].startswith("T")
         assert isinstance(p["track"], int) and 1 <= p["track"] <= 175
+        assert p["orbit_pass"] in ("ASCENDING", "DESCENDING")
         assert f["geometry"]["type"] in ("Polygon", "MultiPolygon")
         ids.add(p["jpl_burst_id"])
     assert len(ids) == len(gj["features"]), "bursts must be deduplicated"
@@ -448,9 +449,61 @@ def test_bursts_endpoint_returns_geojson_footprints(client):
     assert client.get("/api/bursts", params={"tiles": TILE}).json() == gj
 
 
+def test_bursts_direction_filter(client):
+    """direction= narrows to one orbit pass; both passes partition the total."""
+    pytest.importorskip("geopandas")
+    total = client.get("/api/bursts", params={"tiles": TILE}).json()
+    asc = client.get("/api/bursts",
+                     params={"tiles": TILE, "direction": "ASCENDING"}).json()
+    des = client.get("/api/bursts",
+                     params={"tiles": TILE, "direction": "descending"}).json()
+    assert all(f["properties"]["orbit_pass"] == "ASCENDING" for f in asc["features"])
+    assert all(f["properties"]["orbit_pass"] == "DESCENDING" for f in des["features"])
+    assert len(asc["features"]) + len(des["features"]) == len(total["features"])
+    assert client.get(
+        "/api/bursts", params={"tiles": TILE, "direction": "SIDEWAYS"}
+    ).status_code == 400
+
+
 def test_bursts_requires_tiles_param(client):
     assert client.get("/api/bursts", params={"tiles": " , "}).status_code == 400
     assert client.get("/api/bursts").status_code == 422  # missing query param
+
+
+# ---------------------------------------------------------------------------
+# Exact MGRS tile geometry (map footprints from reference data, not the grid)
+# ---------------------------------------------------------------------------
+
+def test_tiles_expose_exact_mgrs_geometry(client):
+    """Map footprints come from the packaged mgrs.parquet reference table.
+    The catalog/Zarr grid must NOT define the tile shape: the fixture grid is
+    a ~1 km crop while the real MGRS tile is ~110 km — a grid-derived outline
+    would draw a wildly wrong 'tile'."""
+    pytest.importorskip("geopandas")
+    t = client.get("/api/tiles").json()[0]
+    geom = t["mgrs_geojson"]
+    assert geom is not None
+    assert geom["type"] in ("Polygon", "MultiPolygon")
+
+    def _pts(g):
+        if g["type"] == "Polygon":
+            return [p for ring in g["coordinates"] for p in ring]
+        return [p for poly in g["coordinates"] for ring in poly for p in ring]
+
+    lons = [p[0] for p in _pts(geom)]
+    lats = [p[1] for p in _pts(geom)]
+    assert all(-180 <= lo <= 180 for lo in lons)
+    assert all(-90 <= la <= 90 for la in lats)
+    # ~110 km MGRS tile vs the fixture's ~1 km grid: the reference geometry
+    # must span far more than the grid-derived bounds — proof the footprint
+    # is NOT inferred from the catalog/Zarr grid. (The synthetic fixture grid
+    # does not sit at the real tile's location, so no containment check.)
+    (s, w), (n, e) = t["bounds4326"]
+    assert (max(lats) - min(lats)) > 10 * (n - s)
+    assert (max(lons) - min(lons)) > 10 * (e - w)
+    # Real-world 17MPU is a ~1°x1° near-equator tile; sanity-check magnitude.
+    assert 0.5 < (max(lats) - min(lats)) < 2.0
+    assert 0.5 < (max(lons) - min(lons)) < 2.0
 
 
 # ---------------------------------------------------------------------------
