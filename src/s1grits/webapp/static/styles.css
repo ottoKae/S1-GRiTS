@@ -1,5 +1,6 @@
 /* S1-GRiTS web UI v2.3 — single stylesheet, no framework.
-   Layout: topbar + CSS grid (sidebar | content | detail), jobs drawer.
+   Layout: topbar + CSS grid of three labelled zones
+   (Browse & filter | Visualize | Process & download), jobs drawer.
    Breakpoints: >=1200px full three-column; 768–1200px stacked. */
 
 :root {
@@ -56,6 +57,15 @@ body {
 .chip b { color: var(--text); font-weight: 600; }
 .topbar-actions { display: flex; gap: 8px; align-items: center; }
 
+/* Live job status: title · pct · elapsed, always visible without the drawer */
+.job-chip {
+  border: 1px solid var(--accent); background: rgba(77, 163, 255, .12);
+  color: var(--accent); border-radius: 999px; padding: 4px 12px;
+  font-size: .78rem; cursor: pointer;
+  max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.job-chip:hover { filter: brightness(1.2); }
+
 /* ---------- buttons ---------- */
 .btn {
   border: 1px solid var(--line); background: var(--panel-2); color: var(--text);
@@ -85,6 +95,23 @@ body {
 .sidebar, .detail { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .content { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 
+/* Zone tags: name each of the three workflow zones so "look at data" and
+   "make data" areas read as distinct places. */
+.zone-tag {
+  font-size: .68rem; font-weight: 700; letter-spacing: 1.2px;
+  text-transform: uppercase; color: var(--muted);
+  border-left: 3px solid var(--accent); padding-left: 8px;
+}
+.detail > .zone-tag { border-left-color: var(--accent-2); }
+
+/* Empty-workspace call to action (shown when the catalog has no tiles) */
+.empty-cta {
+  border: 1px dashed var(--accent-2); border-radius: var(--radius);
+  background: rgba(111, 227, 180, .07); padding: 12px 16px;
+  font-size: .88rem; line-height: 1.5;
+}
+.empty-cta .cta-accent { color: var(--accent-2); font-weight: 600; }
+
 .panel {
   background: var(--panel); border: 1px solid var(--line);
   border-radius: var(--radius); padding: 12px 14px; box-shadow: var(--shadow);
@@ -97,16 +124,17 @@ body {
   min-width: 0; overflow-wrap: anywhere;
 }
 
-/* ---------- filters ---------- */
+/* ---------- filters / form controls ---------- */
 .sidebar label { display: block; font-size: .8rem; color: var(--muted); margin-bottom: 8px; }
-.sidebar select, .sidebar input, .modal select, .modal input, .modal textarea {
+.detail label { display: block; font-size: .8rem; color: var(--muted); margin-bottom: 10px; }
+.sidebar select, .sidebar input,
+.detail select, .detail input, .detail textarea {
   width: 100%; margin-top: 3px;
   background: var(--panel-2); color: var(--text);
   border: 1px solid var(--line); border-radius: 7px; padding: 6px 8px;
   font-size: .85rem;
 }
-.range-row { display: flex; gap: 8px; }
-.range-row label { flex: 1; }
+.detail textarea { font: .78rem/1.5 ui-monospace, Consolas, monospace; resize: vertical; }
 
 /* ---------- tile list ---------- */
 .tile-list { list-style: none; margin: 0; padding: 0; max-height: 320px; overflow: auto; }
@@ -130,10 +158,21 @@ body {
   /* never wider than the map it annotates */
   max-width: calc(100% - 16px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.map-layers {
+  position: absolute; top: 8px; right: 8px; z-index: 900;
+  background: rgba(14, 20, 32, .85); border: 1px solid var(--line);
+  padding: 4px 10px; border-radius: 8px; font-size: .76rem; color: var(--muted);
+}
+.map-layers .inline { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+.map-layers input { margin: 0; }
 .leaflet-container { font: inherit; }
 
-/* ---------- timeline ---------- */
-.timeline-panel canvas { width: 100%; display: block; cursor: crosshair; }
+/* ---------- coverage matrix + timeline ---------- */
+.coverage-panel canvas { width: 100%; display: block; }
+#coverage-matrix { cursor: pointer; }
+#timeline { cursor: crosshair; }
+.timeline-head { margin-top: 10px; }
+.timeline-head h3 { font-size: .82rem; color: var(--muted); font-weight: 600; }
 
 /* ---------- table ---------- */
 .table-scroll { overflow-x: auto; max-height: 34vh; overflow-y: auto; }
@@ -148,6 +187,21 @@ body {
 #items-table tbody tr.active { background: rgba(77, 163, 255, .16); }
 .asset-links a { color: var(--accent); text-decoration: none; margin-right: 8px; }
 .pager { display: flex; align-items: center; gap: 6px; }
+
+/* ---------- right panel: tabs ---------- */
+.tabs { display: flex; gap: 6px; }
+.tabs .tab {
+  flex: 1; border: 1px solid var(--line); background: transparent;
+  color: var(--muted); border-radius: 8px 8px 0 0; padding: 7px 10px;
+  cursor: pointer; font-size: .84rem; font-weight: 600;
+  border-bottom: 2px solid transparent;
+}
+.tabs .tab:hover { color: var(--text); }
+.tabs .tab.active {
+  color: var(--text); background: var(--panel);
+  border-bottom-color: var(--accent-2);
+}
+.tab-body { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 
 /* ---------- detail panel ---------- */
 .detail-preview { width: 100%; border-radius: 8px; border: 1px solid var(--line); }
@@ -196,20 +250,7 @@ body {
   max-height: 40vh; overflow: auto; white-space: pre-wrap; word-break: break-all;
 }
 
-/* ---------- modal ---------- */
-.modal {
-  position: fixed; inset: 0; z-index: 1400; background: rgba(0, 0, 0, .55);
-  display: flex; align-items: center; justify-content: center; padding: 20px;
-}
-.modal-card {
-  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
-  width: min(640px, 96vw); max-height: 92vh; overflow-y: auto; padding: 16px;
-  box-shadow: var(--shadow);
-}
-.modal label { display: block; font-size: .8rem; color: var(--muted); margin-bottom: 10px; }
-.modal textarea { font: .78rem/1.5 ui-monospace, Consolas, monospace; resize: vertical; }
-
-/* quick-fill (datacube job composer) */
+/* quick-fill (datacube job composer, lives in the Download tab) */
 .quickfill {
   border: 1px solid var(--line); border-radius: 8px;
   padding: 8px 12px 10px; margin: 0 0 12px; min-width: 0;
@@ -219,6 +260,7 @@ body {
 .qf-grid label { margin-bottom: 6px; min-width: 0; }
 .quickfill .inline { display: inline-flex; align-items: center; gap: 4px; margin: 4px 12px 0 0; }
 .quickfill .inline input { width: auto; margin: 0; }
+.qf-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
 @media (max-width: 560px) { .qf-grid { grid-template-columns: 1fr; } }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 .small-note { font-size: .74rem; }

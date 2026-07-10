@@ -187,6 +187,21 @@ def create_app(root: Path | str, token: str | None = None,
         return FileResponse(path, media_type=media,
                             headers={"Cache-Control": "private, max-age=3600"})
 
+    @app.get("/api/coverage", tags=["datasets"])
+    def coverage():
+        """Tiles × months coverage matrix (drives the coverage heat-strip and
+        gap detection in the UI)."""
+        return workspace.coverage()
+
+    @app.get("/api/bursts", tags=["visualisation"])
+    def bursts(tiles: str):
+        """Raw OPERA burst footprints (GeoJSON, EPSG:4326) overlapping the
+        given comma-separated MGRS tiles — the toggleable map reference layer."""
+        tile_ids = [t.strip().upper() for t in tiles.split(",") if t.strip()]
+        if not tile_ids:
+            raise HTTPException(400, "tiles= requires at least one MGRS tile id")
+        return workspace.bursts(tile_ids)
+
     @app.get("/api/asset-bounds/{tile}/{relpath:path}", tags=["visualisation"])
     def asset_bounds(tile: str, relpath: str):
         """True WGS84 footprint of an asset (for correctly-placed overlays).
