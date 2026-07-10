@@ -194,13 +194,16 @@ def create_app(root: Path | str, token: str | None = None,
         return workspace.coverage()
 
     @app.get("/api/bursts", tags=["visualisation"])
-    def bursts(tiles: str):
+    def bursts(tiles: str, direction: str | None = None):
         """Raw OPERA burst footprints (GeoJSON, EPSG:4326) overlapping the
-        given comma-separated MGRS tiles — the toggleable map reference layer."""
+        given comma-separated MGRS tiles — the toggleable map reference layer.
+        ``direction`` filters to one orbit pass (ASCENDING/DESCENDING)."""
         tile_ids = [t.strip().upper() for t in tiles.split(",") if t.strip()]
         if not tile_ids:
             raise HTTPException(400, "tiles= requires at least one MGRS tile id")
-        return workspace.bursts(tile_ids)
+        if direction and direction.upper() not in ("ASCENDING", "DESCENDING"):
+            raise HTTPException(400, "direction must be ASCENDING or DESCENDING")
+        return workspace.bursts(tile_ids, direction=direction)
 
     @app.get("/api/asset-bounds/{tile}/{relpath:path}", tags=["visualisation"])
     def asset_bounds(tile: str, relpath: str):

@@ -70,6 +70,11 @@
         <div id="map"></div>
         <div class="map-layers">
           <label class="inline"><input type="checkbox" id="layer-bursts"> Burst footprints</label>
+          <select id="burst-direction" class="mini" title="Filter burst footprints by orbit direction">
+            <option value="">Asc + Desc</option>
+            <option value="ASCENDING">Ascending</option>
+            <option value="DESCENDING">Descending</option>
+          </select>
         </div>
         <div class="map-hint" id="map-hint">Click a tile to filter · select a dataset, then click inside its footprint to probe</div>
       </div>
@@ -79,7 +84,14 @@
           <h2>Coverage — tiles × months</h2>
           <span class="muted" id="coverage-caption">each row is a tile; red cells are temporal gaps inside its span</span>
         </div>
-        <canvas id="coverage-matrix"></canvas>
+        <!-- Fixed tile-label column + horizontally scrollable month canvas:
+             a decade of months stays legible instead of being squeezed. -->
+        <div class="coverage-body">
+          <div class="cov-labels" id="cov-labels"></div>
+          <div class="coverage-scroll" id="coverage-scroll">
+            <canvas id="coverage-matrix"></canvas>
+          </div>
+        </div>
         <div class="panel-head timeline-head">
           <h3>Filtered monthly histogram</h3>
           <span class="muted" id="timeline-caption"></span>
@@ -116,7 +128,9 @@
         <button class="tab" id="tab-item" data-tab="item">Item</button>
       </div>
 
-      <!-- Tab: Download / gap-fill (the job composer, formerly a modal) -->
+      <!-- Tab: Download / gap-fill — a pure-form job composer. The YAML config
+           the CLI needs is generated server-bound at Execute time and never
+           shown; nothing here reads or writes local config files. -->
       <div class="tab-body" id="tabbody-download">
         <section class="panel">
           <label>Job type
@@ -125,7 +139,7 @@
           <label>Title <input type="text" id="job-title" placeholder="e.g. 11-tile monthly run"></label>
 
           <fieldset class="quickfill" id="job-quickfill">
-            <legend>Quick fill — datacube download &amp; processing</legend>
+            <legend id="job-form-legend">Parameters</legend>
             <div class="qf-grid">
               <label>MGRS tiles (comma-separated)
                 <input type="text" id="qf-tiles" placeholder="17MPU, 17MPV, 17NQA">
@@ -148,7 +162,10 @@
               <label>Months (1–12, optional)
                 <input type="text" id="qf-months" placeholder="1, 2, 3" disabled>
               </label>
-              <label class="qf-checks">Outputs
+              <label>Resolution (m)
+                <input type="number" id="qf-resolution" value="30" min="10" max="500" step="10">
+              </label>
+              <label class="qf-checks" id="qf-outputs-row">Outputs
                 <span>
                   <label class="inline"><input type="checkbox" id="qf-cog" checked> COG</label>
                   <label class="inline"><input type="checkbox" id="qf-preview" checked> Preview</label>
@@ -156,24 +173,35 @@
               </label>
             </div>
             <div class="qf-actions">
-              <button type="button" id="qf-apply" class="btn small">Apply to YAML ↓</button>
               <button type="button" id="btn-patch-gaps" class="btn small ghost"
                       title="Prefill a run covering the red gap months from the coverage matrix (existing months are skipped on resume)">
                 ▨ Patch coverage gaps</button>
             </div>
           </fieldset>
 
-          <label id="job-config-label">Config (YAML)
-            <textarea id="job-config" rows="12" spellcheck="false"></textarea>
-          </label>
-          <p class="muted small-note">output.base_dir is pinned to the served workspace.
-            To work in a different (or brand-new, empty) folder, restart with
-            <code>s1grits serve /path/to/folder</code>.
-            Headless equivalent: <code>s1grits &lt;type&gt; --config cfg.yaml</code></p>
+          <p class="muted small-note hidden" id="job-noparams">This command takes no
+            parameters — it runs against the served workspace as-is.</p>
+
+          <p class="muted small-note">Runs are confined to the served workspace
+            (<code>output.base_dir</code> is pinned server-side); your local config
+            files are never read or modified. To work in a different folder,
+            restart with <code>s1grits serve /path/to/folder</code>.</p>
           <div class="modal-actions">
-            <button class="btn primary" id="job-submit">Queue job</button>
+            <button class="btn ghost small" id="btn-save-yaml"
+                    title="Download these parameters as a config file for headless CLI use">
+              ⤓ Save as YAML</button>
+            <button class="btn primary" id="job-submit">▶ Execute</button>
           </div>
           <div class="error hidden" id="job-error"></div>
+        </section>
+
+        <!-- Terminal: live CLI output of the job launched from this panel -->
+        <section class="panel" id="panel-log-panel">
+          <div class="panel-head">
+            <h2>Execution log</h2>
+            <span class="muted" id="panel-log-status">idle — execute a job to stream its CLI output here</span>
+          </div>
+          <pre class="job-log panel-log" id="panel-log">$ _</pre>
         </section>
       </div>
 
