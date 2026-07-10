@@ -187,8 +187,11 @@ class Workspace:
                     outline = o
                 if bounds is not None and outline is not None:
                     break
+            # Temporal range = catalog months ∪ every store's Zarr time axis;
+            # the catalog alone under-reports when its rows lag the stores.
             months = sorted(
                 {m for m in df.get("month", pd.Series(dtype=object)).dropna()}
+                | set().union(*self._store_month_sets(tile_id), set())
             )
             report = None
             rp = self.root / tile_id / "processing_report.json"
@@ -277,21 +280,81 @@ class Workspace:
     # Coverage matrix (tiles x months) + burst footprints
     # ------------------------------------------------------------------
 
+    def _store_month_sets(self, tile_id: str) -> list[set[str]]:
+        """Months on each Zarr store's TIME AXIS under one tile — the ground
+        truth for temporal extent.
+
+        The catalog is derived metadata: rows are appended as months are
+        written, so a stale or partial catalog (interrupted run, months
+        processed before their records, pre-``catalog resync``) under-reports
+        the range and the UI would show a truncated timeline even though the
+        datacube is complete. Reading the 1-D time coordinate is cheap;
+        results are cached per store keyed on the time array's metadata mtime
+        (appends rewrite it), so live runs invalidate automatically.
+        """
+        out: list[set[str]] = []
+        tile_dir = self.root / tile_id
+        if not tile_dir.is_dir():
+            return out
+        with self._lock:
+            if not hasattr(self, "_store_month_cache"):
+                self._store_month_cache: dict = {}
+        for store in sorted(tile_dir.glob("*/zarr/*.zarr")):
+            meta = store / "time" / "zarr.json"
+            try:
+                mtime = (meta if meta.exists() else store).stat().st_mtime_ns
+            except OSError:
+                continue
+            key = str(store)
+            with self._lock:
+                hit = self._store_month_cache.get(key)
+            if hit is not None and hit[0] == mtime:
+                out.append(hit[1])
+                continue
+            try:
+                import zarr
+                g = zarr.open_group(str(store), mode="r", zarr_format=3)
+                months = {str(t)[:7] for t in pd.to_datetime(g["time"][:])}
+            except Exception as exc:
+                logger.debug("time-axis read failed for %s: %s", store, exc)
+                continue
+            with self._lock:
+                self._store_month_cache[key] = (mtime, months)
+            out.append(months)
+        return out
+
     def coverage(self) -> dict:
         """Per-tile month histogram linking spatial tiles to their temporal
         coverage — drives the tiles×months matrix (and gap detection: a month
-        inside a tile's own [first, last] span with count 0 is a gap)."""
+        inside a tile's own [first, last] span with count 0 is a gap).
+
+        Counts merge TWO sources: catalog rows AND each store's Zarr time
+        axis. Months present on disk but missing from the catalog still
+        render (count = number of stores holding them) and are reported per
+        tile as ``n_uncataloged_months`` so the UI can suggest a resync —
+        without this, a stale catalog truncated the whole timeline and the
+        gap-filler would re-request months that already exist."""
         tiles = []
         all_months: set[str] = set()
         for tile_id in self.tile_ids():
             df = self._load_tile_catalog(tile_id)
-            if df is None or df.empty or "month" not in df.columns:
-                tiles.append({"tile_id": tile_id, "months": {}})
-                continue
-            counts = df["month"].dropna().value_counts().sort_index()
-            months = {str(k): int(v) for k, v in counts.items()}
+            months: dict[str, int] = {}
+            if df is not None and not df.empty and "month" in df.columns:
+                counts = df["month"].dropna().value_counts().sort_index()
+                months = {str(k): int(v) for k, v in counts.items()}
+            zarr_counts: dict[str, int] = {}
+            for mset in self._store_month_sets(tile_id):
+                for m in mset:
+                    zarr_counts[m] = zarr_counts.get(m, 0) + 1
+            uncataloged = sorted(m for m in zarr_counts if m not in months)
+            for m, c in zarr_counts.items():
+                months[m] = max(months.get(m, 0), c)
             all_months.update(months)
-            tiles.append({"tile_id": tile_id, "months": months})
+            tiles.append({
+                "tile_id": tile_id,
+                "months": dict(sorted(months.items())),
+                "n_uncataloged_months": len(uncataloged),
+            })
         return {"tiles": tiles, "months_all": sorted(all_months)}
 
     def bursts(self, tile_ids: list[str], direction: str | None = None,
