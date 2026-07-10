@@ -931,6 +931,19 @@ def cmd_mosaic_scenes(args):
 
 def cmd_serve(args):
     """Run the v2.3 web UI + API over a workspace directory."""
+    root = args.root or args.workspace
+    if not root:
+        console.print(
+            "[red]ERROR: missing workspace directory.[/red] "
+            "Usage: s1grits serve /path/to/workspace  (or --root PATH)"
+        )
+        raise SystemExit(2)
+    if args.root and args.workspace and args.root != args.workspace:
+        console.print(
+            "[red]ERROR: both a positional workspace and --root were given "
+            "with different values; pass only one.[/red]"
+        )
+        raise SystemExit(2)
     try:
         from s1grits.webapp.server import serve
     except ImportError as exc:
@@ -940,7 +953,7 @@ def cmd_serve(args):
         )
         raise SystemExit(1) from exc
     serve(
-        root=args.root, host=args.host, port=args.port, token=args.token,
+        root=root, host=args.host, port=args.port, token=args.token,
         max_concurrent_jobs=args.max_concurrent_jobs, insecure=args.insecure,
     )
 
@@ -1190,9 +1203,15 @@ Examples:
         'serve',
         help='Run the web UI + API over a workspace (requires s1grits[web])'
     )
+    # Workspace directory: positional (`s1grits serve /path/to/workspace`,
+    # the natural spelling) or the --root flag; exactly one is required.
     parser_serve.add_argument(
-        '--root', required=True,
+        'workspace', nargs='?', default=None,
         help='Workspace directory (the output.base_dir of your runs)'
+    )
+    parser_serve.add_argument(
+        '--root', default=None,
+        help='Workspace directory (alias for the positional argument)'
     )
     parser_serve.add_argument(
         '--host', default='127.0.0.1',

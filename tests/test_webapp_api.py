@@ -383,3 +383,26 @@ def test_job_types_cover_datacube_lifecycle(client):
         assert expected in types, f"missing job type {expected}"
     assert types["process_static"]["needs_config"] is True
     assert types["catalog_resync"]["needs_config"] is False
+
+
+def test_serve_accepts_positional_workspace_and_root_flag(monkeypatch, workspace):
+    """`s1grits serve <dir>` (natural spelling) and `--root <dir>` both work;
+    neither -> a clear error, not an argparse usage dump for a flag."""
+    from s1grits import cli as s1cli
+
+    calls = []
+    def _fake_serve(**kw):
+        calls.append(kw)
+    import s1grits.webapp.server as srv
+    monkeypatch.setattr(srv, "serve", _fake_serve)
+
+    for argv in (["s1grits", "serve", str(workspace)],
+                 ["s1grits", "serve", "--root", str(workspace)]):
+        monkeypatch.setattr(sys, "argv", argv)
+        s1cli.main()
+    assert [c["root"] for c in calls] == [str(workspace)] * 2
+
+    monkeypatch.setattr(sys, "argv", ["s1grits", "serve"])
+    with pytest.raises(SystemExit) as exc:
+        s1cli.main()
+    assert exc.value.code == 2
