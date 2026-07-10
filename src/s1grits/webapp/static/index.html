@@ -18,14 +18,16 @@
     </div>
     <div class="workspace-chips" id="workspace-chips" title="Workspace summary"></div>
     <div class="topbar-actions">
+      <button id="job-status-chip" class="job-chip hidden" title="Active job — click for details"></button>
       <button id="btn-refresh" class="btn ghost" title="Reload workspace">⟳ Refresh</button>
       <button id="btn-jobs" class="btn primary">Jobs <span id="jobs-active-badge" class="badge hidden">0</span></button>
     </div>
   </header>
 
   <main class="layout">
-    <!-- ============ Sidebar: filters + tiles ============ -->
+    <!-- ============ Zone 1 — Browse & filter ============ -->
     <aside class="sidebar" id="sidebar">
+      <div class="zone-tag">Browse &amp; filter</div>
       <section class="panel">
         <h2>Filters</h2>
         <label>Tile
@@ -40,10 +42,10 @@
         <label>Track
           <select id="f-track"><option value="">All tracks</option></select>
         </label>
-        <div class="range-row">
-          <label>From <input type="month" id="f-from"></label>
-          <label>To <input type="month" id="f-to"></label>
-        </div>
+        <!-- From/To stacked vertically: side-by-side month inputs wrapped
+             awkwardly at the sidebar's fixed width -->
+        <label>From <input type="month" id="f-from"></label>
+        <label>To <input type="month" id="f-to"></label>
         <button id="btn-clear-filters" class="btn ghost small">Clear filters</button>
       </section>
 
@@ -53,16 +55,33 @@
       </section>
     </aside>
 
-    <!-- ============ Main: map + timeline + table ============ -->
+    <!-- ============ Zone 2 — Visualize ============ -->
     <section class="content">
-      <div class="map-wrap panel">
-        <div id="map"></div>
-        <div class="map-hint" id="map-hint">Click a tile to filter · click inside a highlighted tile to probe its time series</div>
+      <div class="zone-tag">Visualize — spatial &amp; temporal coverage</div>
+
+      <div class="empty-cta hidden" id="empty-cta">
+        <b>This workspace is empty.</b> Use the
+        <span class="cta-accent">Process &amp; download</span> panel on the right to
+        configure tiles and a time range, then queue a download — products appear
+        here as they are written.
       </div>
 
-      <div class="panel timeline-panel">
+      <div class="map-wrap panel">
+        <div id="map"></div>
+        <div class="map-layers">
+          <label class="inline"><input type="checkbox" id="layer-bursts"> Burst footprints</label>
+        </div>
+        <div class="map-hint" id="map-hint">Click a tile to filter · select a dataset, then click inside its footprint to probe</div>
+      </div>
+
+      <div class="panel coverage-panel">
         <div class="panel-head">
-          <h2>Monthly coverage</h2>
+          <h2>Coverage — tiles × months</h2>
+          <span class="muted" id="coverage-caption">each row is a tile; red cells are temporal gaps inside its span</span>
+        </div>
+        <canvas id="coverage-matrix"></canvas>
+        <div class="panel-head timeline-head">
+          <h3>Filtered monthly histogram</h3>
           <span class="muted" id="timeline-caption"></span>
         </div>
         <canvas id="timeline" height="56"></canvas>
@@ -89,37 +108,109 @@
       </div>
     </section>
 
-    <!-- ============ Detail / probe panel ============ -->
-    <aside class="detail" id="detail-panel" hidden>
-      <div class="panel">
-        <div class="panel-head">
-          <h2 id="detail-title">Item</h2>
-          <button class="btn ghost small" id="detail-close">✕</button>
-        </div>
-        <img id="detail-preview" class="detail-preview" alt="" hidden>
-        <dl class="detail-meta" id="detail-meta"></dl>
-        <div class="detail-actions" id="detail-actions"></div>
+    <!-- ============ Zone 3 — Process & download ============ -->
+    <aside class="detail" id="right-panel">
+      <div class="zone-tag">Process &amp; download</div>
+      <div class="tabs">
+        <button class="tab active" id="tab-download" data-tab="download">⬇ Download</button>
+        <button class="tab" id="tab-item" data-tab="item">Item</button>
       </div>
-      <div class="panel" id="probe-panel" hidden>
-        <div class="panel-head">
-          <h2>Point time series</h2><span class="muted" id="probe-caption"></span>
-        </div>
-        <canvas id="probe-chart" height="220"></canvas>
-        <canvas id="probe-nobs" height="46" title="n_obs — observations behind each composite"></canvas>
+
+      <!-- Tab: Download / gap-fill (the job composer, formerly a modal) -->
+      <div class="tab-body" id="tabbody-download">
+        <section class="panel">
+          <label>Job type
+            <select id="job-type"></select>
+          </label>
+          <label>Title <input type="text" id="job-title" placeholder="e.g. 11-tile monthly run"></label>
+
+          <fieldset class="quickfill" id="job-quickfill">
+            <legend>Quick fill — datacube download &amp; processing</legend>
+            <div class="qf-grid">
+              <label>MGRS tiles (comma-separated)
+                <input type="text" id="qf-tiles" placeholder="17MPU, 17MPV, 17NQA">
+              </label>
+              <label>Direction
+                <select id="qf-direction">
+                  <option value="ASCENDING">ASCENDING</option>
+                  <option value="DESCENDING">DESCENDING</option>
+                </select>
+              </label>
+              <label>Time mode
+                <select id="qf-time-mode">
+                  <option value="full">Full archive (to year)</option>
+                  <option value="years">Specific years/months</option>
+                </select>
+              </label>
+              <label>Year(s)
+                <input type="text" id="qf-years" placeholder="2026 or 2024, 2025">
+              </label>
+              <label>Months (1–12, optional)
+                <input type="text" id="qf-months" placeholder="1, 2, 3" disabled>
+              </label>
+              <label class="qf-checks">Outputs
+                <span>
+                  <label class="inline"><input type="checkbox" id="qf-cog" checked> COG</label>
+                  <label class="inline"><input type="checkbox" id="qf-preview" checked> Preview</label>
+                </span>
+              </label>
+            </div>
+            <div class="qf-actions">
+              <button type="button" id="qf-apply" class="btn small">Apply to YAML ↓</button>
+              <button type="button" id="btn-patch-gaps" class="btn small ghost"
+                      title="Prefill a run covering the red gap months from the coverage matrix (existing months are skipped on resume)">
+                ▨ Patch coverage gaps</button>
+            </div>
+          </fieldset>
+
+          <label id="job-config-label">Config (YAML)
+            <textarea id="job-config" rows="12" spellcheck="false"></textarea>
+          </label>
+          <p class="muted small-note">output.base_dir is pinned to the served workspace.
+            To work in a different (or brand-new, empty) folder, restart with
+            <code>s1grits serve /path/to/folder</code>.
+            Headless equivalent: <code>s1grits &lt;type&gt; --config cfg.yaml</code></p>
+          <div class="modal-actions">
+            <button class="btn primary" id="job-submit">Queue job</button>
+          </div>
+          <div class="error hidden" id="job-error"></div>
+        </section>
+      </div>
+
+      <!-- Tab: selected item detail + probe -->
+      <div class="tab-body hidden" id="tabbody-item">
+        <section class="panel" id="detail-panel">
+          <div class="panel-head">
+            <h2 id="detail-title">No dataset selected</h2>
+            <button class="btn ghost small" id="detail-close" title="Clear selection">✕</button>
+          </div>
+          <p class="muted" id="detail-empty-hint">Select a row in the Datasets table to
+            inspect its metadata, preview it on the map, and probe per-pixel time series.</p>
+          <img id="detail-preview" class="detail-preview" alt="" hidden>
+          <dl class="detail-meta" id="detail-meta"></dl>
+          <div class="detail-actions" id="detail-actions"></div>
+        </section>
+        <section class="panel" id="probe-panel" hidden>
+          <div class="panel-head">
+            <h2>Point time series</h2><span class="muted" id="probe-caption"></span>
+          </div>
+          <canvas id="probe-chart" height="220"></canvas>
+          <canvas id="probe-nobs" height="46" title="n_obs — observations behind each composite"></canvas>
+        </section>
       </div>
     </aside>
   </main>
 
-  <!-- ============ Jobs drawer ============ -->
+  <!-- ============ Jobs drawer (queue, progress, logs) ============ -->
   <div class="drawer-scrim hidden" id="drawer-scrim"></div>
   <aside class="drawer hidden" id="jobs-drawer">
     <div class="panel-head">
-      <h2>Download manager</h2>
-      <div>
-        <button class="btn primary small" id="btn-new-job">＋ New job</button>
-        <button class="btn ghost small" id="drawer-close">✕</button>
-      </div>
+      <h2>Jobs — queue &amp; progress</h2>
+      <button class="btn ghost small" id="drawer-close">✕</button>
     </div>
+    <p class="muted small-note">Jobs run the <code>s1grits</code> CLI on the server and
+      survive browser refreshes. Queue new ones from the
+      <b>Process &amp; download</b> panel.</p>
     <ul class="job-list" id="job-list"></ul>
     <div class="job-log-wrap hidden" id="job-log-wrap">
       <div class="panel-head"><h3 id="job-log-title">Log</h3>
@@ -127,63 +218,6 @@
       <pre class="job-log" id="job-log"></pre>
     </div>
   </aside>
-
-  <!-- ============ New job modal ============ -->
-  <div class="modal hidden" id="job-modal">
-    <div class="modal-card">
-      <div class="panel-head"><h2>New job</h2>
-        <button class="btn ghost small" id="job-modal-close">✕</button></div>
-      <label>Type
-        <select id="job-type"></select>
-      </label>
-      <label>Title <input type="text" id="job-title" placeholder="e.g. 11-tile monthly run"></label>
-
-      <fieldset class="quickfill" id="job-quickfill">
-        <legend>Quick fill — datacube download &amp; processing</legend>
-        <div class="qf-grid">
-          <label>MGRS tiles (comma-separated)
-            <input type="text" id="qf-tiles" placeholder="17MPU, 17MPV, 17NQA">
-          </label>
-          <label>Direction
-            <select id="qf-direction">
-              <option value="ASCENDING">ASCENDING</option>
-              <option value="DESCENDING">DESCENDING</option>
-            </select>
-          </label>
-          <label>Time mode
-            <select id="qf-time-mode">
-              <option value="full">Full archive (to year)</option>
-              <option value="years">Specific years/months</option>
-            </select>
-          </label>
-          <label>Year(s)
-            <input type="text" id="qf-years" placeholder="2026 or 2024, 2025">
-          </label>
-          <label>Months (1–12, optional)
-            <input type="text" id="qf-months" placeholder="1, 2, 3" disabled>
-          </label>
-          <label class="qf-checks">Outputs
-            <span>
-              <label class="inline"><input type="checkbox" id="qf-cog" checked> COG</label>
-              <label class="inline"><input type="checkbox" id="qf-preview" checked> Preview</label>
-            </span>
-          </label>
-        </div>
-        <button type="button" id="qf-apply" class="btn small">Apply to YAML ↓</button>
-      </fieldset>
-
-      <label id="job-config-label">Config (YAML)
-        <textarea id="job-config" rows="16" spellcheck="false"></textarea>
-      </label>
-      <p class="muted small-note">output.base_dir is pinned to the server workspace.
-        Headless equivalent: <code>s1grits &lt;type&gt; --config cfg.yaml</code></p>
-      <div class="modal-actions">
-        <button class="btn ghost" id="job-cancel">Cancel</button>
-        <button class="btn primary" id="job-submit">Queue job</button>
-      </div>
-      <div class="error hidden" id="job-error"></div>
-    </div>
-  </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
           integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>

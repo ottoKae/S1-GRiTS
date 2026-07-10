@@ -364,6 +364,96 @@ def test_asset_bounds_traversal_and_missing(client):
 
 
 # ---------------------------------------------------------------------------
+# True grid outlines (distortion-free map footprints)
+# ---------------------------------------------------------------------------
+
+def test_tiles_and_items_expose_true_outline_polygon(client):
+    """outline4326 is the reprojected grid PERIMETER (a polygon), not the
+    axis-aligned bbox — drawing the bbox is what made tiles look warped."""
+    t = client.get("/api/tiles").json()[0]
+    outline = t["outline4326"]
+    assert outline is not None
+    assert len(outline) == 16          # 4 edges x 4 points per edge
+    (s, w), (n, e) = t["bounds4326"]
+    eps = 1e-4
+    for lat, lng in outline:
+        assert s - eps <= lat <= n + eps
+        assert w - eps <= lng <= e + eps
+    # The bbox must be the envelope of the outline: some outline vertex
+    # touches each bbox side (i.e. the outline is not a shrunken copy).
+    lats = [p[0] for p in outline]
+    lngs = [p[1] for p in outline]
+    assert min(lats) == pytest.approx(s, abs=1e-3)
+    assert max(lats) == pytest.approx(n, abs=1e-3)
+    assert min(lngs) == pytest.approx(w, abs=1e-3)
+    assert max(lngs) == pytest.approx(e, abs=1e-3)
+
+    item = client.get("/api/items").json()["items"][0]
+    assert item["outline4326"] == outline
+
+
+# ---------------------------------------------------------------------------
+# Coverage matrix (tiles x months)
+# ---------------------------------------------------------------------------
+
+def test_coverage_links_tiles_to_months(client):
+    cov = client.get("/api/coverage").json()
+    assert cov["months_all"] == ["2026-01", "2026-02"]
+    assert len(cov["tiles"]) == 1
+    t = cov["tiles"][0]
+    assert t["tile_id"] == TILE
+    assert t["months"] == {"2026-01": 1, "2026-02": 1}
+
+
+def test_coverage_shows_hole_in_a_tiles_span(workspace):
+    """A month missing between first and last is visible as a 0-count column
+    (the UI paints it red and 'Patch coverage gaps' turns it into a run)."""
+    cat = workspace / TILE / "catalog.parquet"
+    df = pd.read_parquet(cat)
+    skipped = df.iloc[[0]].copy()
+    skipped["month"] = "2025-11"          # coverage now 2025-11 .. 2026-02
+    skipped["item_id"] = f"{TILE}_ASCENDING_TK18_2025-11"
+    skipped["datetime"] = pd.Timestamp("2025-11-15")
+    pd.concat([skipped, df], ignore_index=True).to_parquet(cat)
+
+    client = TestClient(create_app(workspace, job_cmd_prefix=_stub_cli()))
+    cov = client.get("/api/coverage").json()
+    months = cov["tiles"][0]["months"]
+    assert months.get("2025-11") == 1
+    assert "2025-12" not in months        # the gap month has no record at all
+    assert cov["months_all"] == ["2025-11", "2026-01", "2026-02"]
+
+
+# ---------------------------------------------------------------------------
+# Burst footprint reference layer
+# ---------------------------------------------------------------------------
+
+def test_bursts_endpoint_returns_geojson_footprints(client):
+    pytest.importorskip("geopandas")
+    r = client.get("/api/bursts", params={"tiles": TILE})
+    assert r.status_code == 200
+    gj = r.json()
+    assert gj["type"] == "FeatureCollection"
+    assert len(gj["features"]) > 0
+    ids = set()
+    for f in gj["features"]:
+        p = f["properties"]
+        assert p["jpl_burst_id"].startswith("T")
+        assert isinstance(p["track"], int) and 1 <= p["track"] <= 175
+        assert f["geometry"]["type"] in ("Polygon", "MultiPolygon")
+        ids.add(p["jpl_burst_id"])
+    assert len(ids) == len(gj["features"]), "bursts must be deduplicated"
+
+    # Second request hits the in-memory cache (same payload, no re-read).
+    assert client.get("/api/bursts", params={"tiles": TILE}).json() == gj
+
+
+def test_bursts_requires_tiles_param(client):
+    assert client.get("/api/bursts", params={"tiles": " , "}).status_code == 400
+    assert client.get("/api/bursts").status_code == 422  # missing query param
+
+
+# ---------------------------------------------------------------------------
 # Job-type wiring (datacube processing panel)
 # ---------------------------------------------------------------------------
 

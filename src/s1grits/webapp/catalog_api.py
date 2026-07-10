@@ -67,6 +67,36 @@ def _bounds_to_wgs84(crs: str, transform6: list, width: int, height: int):
         return None
 
 
+def _outline_to_wgs84(crs: str, transform6: list, width: int, height: int,
+                      pts_per_edge: int = 4):
+    """True WGS84 outline of a projected grid, as [[lat, lng], ...].
+
+    A UTM grid's footprint is NOT an axis-aligned lat/lon rectangle — it is a
+    rotated, keystoned quadrilateral once reprojected. Drawing the 4326
+    *bbox* (``_bounds_to_wgs84``) therefore looks warped against the basemap
+    and against true burst footprints. This walks the grid perimeter
+    (``pts_per_edge`` points per edge, so curvature shows) and reprojects
+    each vertex, giving Leaflet a polygon that sits exactly on the ground.
+    """
+    try:
+        from affine import Affine
+        from rasterio.warp import transform as warp_transform
+        t = Affine(*[float(v) for v in transform6[:6]])
+        wpx, hpx = int(width), int(height)
+        # Perimeter in pixel space, counter-clockwise from (0, 0).
+        edge = [i / pts_per_edge for i in range(pts_per_edge)]
+        per = ([(c * wpx, 0) for c in edge]
+               + [(wpx, r * hpx) for r in edge]
+               + [((1 - c) * wpx, hpx) for c in edge]
+               + [(0, (1 - r) * hpx) for r in edge])
+        xs, ys = zip(*[t * (c, r) for c, r in per])
+        lons, lats = warp_transform(crs, "EPSG:4326", list(xs), list(ys))
+        return [[round(la, 6), round(lo, 6)] for la, lo in zip(lats, lons)]
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("outline_to_wgs84 failed (%s): %s", crs, exc)
+        return None
+
+
 class Workspace:
     """Cached, read-only access to one s1grits output directory."""
 
@@ -108,22 +138,31 @@ class Workspace:
         df = df.copy()
         if "tile_id" not in df.columns:
             df["tile_id"] = tile_id
-        # WGS84 bounds, computed once per unique grid (not per row).
+        # WGS84 bounds + true outline, computed once per unique grid (not per
+        # row). bounds4326 stays for fitBounds/point-in-box tests; outline4326
+        # is the reprojected perimeter polygon for distortion-free rendering.
         df["bounds4326"] = None
+        df["outline4326"] = None
         if {"crs", "transform", "width", "height"}.issubset(df.columns):
-            keys: dict[tuple, list | None] = {}
-            bounds_col = []
+            keys: dict[tuple, tuple] = {}
+            bounds_col, outline_col = [], []
             for crs, tfm, w, h in zip(df["crs"], df["transform"], df["width"], df["height"]):
                 try:
                     key = (str(crs), tuple(float(v) for v in list(tfm)[:6]),
                            int(w), int(h))
                 except (TypeError, ValueError):
                     bounds_col.append(None)
+                    outline_col.append(None)
                     continue
                 if key not in keys:
-                    keys[key] = _bounds_to_wgs84(key[0], list(key[1]), key[2], key[3])
-                bounds_col.append(keys[key])
+                    keys[key] = (
+                        _bounds_to_wgs84(key[0], list(key[1]), key[2], key[3]),
+                        _outline_to_wgs84(key[0], list(key[1]), key[2], key[3]),
+                    )
+                bounds_col.append(keys[key][0])
+                outline_col.append(keys[key][1])
             df["bounds4326"] = bounds_col
+            df["outline4326"] = outline_col
         with self._lock:
             self._catalogs[tile_id] = (mtime, df)
         return df
@@ -140,10 +179,13 @@ class Workspace:
             if df is None or df.empty:
                 out.append({"tile_id": tile_id, "n_items": 0})
                 continue
-            bounds = None
-            for b in df["bounds4326"]:
-                if b is not None:
+            bounds = outline = None
+            for b, o in zip(df["bounds4326"], df["outline4326"]):
+                if b is not None and bounds is None:
                     bounds = b
+                if o is not None and outline is None:
+                    outline = o
+                if bounds is not None and outline is not None:
                     break
             months = sorted(
                 {m for m in df.get("month", pd.Series(dtype=object)).dropna()}
@@ -163,6 +205,7 @@ class Workspace:
                 "tile_id": tile_id,
                 "n_items": int(len(df)),
                 "bounds4326": bounds,
+                "outline4326": outline,
                 "product_types": sorted(df["product_type"].dropna().unique().tolist())
                 if "product_type" in df.columns else [],
                 "directions": sorted(df["flight_direction"].dropna().unique().tolist())
@@ -223,8 +266,79 @@ class Workspace:
         for _, row in page.iterrows():
             rec = {c: _to_jsonable(row[c]) for c in _ITEM_COLUMNS if c in page.columns}
             rec["bounds4326"] = row.get("bounds4326")
+            rec["outline4326"] = row.get("outline4326")
             items.append(rec)
         return {"total": total, "items": items, "months": months}
+
+    # ------------------------------------------------------------------
+    # Coverage matrix (tiles x months) + burst footprints
+    # ------------------------------------------------------------------
+
+    def coverage(self) -> dict:
+        """Per-tile month histogram linking spatial tiles to their temporal
+        coverage — drives the tiles×months matrix (and gap detection: a month
+        inside a tile's own [first, last] span with count 0 is a gap)."""
+        tiles = []
+        all_months: set[str] = set()
+        for tile_id in self.tile_ids():
+            df = self._load_tile_catalog(tile_id)
+            if df is None or df.empty or "month" not in df.columns:
+                tiles.append({"tile_id": tile_id, "months": {}})
+                continue
+            counts = df["month"].dropna().value_counts().sort_index()
+            months = {str(k): int(v) for k, v in counts.items()}
+            all_months.update(months)
+            tiles.append({"tile_id": tile_id, "months": months})
+        return {"tiles": tiles, "months_all": sorted(all_months)}
+
+    def bursts(self, tile_ids: list[str], max_tiles: int = 20) -> dict:
+        """Raw OPERA burst footprints overlapping the given MGRS tiles, as a
+        GeoJSON FeatureCollection (EPSG:4326, from the packaged burst LUT).
+        Static reference data — cached per tile set."""
+        from shapely.geometry import mapping
+        from s1grits.mgrs_burst_data import (
+            get_burst_ids_in_mgrs_tiles, get_burst_table,
+        )
+        tile_ids = sorted(set(tile_ids))[:max_tiles]
+        cache_key = tuple(tile_ids)
+        with self._lock:
+            if not hasattr(self, "_burst_cache"):
+                self._burst_cache: dict = {}
+            hit = self._burst_cache.get(cache_key)
+        if hit is not None:
+            return hit
+        features = []
+        for tile in tile_ids:
+            try:
+                bids = get_burst_ids_in_mgrs_tiles([tile])
+                bt = get_burst_table(bids)
+            except Exception as exc:
+                logger.debug("burst lookup failed for %s: %s", tile, exc)
+                continue
+            for bid, geom in zip(bt["jpl_burst_id"], bt.geometry):
+                track = None
+                try:
+                    track = int(str(bid)[1:4])  # 'T018-...' -> 18
+                except (ValueError, IndexError):
+                    pass
+                features.append({
+                    "type": "Feature",
+                    "geometry": mapping(geom),
+                    "properties": {"jpl_burst_id": str(bid), "track": track,
+                                   "tile_id": tile},
+                })
+        # Dedup bursts shared by adjacent tiles (same id -> same footprint).
+        seen: set[str] = set()
+        unique = []
+        for f in features:
+            bid = f["properties"]["jpl_burst_id"]
+            if bid not in seen:
+                seen.add(bid)
+                unique.append(f)
+        result = {"type": "FeatureCollection", "features": unique}
+        with self._lock:
+            self._burst_cache[cache_key] = result
+        return result
 
     # ------------------------------------------------------------------
     # Zarr point probe
