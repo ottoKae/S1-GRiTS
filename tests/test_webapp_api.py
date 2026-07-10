@@ -405,6 +405,37 @@ def test_coverage_links_tiles_to_months(client):
     assert t["months"] == {"2026-01": 1, "2026-02": 1}
 
 
+def test_temporal_extent_uses_zarr_time_axis_not_only_catalog(workspace):
+    """Months written to the store WITHOUT catalog rows must still appear.
+
+    The catalog is derived metadata and can lag the datacube (interrupted
+    runs, months processed before their records) — reading only catalog rows
+    truncated the coverage matrix and the tile month range even though the
+    Zarr held the full archive. The store's time axis is the ground truth."""
+    import zarr as _zarr
+    zrel = ("smonthly_ASCENDING/zarr/"
+            f"s1grits_smonthly_{TILE}_ASCENDING_TK18.zarr")
+    g = _zarr.open_group(str(workspace / TILE / zrel), mode="a", zarr_format=3)
+    dt = np.datetime64(pd.Timestamp("2017-05-15").to_datetime64(), "ns")
+    _append_zarr_timestep(g, dt, [
+        ("VV_dB", np.full((H, W), -9.0, np.float32)),
+        ("VH_dB", np.full((H, W), -15.0, np.float32)),
+        (N_OBS_BAND, np.full((H, W), 2, np.uint8)),
+    ])
+
+    client = TestClient(create_app(workspace, job_cmd_prefix=_stub_cli()))
+    cov = client.get("/api/coverage").json()
+    t = cov["tiles"][0]
+    assert t["months"].get("2017-05") == 1        # zarr-only month renders
+    assert t["n_uncataloged_months"] == 1         # ...and is flagged for resync
+    assert cov["months_all"][0] == "2017-05"
+    assert t["months"]["2026-01"] == 1            # catalog counts unchanged
+
+    tiles = client.get("/api/tiles").json()
+    assert tiles[0]["month_min"] == "2017-05"     # sidebar range = full extent
+    assert tiles[0]["month_max"] == "2026-02"
+
+
 def test_coverage_shows_hole_in_a_tiles_span(workspace):
     """A month missing between first and last is visible as a 0-count column
     (the UI paints it red and 'Patch coverage gaps' turns it into a run)."""

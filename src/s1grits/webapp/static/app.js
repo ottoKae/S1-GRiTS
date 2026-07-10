@@ -463,9 +463,16 @@ function drawCoverage() {
   });
   ctx.textAlign = "left";
   ctx.textBaseline = "alphabetic";
-  $("coverage-caption").textContent = nGaps
+  let caption = nGaps
     ? `${nGaps} gap month(s) detected — use “Patch coverage gaps” to queue a fill run`
     : `${axis[0]} → ${axis[axis.length - 1]} · no temporal gaps inside any tile's span`;
+  // Months found on the stores' time axes but absent from catalog rows are
+  // rendered (the Zarr is ground truth) — but the catalog should be healed.
+  const stale = tiles.reduce((a, t) => a + (t.n_uncataloged_months || 0), 0);
+  if (stale) {
+    caption += ` · ${stale} month(s) exist in Zarr but not in the catalog — run a “Catalog resync” job to index them`;
+  }
+  $("coverage-caption").textContent = caption;
   canvas._grid = { axis, tiles, rowH, headH, cellW };
 
   // First render of a new range: jump to the most recent months.
