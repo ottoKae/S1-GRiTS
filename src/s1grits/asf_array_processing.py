@@ -286,6 +286,64 @@ def despeckle_2d(
     raise ValueError(f"Unknown despeckle method: {method!r}. Choose 'tv_bregman' or 'nlm'.")
 
 
+# Default NaN margin (pixels) around the valid footprint for windowed
+# despeckle. tests/test_despeckle_window_equivalence.py measures convergence:
+# at reg_param=5 a 48 px margin is fully converged (<=1e-6 vs full-frame);
+# 64 adds headroom for stronger smoothing. Margin requirements grow with
+# reg_param — raise processing.despeckle.window_margin accordingly.
+DESPECKLE_WINDOW_MARGIN_PX: int = 64
+
+
+def despeckle_2d_windowed(
+    img_lin,
+    method: str = "tv_bregman",
+    tv_kwargs: dict = None,
+    nlm_kwargs: dict = None,
+    margin: int = DESPECKLE_WINDOW_MARGIN_PX,
+    **despeckle_kw,
+):
+    """Despeckle on the valid-footprint bounding box + NaN margin.
+
+    TV-Bregman/NLM are globally coupled solvers, so they cannot be
+    block-tiled exactly — but the repo's window-equivalence contract
+    (tests/test_despeckle_window_equivalence.py) establishes that filtering
+    on the valid bbox plus a sufficient NaN margin reproduces the full-frame
+    result within the footprint (converged float32 equality). This bounds
+    the filter's working set to O(footprint + margin) instead of O(grid):
+    a single-swath acquisition on a burst-union master grid typically uses
+    30-60% of the frame, cutting the largest per-acquisition transient by
+    the same factor (docs/scenes_blockwise_architecture.md, Phase 1).
+
+    Returns a full-frame float32 array: filtered values inside the window,
+    NaN outside (which is exactly where the input had no valid data).
+    """
+    if img_lin is None:
+        return None
+    finite = np.isfinite(img_lin)
+    if not finite.any():
+        # Nothing to filter; preserve the all-NaN frame.
+        return np.asarray(img_lin, dtype=np.float32).copy()
+    h, w = img_lin.shape
+    rows = np.flatnonzero(finite.any(axis=1))
+    cols = np.flatnonzero(finite.any(axis=0))
+    m = max(0, int(margin))
+    y0, y1 = max(0, rows[0] - m), min(h, rows[-1] + 1 + m)
+    x0, x1 = max(0, cols[0] - m), min(w, cols[-1] + 1 + m)
+
+    if (y1 - y0) * (x1 - x0) >= 0.95 * h * w:
+        # Window is essentially the whole frame: filtering the full array
+        # directly avoids an extra crop/re-embed copy pair.
+        return despeckle_2d(img_lin, method=method, tv_kwargs=tv_kwargs,
+                            nlm_kwargs=nlm_kwargs, **despeckle_kw)
+
+    out = np.full((h, w), np.nan, dtype=np.float32)
+    out[y0:y1, x0:x1] = despeckle_2d(
+        img_lin[y0:y1, x0:x1], method=method,
+        tv_kwargs=tv_kwargs, nlm_kwargs=nlm_kwargs, **despeckle_kw,
+    )
+    return out
+
+
 # =========================================================
 #  Part 3: GLCM Texture Feature Computation
 # =========================================================
