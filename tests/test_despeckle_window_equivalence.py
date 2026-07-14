@@ -97,3 +97,57 @@ def test_error_decreases_monotonically_with_margin():
     for a, b in zip(errs, errs[1:]):
         assert b <= a + 1e-6, f"margin error not monotonic: {errs}"
     assert errs[-1] < 1e-5, f"largest margin did not converge: {errs}"
+
+
+# ---------------------------------------------------------------------------
+# despeckle_2d_windowed — the Phase-1 implementation of this contract
+# (docs/scenes_blockwise_architecture.md)
+# ---------------------------------------------------------------------------
+
+def test_windowed_impl_matches_full_frame_within_footprint():
+    full, _ = _make_acquisition()
+    ref = _despeckle(full)
+    got = ap.despeckle_2d_windowed(
+        full, method="tv_bregman", tv_kwargs={"reg_param": 5.0}, margin=48
+    )
+    m = np.isfinite(full)
+    assert np.allclose(ref[m], got[m], atol=1e-6)
+    # Outside the footprint the input had no data: output must be NaN there,
+    # exactly like the full-frame path (mask restored).
+    np.testing.assert_array_equal(np.isnan(ref), np.isnan(got))
+
+
+def test_windowed_impl_footprint_touching_edges():
+    """Footprint reaching the array border: window clamps, still equivalent.
+
+    Uses the shipped default margin (64), which is measured EXACTLY
+    converged for this geometry (48 is not — margin needs grow with
+    footprint size, which is why the default carries headroom).
+    """
+    full, _ = _make_acquisition(h=250, w=250, vy=(0, 120), vx=(140, 250))
+    ref = _despeckle(full)
+    got = ap.despeckle_2d_windowed(
+        full, method="tv_bregman", tv_kwargs={"reg_param": 5.0},
+        margin=ap.DESPECKLE_WINDOW_MARGIN_PX,
+    )
+    m = np.isfinite(full)
+    np.testing.assert_array_equal(ref[m], got[m])
+
+
+def test_windowed_impl_near_full_frame_uses_direct_path():
+    """Valid data everywhere -> the shortcut must return the exact
+    full-frame result (same call, no crop/re-embed)."""
+    rng = np.random.default_rng(3)
+    full = (10 ** ((rng.random((80, 90)) * 20 - 15) / 10)).astype(np.float32)
+    ref = _despeckle(full)
+    got = ap.despeckle_2d_windowed(
+        full, method="tv_bregman", tv_kwargs={"reg_param": 5.0}
+    )
+    np.testing.assert_array_equal(ref, got)
+
+
+def test_windowed_impl_all_nan_and_none():
+    assert ap.despeckle_2d_windowed(None) is None
+    empty = np.full((30, 30), np.nan, dtype=np.float32)
+    out = ap.despeckle_2d_windowed(empty)
+    assert out.shape == empty.shape and np.isnan(out).all()

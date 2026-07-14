@@ -328,6 +328,15 @@ processing:
     # tests); costs one extra acquisition's arrays in RAM. Disable if memory
     # is tighter than wall-clock.
     pipeline: true
+    # Bounded-memory footprint window (blockwise migration Phase 1, see
+    # docs/scenes_blockwise_architecture.md): the filter runs on the valid-
+    # footprint bounding box + a NaN margin instead of the full burst-union
+    # grid — O(footprint) memory, output-equivalent within the footprint
+    # (window-equivalence contract in tests). Set window: false for
+    # byte-strict full-frame filtering. The margin must grow with reg_param;
+    # 64 px is converged with ample headroom at the default reg_param 5.
+    window: true
+    window_margin: 64
 
   # NOTE: on_time_conflict lives under `output:`, not here. A processing-level
   # on_time_conflict key is ignored by the code (the workflow warns if found).

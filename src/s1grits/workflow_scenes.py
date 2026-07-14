@@ -2295,6 +2295,8 @@ def _write_scenes_output(
     despeckle_method: str = "tv_bregman",
     despeckle_kwargs: dict | None = None,
     despeckle_pipeline: bool = True,
+    despeckle_window: bool = True,
+    despeckle_window_margin: int = 64,
     group_mode: str = "acq_group",  # always acq_group; kept for call-site compat
     require_complete_bursts: bool = False,
     track_footprint: dict | None = None,
@@ -2433,13 +2435,27 @@ def _write_scenes_output(
         )
         _vv_d = _vh_d = None
         if do_despeckle and _vv is not None and _vh is not None:
-            from s1grits.asf_array_processing import despeckle_2d
+            from s1grits.asf_array_processing import (
+                despeckle_2d, despeckle_2d_windowed,
+            )
             _tv_kw = despeckle_kwargs if despeckle_method == "tv_bregman" else None
             _nlm_kw = despeckle_kwargs if despeckle_method == "nlm" else None
-            _vv_d = despeckle_2d(_vv, method=despeckle_method,
-                                 tv_kwargs=_tv_kw, nlm_kwargs=_nlm_kw)
-            _vh_d = despeckle_2d(_vh, method=despeckle_method,
-                                 tv_kwargs=_tv_kw, nlm_kwargs=_nlm_kw)
+            if despeckle_window:
+                # Bounded-memory footprint window (Phase 1 of the blockwise
+                # migration): O(valid bbox + margin) instead of O(grid);
+                # output-equivalent within the footprint per the window-
+                # equivalence contract.
+                _vv_d = despeckle_2d_windowed(
+                    _vv, method=despeckle_method, tv_kwargs=_tv_kw,
+                    nlm_kwargs=_nlm_kw, margin=despeckle_window_margin)
+                _vh_d = despeckle_2d_windowed(
+                    _vh, method=despeckle_method, tv_kwargs=_tv_kw,
+                    nlm_kwargs=_nlm_kw, margin=despeckle_window_margin)
+            else:
+                _vv_d = despeckle_2d(_vv, method=despeckle_method,
+                                     tv_kwargs=_tv_kw, nlm_kwargs=_nlm_kw)
+                _vh_d = despeckle_2d(_vh, method=despeckle_method,
+                                     tv_kwargs=_tv_kw, nlm_kwargs=_nlm_kw)
         return _idx, _vv, _vh, _vv_d, _vh_d
 
     # Pipeline only pays when despeckle is the bottleneck; it holds ONE extra
@@ -5672,6 +5688,12 @@ def process_single_scenes_tile(
                     despeckle_kwargs=_despeckle_kwargs,
                     despeckle_pipeline=bool(
                         _despeckle_cfg.get('pipeline', True)
+                    ),
+                    despeckle_window=bool(
+                        _despeckle_cfg.get('window', True)
+                    ),
+                    despeckle_window_margin=int(
+                        _despeckle_cfg.get('window_margin', 64)
                     ),
                     group_mode=group_mode,
                     require_complete_bursts=require_complete_bursts,
