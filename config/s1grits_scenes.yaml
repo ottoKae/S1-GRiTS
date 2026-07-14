@@ -310,11 +310,24 @@ processing:
   # COG internal tile block size
   cog_block_size: 512
 
-  # Despeckle algorithm (only used when spatial_despeckle=true)
+  # Despeckle algorithm (only used when spatial_despeckle=true).
+  # Value fidelity: since v2.3.3 the filter applies NO upper linear clip
+  # (bright scatterers above 0 dB are preserved; the legacy 1.0 cap distorted
+  # them by >7 dB) and pads NaN regions with their nearest valid value before
+  # filtering (the legacy constant -23 dB padding darkened every mosaic edge
+  # by ~2 dB). Both fixes change despeckled outputs vs older releases; the
+  # legacy padding remains available via despeckle_2d(nan_pad_mode=
+  # 'noise_floor') for reproducing historical products.
   despeckle:
     method: "tv_bregman"
     kwargs:
       reg_param: 5.0
+    # One-slot despeckle pipeline: acquisition N+1 is mosaicked+despeckled on
+    # a background thread while N's bands are derived and written. Output is
+    # bit-identical to the serial path (same code, same order — locked by
+    # tests); costs one extra acquisition's arrays in RAM. Disable if memory
+    # is tighter than wall-clock.
+    pipeline: true
 
   # NOTE: on_time_conflict lives under `output:`, not here. A processing-level
   # on_time_conflict key is ignored by the code (the workflow warns if found).

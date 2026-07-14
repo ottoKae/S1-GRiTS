@@ -2294,6 +2294,7 @@ def _write_scenes_output(
     do_despeckle: bool = False,
     despeckle_method: str = "tv_bregman",
     despeckle_kwargs: dict | None = None,
+    despeckle_pipeline: bool = True,
     group_mode: str = "acq_group",  # always acq_group; kept for call-site compat
     require_complete_bursts: bool = False,
     track_footprint: dict | None = None,
@@ -2403,17 +2404,60 @@ def _write_scenes_output(
     _acq_iter = sorted(_acq_group_to_rows.items(), key=lambda kv: min(pd.Timestamp(r['acq_dt']).tz_convert('UTC') for r in kv[1]))
     _n_acq = len(_acq_iter)
 
-    for _acq_i, ((_pass_id_key, _acq_grp_key), rows) in enumerate(_acq_iter, 1):
+    def _prep_acquisition(_i: int, item) -> tuple:
+        """Mosaic (and despeckle) one acquisition — the CPU-heavy prep.
+
+        Runs on a background thread when the despeckle pipeline is active
+        (one-slot lookahead via _iter_prefetched, mirroring the download
+        prefetch), overlapping acquisition N+1's TV/NLM run with N's band
+        derivation and Zarr/COG writes. The SAME function runs inline when
+        the pipeline is off, so both modes execute identical code on
+        identical inputs in identical order — bit-identical by construction
+        (locked by tests/test_scenes_despeckle_pipeline.py).
+
+        Despeckle is computed here even for acquisitions the interior-hole
+        QC later skips (the skip decision needs the raw mosaic, which is
+        also returned): a wasted filter run on the rare skipped scene, in
+        exchange for hiding the dominant per-scene cost on every kept one.
+        """
+        _rows = item[1]
+        _idx: list[int] = []
+        for _r in _rows:
+            _r_str = pd.Timestamp(_r['acq_dt']).tz_convert('UTC').strftime('%Y%m%dT%H%M%S')
+            _idx.extend(_dt_str_to_clean_idx.get(_r_str, []))
+        _vv = _mosaic_align(
+            _idx, final_vv, prof_vv, height, width, transform, target_crs
+        )
+        _vh = _mosaic_align(
+            _idx, final_vh, prof_vh, height, width, transform, target_crs
+        )
+        _vv_d = _vh_d = None
+        if do_despeckle and _vv is not None and _vh is not None:
+            from s1grits.asf_array_processing import despeckle_2d
+            _tv_kw = despeckle_kwargs if despeckle_method == "tv_bregman" else None
+            _nlm_kw = despeckle_kwargs if despeckle_method == "nlm" else None
+            _vv_d = despeckle_2d(_vv, method=despeckle_method,
+                                 tv_kwargs=_tv_kw, nlm_kwargs=_nlm_kw)
+            _vh_d = despeckle_2d(_vh, method=despeckle_method,
+                                 tv_kwargs=_tv_kw, nlm_kwargs=_nlm_kw)
+        return _idx, _vv, _vh, _vv_d, _vh_d
+
+    # Pipeline only pays when despeckle is the bottleneck; it holds ONE extra
+    # acquisition's arrays resident (raw + despeckled VV/VH of item N+1).
+    _use_pipeline = bool(do_despeckle and despeckle_pipeline and _n_acq > 1)
+    if _use_pipeline:
+        logger.info(
+            "[Pipeline] Despeckle pipeline active: acquisition N+1 is "
+            "mosaicked+despeckled on a background thread while N is written."
+        )
+
+    for _acq_i, _prep in _iter_prefetched(_acq_iter, _prep_acquisition, _use_pipeline):
+        (_pass_id_key, _acq_grp_key), rows = _acq_iter[_acq_i - 1]
+        indices, arr_vv_lin, arr_vh_lin, _vv_despeckled, _vh_despeckled = _prep
         _rep_ts = min(pd.Timestamp(r['acq_dt']).tz_convert('UTC') for r in rows)
         acq_ts = _rep_ts
         dt_str = acq_ts.strftime('%Y%m%dT%H%M%S')
         _date_label = acq_ts.strftime('%Y-%m-%d')
-
-        # Collect clean_dates indices for this group's bursts
-        indices = []
-        for r in rows:
-            _r_str = pd.Timestamp(r['acq_dt']).tz_convert('UTC').strftime('%Y%m%dT%H%M%S')
-            indices.extend(_dt_str_to_clean_idx.get(_r_str, []))
 
         # Per-group Zarr path. Store identity keys on the track ONLY: n_bursts
         # here is len(rows) for THIS acquisition, so it varies date-to-date
@@ -2455,14 +2499,9 @@ def _write_scenes_output(
         track_number  = int(rows[0]['track_number']) if rows else -1
         pass_id       = int(rows[0]['pass_id'])       if rows else -1
 
-        # Mosaic all bursts from this acquisition onto master grid
-        arr_vv_lin = _mosaic_align(
-            indices, final_vv, prof_vv, height, width, transform, target_crs
-        )
-        arr_vh_lin = _mosaic_align(
-            indices, final_vh, prof_vh, height, width, transform, target_crs
-        )
-
+        # Mosaics come from _prep_acquisition (possibly prefetched); the
+        # interior-gap check below MUST see the raw mosaic, so the despeckled
+        # arrays are swapped in only after the skip decision.
         if arr_vv_lin is None or arr_vh_lin is None:
             logger.warning("Scene %s mosaic returned None, skipping", dt_str)
             continue
@@ -2540,13 +2579,10 @@ def _write_scenes_output(
         # the smonthly monthly composite is built from raw scenes and is never
         # despeckled (see the gate in the batch loop and config docs).
         if do_despeckle:
-            from s1grits.asf_array_processing import despeckle_2d
-            _tv_kw = despeckle_kwargs if despeckle_method == "tv_bregman" else None
-            _nlm_kw = despeckle_kwargs if despeckle_method == "nlm" else None
-            arr_vv_lin = despeckle_2d(arr_vv_lin, method=despeckle_method,
-                                      tv_kwargs=_tv_kw, nlm_kwargs=_nlm_kw)
-            arr_vh_lin = despeckle_2d(arr_vh_lin, method=despeckle_method,
-                                      tv_kwargs=_tv_kw, nlm_kwargs=_nlm_kw)
+            # Computed in _prep_acquisition (identical inputs/params to the
+            # historical inline call; possibly on the pipeline thread).
+            arr_vv_lin = _vv_despeckled
+            arr_vh_lin = _vh_despeckled
 
         arr_vv_db = _linear_to_db(arr_vv_lin)
         arr_vh_db = _linear_to_db(arr_vh_lin)
@@ -5634,6 +5670,9 @@ def process_single_scenes_tile(
                     do_despeckle=do_despeckle,
                     despeckle_method=_despeckle_method,
                     despeckle_kwargs=_despeckle_kwargs,
+                    despeckle_pipeline=bool(
+                        _despeckle_cfg.get('pipeline', True)
+                    ),
                     group_mode=group_mode,
                     require_complete_bursts=require_complete_bursts,
                     track_footprint=_track_footprint,
