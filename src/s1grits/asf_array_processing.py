@@ -69,22 +69,54 @@ def interpolate_arr(arr: np.ndarray, method: str = 'nearest', preserve_exterior:
 #  Part 2: Despeckle (TV-Bregman + NLM)
 # =========================================================
 
+def _nan_pad_nearest_db(X_db: np.ndarray, nodata_mask: np.ndarray,
+                        fallback_db: float) -> np.ndarray:
+    """Fill NaN pixels with their nearest valid dB value (edge replicate).
+
+    Padding with a CONSTANT floor (the legacy -23 dB behaviour) creates an
+    artificial step at every valid/NaN boundary; TV smoothing bleeds that
+    step into the valid pixels, darkening every mosaic edge and burst-hole
+    rim by 1-2 dB. Nearest-valid padding continues the local signal instead,
+    so the filter sees no fabricated gradient and the restored-mask output
+    has no edge bias. All-NaN inputs fall back to the constant.
+    """
+    if not nodata_mask.any():
+        return X_db
+    if nodata_mask.all():
+        out = X_db.copy()
+        out[:] = fallback_db
+        return out
+    indices = distance_transform_edt(
+        nodata_mask, return_distances=False, return_indices=True
+    )
+    return X_db[tuple(indices)]
+
+
 def _despeckle_tv_bregman_linear(
     X: np.ndarray,
     reg_param: float = 5.0,
-    max_valid_value: float = 1.0,
+    max_valid_value: float = None,
     min_valid_value: float = 1e-7,
     interp_method: str = 'none',
     preserve_exterior_mask: bool = True,
-    noise_floor_db: float = -23.0
+    noise_floor_db: float = -23.0,
+    nan_pad_mode: str = 'nearest',
 ) -> np.ndarray:
     """
-    TV Denoising with Soft Padding (-23dB) and Interior-Only Interpolation.
+    TV denoising in the dB domain with nearest-valid NaN padding.
+
+    ``max_valid_value=None`` (default) applies NO upper clip: RTC gamma0
+    over bright scatterers legitimately exceeds 1.0 linear (0 dB), and the
+    legacy 1.0 cap flattened such targets to 0 dB before TV dragged them
+    further down (observed >7 dB error on urban blocks). The lower clip
+    remains as the log-domain guard. ``nan_pad_mode='noise_floor'`` restores
+    the legacy constant padding for reproducing historical products.
     """
     if X is None:
         return None
 
-    # 1. Clip to safe linear range
+    # 1. Clip to safe linear range (lower bound guards log10; upper bound
+    #    is opt-in only — see docstring).
     X_c = np.clip(X, min_valid_value, max_valid_value)
 
     # 2. Interpolate small holes (crucial for TV stability)
@@ -97,9 +129,13 @@ def _despeckle_tv_bregman_linear(
     X_db = np.log10(X_c, where=~nodata_mask, out=np.empty_like(X_c)) * DB_SCALE_FACTOR
     X_db[nodata_mask] = np.nan
 
-    # 4. Soft Padding (-23dB): fill remaining NaNs with noise floor for smooth TV gradients
+    # 4. NaN padding for smooth TV gradients: nearest-valid (no edge bias)
+    #    or the legacy constant noise floor.
     if nodata_mask.any():
-        X_db[nodata_mask] = noise_floor_db
+        if nan_pad_mode == 'nearest':
+            X_db = _nan_pad_nearest_db(X_db, nodata_mask, noise_floor_db)
+        else:
+            X_db[nodata_mask] = noise_floor_db
 
     # 5. TV Denoising
     weight = 1.0 / float(reg_param)
@@ -119,11 +155,12 @@ def _despeckle_nlm_linear(
     patch_size: int = 3,
     patch_distance: int = 7,
     h: float = None,
-    max_valid_value: float = 1.0,
+    max_valid_value: float = None,
     min_valid_value: float = 1e-7,
     interp_method: str = 'none',
     preserve_exterior_mask: bool = True,
     noise_floor_db: float = -23.0,
+    nan_pad_mode: str = 'nearest',
 ) -> np.ndarray:
     """
     Non-Local Means denoising in dB domain with soft NaN padding.
@@ -161,9 +198,13 @@ def _despeckle_nlm_linear(
     X_db = np.log10(X_c, where=~nodata_mask, out=np.empty_like(X_c)) * DB_SCALE_FACTOR
     X_db[nodata_mask] = np.nan
 
-    # 4. Soft padding: fill NaN with noise floor so NLM patch search is stable
+    # 4. NaN padding so the NLM patch search is stable: nearest-valid (no
+    #    edge bias) or the legacy constant noise floor.
     if nodata_mask.any():
-        X_db[nodata_mask] = noise_floor_db
+        if nan_pad_mode == 'nearest':
+            X_db = _nan_pad_nearest_db(X_db, nodata_mask, noise_floor_db)
+        else:
+            X_db[nodata_mask] = noise_floor_db
 
     # 5. NLM denoising
     # h=None/'adaptive' → use sigma_est directly (neutral, data-driven default).
@@ -193,12 +234,13 @@ def despeckle_2d(
     method: str = "tv_bregman",
     tv_kwargs: dict = None,
     nlm_kwargs: dict = None,
-    max_valid_value: float = 1.0,
+    max_valid_value: float = None,
     min_valid_value: float = 1e-7,
     min_valid_lin: float = None,
     interp_method: str = 'none',
     preserve_exterior_mask: bool = True,
     noise_floor_db: float = -23.0,
+    nan_pad_mode: str = 'nearest',
 ):
     """Apply 2D despeckle to a linear-domain image array.
 
@@ -209,12 +251,17 @@ def despeckle_2d(
         nlm_kwargs: NLM options, e.g. {'patch_size': 3, 'patch_distance': 7, 'h': None}.
             h=None means adaptive (sigma_est from estimate_sigma); pass a float to
             override as a multiplier on sigma_est.
-        max_valid_value: Upper clip threshold in linear scale.
-        min_valid_value: Lower clip threshold in linear scale.
+        max_valid_value: Upper clip threshold in linear scale. None (default)
+            applies no upper clip — bright scatterers legitimately exceed
+            1.0 linear, and the legacy 1.0 cap distorted them by >7 dB.
+        min_valid_value: Lower clip threshold in linear scale (log10 guard).
         min_valid_lin: Deprecated alias for min_valid_value.
         interp_method: NaN interpolation method passed to interpolate_arr.
         preserve_exterior_mask: Whether to preserve boundary NaN regions.
-        noise_floor_db: Soft-padding value (dB) used to fill NaN during denoising.
+        noise_floor_db: Constant used for 'noise_floor' padding and as the
+            all-NaN fallback for 'nearest' padding.
+        nan_pad_mode: 'nearest' (default; pad NaNs with nearest valid dB —
+            no edge bias) or 'noise_floor' (legacy constant padding).
 
     Returns:
         Despeckled float32 array, or None if img_lin is None.
@@ -230,6 +277,7 @@ def despeckle_2d(
         interp_method=interp_method,
         preserve_exterior_mask=preserve_exterior_mask,
         noise_floor_db=noise_floor_db,
+        nan_pad_mode=nan_pad_mode,
     )
     if method == "tv_bregman":
         return _despeckle_tv_bregman_linear(img_lin, **(tv_kwargs or {}), **_common)
@@ -388,10 +436,26 @@ def _glcm_metrics_one_angle(
     # --- Entropy: requires O(levels^2) loop ---
     if need_ent:
         acc_clogc = np.zeros((h, w), dtype=np.float64)
+        # Zero-pair skipping (bit-identical): a level pair that never
+        # co-occurs in this array has an all-zero mask, so its filter2D
+        # produces cnt==0 everywhere and the `nz` gate contributes exactly
+        # nothing to acc_clogc — skipping the pass changes no output bit.
+        # Quantized SAR blocks rarely use all levels^2 pairs, and the
+        # filter2D pass (not the mask test) is the dominant cost, so the
+        # cheap presence pre-checks below remove most of the 256 passes.
+        present_i = set(np.unique(q_arr).tolist())
+        present_j = set(np.unique(q_shifted).tolist())
         for i in range(levels):
+            if i not in present_i:
+                continue
             row_i = (q_arr == i)
             for j in range(levels):
-                mask = (row_i & (q_shifted == j)).astype(np.float32)
+                if j not in present_j:
+                    continue
+                mask_b = row_i & (q_shifted == j)
+                if not mask_b.any():
+                    continue
+                mask = mask_b.astype(np.float32)
                 cnt  = cv2.filter2D(mask, -1, kernel,
                                     borderType=cv2.BORDER_REPLICATE).astype(np.float64)
                 nz = cnt > 0
