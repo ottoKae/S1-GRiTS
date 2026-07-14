@@ -291,6 +291,11 @@ def read_one_asf(url: str, retry_timeout_seconds: float = 600.0):
                 with memfile.open() as ds:
                     arr = ds.read(1).astype(np.float32)
                     prof = ds.profile
+        # Phase 3 (opt-in, memory.batch_spill): hand back a read-only
+        # file-backed memmap instead of anonymous RAM — byte-identical
+        # values, reclaimable pages, windowed reads for the block path.
+        from s1grits import batch_spill
+        arr = batch_spill.maybe_spill(arr)
         return arr, prof, None
     except FileNotFoundError as e:
         logging.warning("NOT FOUND [%s]: %s", fname, e)
