@@ -238,6 +238,17 @@ memory:
   # feeds several tiles; not useful for a single one-shot tile. Point it at fast
   # local storage with room for the working set of bursts.
   burst_cache_dir: null
+  # Phase 3 of the bounded-memory migration (docs/scenes_blockwise_
+  # architecture.md): spill each batch's decoded burst arrays to per-process
+  # .npy files and use read-only memmaps instead of anonymous RAM. Values are
+  # byte-identical; the batch's dominant memory term (5-15 GB) becomes
+  # file-backed and reclaimable (evicted under pressure instead of OOM-
+  # killing), and blockwise readers fault in only the pages their window
+  # touches. Needs ~one batch of disk in spill_dir (default
+  # {output.base_dir}/.spill — point it at fast local scratch); files are
+  # reclaimed every batch. Recommended on for large-archive runs.
+  batch_spill: false
+  spill_dir: null
   clear_cache_per_batch: true
   batch_max_retries: 2
   scene_max_retries: 3

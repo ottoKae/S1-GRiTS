@@ -71,6 +71,8 @@ KNOWN_KEYS: dict = {
         "batch_strategy": None,
         "max_download_workers": None,
         "download_prefetch": None,
+        "batch_spill": None,
+        "spill_dir": None,
         "burst_cache_dir": None,
         "clear_cache_per_batch": None,
         "batch_max_retries": None,

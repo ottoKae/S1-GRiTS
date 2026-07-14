@@ -4834,6 +4834,19 @@ def process_single_scenes_tile(
     from s1grits import burst_cache
     burst_cache.configure(config.get('memory', {}).get('burst_cache_dir'))
 
+    # Phase 3 (opt-in, memory.batch_spill): decoded batch bursts spill to
+    # per-process .npy files and come back as read-only memmaps — the batch's
+    # dominant memory term becomes file-backed/reclaimable instead of
+    # anonymous RSS (docs/scenes_blockwise_architecture.md, S1/Phase 3).
+    from s1grits import batch_spill
+    if bool(config.get('memory', {}).get('batch_spill', False)):
+        _spill_root = config.get('memory', {}).get('spill_dir') or (
+            Path(output_root) / '.spill'
+        )
+        batch_spill.configure(_spill_root)
+    else:
+        batch_spill.configure(None)
+
     _console = Console(legacy_windows=True, no_color=False, quiet=quiet)
     _console.print(f"\n[bold cyan]Tile: {mgrs_tile_id}[/bold cyan]")
 
@@ -5837,6 +5850,12 @@ def process_single_scenes_tile(
             if _clear_cache:
                 del final_vv, final_vh, df_batch, df_input
                 gc.collect()
+                # References dropped above: reclaim this batch's spill files
+                # so disk stays bounded at ~one batch (+ prefetch slot). With
+                # download prefetch, batch N+1's files are already spilled and
+                # still referenced — POSIX unlink keeps them readable through
+                # their live memmaps and frees the space when those close.
+                batch_spill.cleanup_batch()
 
         # Write a per-tile processing report (coverage-filtered tracks +
         # incomplete acquisitions) to disk. This is the reliable record in
