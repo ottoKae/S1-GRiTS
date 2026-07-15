@@ -34,6 +34,7 @@ import warnings
 import json
 import logging
 import os
+import shutil
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -1895,6 +1896,111 @@ def _get_despeckle_token(config: dict) -> str:
 # COG writer
 # ---------------------------------------------------------------------------
 
+# Working-set budget for a COG strip write: bounds BOTH the NumPy read buffer
+# (all bands of one strip) and GDAL's dirty-tile cache for that strip, so a
+# large multi-band write never exceeds the default 512 MB GDAL_CACHEMAX and the
+# strip shrinks automatically as the band count grows.
+_COG_STRIP_BUDGET_BYTES: int = 256 * 1024 * 1024
+
+
+def _free_disk_bytes(path: Path) -> int:
+    """Free bytes on the volume that will hold ``path`` (nearest existing
+    ancestor), or -1 if it cannot be determined."""
+    p = Path(path)
+    for cand in (p.parent, *p.parents):
+        try:
+            return int(shutil.disk_usage(cand).free)
+        except (OSError, ValueError):
+            continue
+    return -1
+
+
+def _write_multiband_cog_streamed(
+    cog_path: Path,
+    band_reads: list,
+    profile: dict,
+    *,
+    overview_resampling: str = "average",
+) -> None:
+    """Write a tiled, internally-overviewed multi-band COG, ALL bands per strip.
+
+    ``band_reads`` is ``[(name, read(rows: slice) -> 2D float32 strip), ...]``.
+    The image is written in tile-row-aligned horizontal strips, and every band
+    of a strip is written in a single ``dst.write(block, window=...)`` call.
+
+    Why all-bands-per-strip: writing a pixel-interleaved, compressed, tiled
+    GeoTIFF band-by-band fails once the image exceeds the GDAL block cache
+    (``GDAL_CACHEMAX``, 512 MB by default). Finishing band 1 flushes (compresses)
+    its tiles to disk; writing band 2 into the SAME tiles — pixel interleave
+    stores every band of a tile together — forces GDAL to re-access an already
+    flushed compressed block, which raises
+    ``GDALRasterBand::IRasterIO -> An error occurred while writing a dirty
+    block``. Populating every band of a tile before it is ever flushed removes
+    the revisit entirely. A 6608x5620x12 float32 image (~1.8 GB) reproduced this
+    deterministically; the strip form is bounded to
+    ``_COG_STRIP_BUDGET_BYTES`` regardless of band count.
+
+    The file is written atomically (temp + rename). A write failure is
+    re-raised with the band count, dimensions, target path and free disk space,
+    so a genuine out-of-space condition is actionable instead of surfacing as a
+    deep GDAL "dirty block" error.
+    """
+    from s1grits.atomic_write import atomic_path
+    from s1grits.runtime_limits import rasterio_env_kwargs
+
+    h = int(profile["height"]); w = int(profile["width"])
+    nb = len(band_reads)
+    block_y = int(profile.get("blockysize") or profile.get("blockxsize") or 256)
+    block_y = max(1, block_y)
+    # Tile-row-aligned strip sized so all-bands working set <= budget; >= 1 tile
+    # row, <= the image height.
+    rows_budget = max(1, _COG_STRIP_BUDGET_BYTES // max(1, nb * w * 4))
+    strip = max(block_y, (rows_budget // block_y) * block_y)
+    strip = min(strip, h)
+
+    # Preflight: a compressed 12-band float32 tile grid + overviews still needs
+    # real scratch. Warn early (never block on an estimate — deflate ratios vary)
+    # so a near-full volume is visible before the write.
+    _uncompressed = nb * w * h * 4
+    _free = _free_disk_bytes(cog_path)
+    if 0 <= _free < _uncompressed // 3:  # optimistic ~3x deflate lower bound
+        logger.warning(
+            "[COG] Low free disk for %s: %.1f GB free vs ~%.1f GB uncompressed "
+            "(%d bands, %dx%d). deflate usually fits, but overviews + the atomic "
+            "temp copy may not — free space or point output at a larger volume.",
+            cog_path.name, _free / 1e9, _uncompressed / 1e9, nb, w, h,
+        )
+
+    try:
+        with atomic_path(cog_path) as _cog_tmp:
+            with rasterio.Env(**rasterio_env_kwargs()):
+                with rasterio.open(_cog_tmp, "w", **profile) as dst:
+                    for _r0 in range(0, h, strip):
+                        _r1 = min(h, _r0 + strip)
+                        block = np.empty((nb, _r1 - _r0, w), dtype=np.float32)
+                        for _bi, (_name, _read) in enumerate(band_reads):
+                            block[_bi] = _read(slice(_r0, _r1))
+                        dst.write(block, window=Window(0, _r0, w, _r1 - _r0))
+                    for _bi, (_name, _read) in enumerate(band_reads, 1):
+                        dst.set_band_description(_bi, _name)
+
+                    _short = min(w, h)
+                    _factors = [f for f in (2, 4, 8, 16, 32) if _short // f >= 128]
+                    if _factors:
+                        dst.build_overviews(_factors, Resampling[overview_resampling])
+                        dst.update_tags(ns="rio_overview", resampling=overview_resampling)
+    except Exception as exc:
+        _free = _free_disk_bytes(cog_path)
+        _free_str = f"{_free / 1e9:.1f} GB" if _free >= 0 else "unknown"
+        raise RuntimeError(
+            f"COG export failed writing {nb}-band {w}x{h} GeoTIFF to {cog_path} "
+            f"({type(exc).__name__}: {exc}). Free space on the target volume: "
+            f"{_free_str}. The Zarr store is already written, so a re-run with "
+            f"output.existing_month: skip regenerates only the missing COG once "
+            f"space is available (or point output.base_dir at a larger volume)."
+        ) from exc
+
+
 def _write_multiband_cog(
     cog_path: Path,
     bands: list[tuple[str, np.ndarray]],
@@ -1902,36 +2008,22 @@ def _write_multiband_cog(
     *,
     overview_resampling: str = "average",
 ) -> None:
+    """Write a tiled, internally-overviewed multi-band GeoTIFF from in-RAM bands.
+
+    Thin wrapper over :func:`_write_multiband_cog_streamed`: the already-resident
+    band arrays are exposed as row-slice readers, so the same all-bands-per-strip
+    write path is used (robust for large multi-band compressed tiled output; see
+    that function). The STAC items advertise these assets as
+    ``profile=cloud-optimized``; the internal tiling (from ``profile``) plus the
+    overviews written here make that claim accurate.
     """
-    Write a tiled, internally-overviewed multi-band GeoTIFF.
-
-    The STAC items advertise these assets as
-    ``profile=cloud-optimized``; that claim only holds if the file is both
-    internally tiled (already in ``profile``) and carries internal overviews.
-    This helper writes the bands, their descriptions, and a pyramid of
-    decimated overviews so the advertised profile is accurate.
-
-    Overview factors are chosen so the smallest level stays >= 128 px on its
-    shorter side; tiny rasters simply get no overviews.
-
-    The file is written atomically (temp + rename) so an interrupted write never
-    leaves a partial/corrupt COG that the catalog might point at.
-    """
-    from s1grits.atomic_write import atomic_path
-    from s1grits.runtime_limits import rasterio_env_kwargs
-
-    with atomic_path(cog_path) as _cog_tmp:
-        with rasterio.Env(**rasterio_env_kwargs()):
-            with rasterio.open(_cog_tmp, "w", **profile) as dst:
-                for _i, (_name, _arr) in enumerate(bands, 1):
-                    dst.write(_arr, _i)
-                    dst.set_band_description(_i, _name)
-
-                _short = min(int(profile["width"]), int(profile["height"]))
-                _factors = [f for f in (2, 4, 8, 16, 32) if _short // f >= 128]
-                if _factors:
-                    dst.build_overviews(_factors, Resampling[overview_resampling])
-                    dst.update_tags(ns="rio_overview", resampling=overview_resampling)
+    band_reads = [
+        (name, (lambda rows, a=arr: np.asarray(a[rows], dtype=np.float32)))
+        for name, arr in bands
+    ]
+    _write_multiband_cog_streamed(
+        cog_path, band_reads, profile, overview_resampling=overview_resampling
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2525,38 +2617,22 @@ def _write_multiband_cog_windowed(
     band_reads: list,
     profile: dict,
     *,
-    row_strip: int,
+    row_strip: int = 0,
     overview_resampling: str = "average",
 ) -> None:
-    """``_write_multiband_cog`` with windowed band writes.
+    """Stream a multi-band COG from ``band_reads`` (name, row-slice reader).
 
-    ``band_reads`` is ``[(name, read(rows: slice) -> 2D strip), ...]``; each
-    band is streamed in ``row_strip``-row strips (kept a multiple of the COG
-    block size so GTiff tile writes never read-modify-write), bounding memory
-    to one strip instead of ``bands x height x width``. Values, band
-    descriptions, and the overview pyramid match the in-memory writer.
+    Delegates to :func:`_write_multiband_cog_streamed`, which writes ALL bands
+    of each tile-row-aligned strip in one call — the correct order for a
+    pixel-interleaved compressed tiled GeoTIFF (band-sequential writes fail with
+    a GDAL "dirty block" error once the image exceeds GDAL_CACHEMAX; see the
+    streamed writer). ``row_strip`` is accepted for backward compatibility but
+    ignored: the strip height is derived from the tile size and the working-set
+    budget so it is always tile-aligned and memory-bounded.
     """
-    from s1grits.atomic_write import atomic_path
-    from s1grits.runtime_limits import rasterio_env_kwargs
-
-    h = int(profile["height"]); w = int(profile["width"])
-    with atomic_path(cog_path) as _cog_tmp:
-        with rasterio.Env(**rasterio_env_kwargs()):
-            with rasterio.open(_cog_tmp, "w", **profile) as dst:
-                for _i, (_name, _read) in enumerate(band_reads, 1):
-                    for _r0 in range(0, h, int(row_strip)):
-                        _r1 = min(h, _r0 + int(row_strip))
-                        dst.write(
-                            _read(slice(_r0, _r1)), _i,
-                            window=Window(0, _r0, w, _r1 - _r0),
-                        )
-                    dst.set_band_description(_i, _name)
-
-                _short = min(w, h)
-                _factors = [f for f in (2, 4, 8, 16, 32) if _short // f >= 128]
-                if _factors:
-                    dst.build_overviews(_factors, Resampling[overview_resampling])
-                    dst.update_tags(ns="rio_overview", resampling=overview_resampling)
+    _write_multiband_cog_streamed(
+        cog_path, band_reads, profile, overview_resampling=overview_resampling
+    )
 
 
 def _export_scene_cog_preview_from_zarr(
