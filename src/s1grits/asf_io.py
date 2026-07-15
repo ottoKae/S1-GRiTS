@@ -285,12 +285,23 @@ def read_one_asf(url: str, retry_timeout_seconds: float = 600.0):
     """
     fname = url.split("/")[-1]
     try:
+        # Ensures the bytes are on disk when the burst cache is enabled (put),
+        # so the lazy path below can window-read the cached GeoTIFF directly.
         data = _download_to_bytes(url, retry_timeout_seconds=retry_timeout_seconds)
         with rasterio.Env(**rasterio_env_kwargs()):
             with MemoryFile(data, filename=fname) as memfile:
                 with memfile.open() as ds:
-                    arr = ds.read(1).astype(np.float32)
                     prof = ds.profile
+                    # Phase 3.2 (opt-in, memory.windowed_burst_reads): when the
+                    # burst is on disk in the cache, hand back a lazy window
+                    # reader instead of decoding the whole band — no full-array
+                    # transient, no .npy spill copy, block reads fault in only
+                    # the rows they touch. Byte-identical values.
+                    from s1grits import lazy_burst
+                    _lazy = lazy_burst.maybe_lazy(url, prof)
+                    if _lazy is not None:
+                        return _lazy, prof, None
+                    arr = ds.read(1).astype(np.float32)
         # Phase 3 (opt-in, memory.batch_spill): hand back a read-only
         # file-backed memmap instead of anonymous RAM — byte-identical
         # values, reclaimable pages, windowed reads for the block path.

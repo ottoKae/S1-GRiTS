@@ -67,6 +67,24 @@ class BurstCache:
             return None
         return raw
 
+    def path_for(self, url: str):
+        """Return the on-disk path of a committed, checksum-valid entry, else
+        None. Lets a caller window-read the cached GeoTIFF directly (Phase 3.2
+        windowed burst reads) instead of decoding the whole array. The checksum
+        is verified once here; the returned path is a plain GeoTIFF on disk."""
+        data_p, meta_p = self._paths(url)
+        if not (data_p.exists() and meta_p.exists()):
+            return None
+        try:
+            want = meta_p.read_text().strip()
+            raw = data_p.read_bytes()
+        except OSError:
+            return None
+        if hashlib.sha256(raw).hexdigest() != want:
+            logger.warning("[BurstCache] checksum mismatch for %s; treating as miss", url)
+            return None
+        return data_p
+
     def put(self, url: str, content: bytes) -> None:
         if content is None:
             return
@@ -112,6 +130,11 @@ def is_enabled() -> bool:
 
 def get(url: str) -> bytes | None:
     return _CACHE.get(url) if _CACHE is not None else None
+
+
+def path_for(url: str):
+    """On-disk path of a committed cache entry (checksum-valid), else None."""
+    return _CACHE.path_for(url) if _CACHE is not None else None
 
 
 def put(url: str, content: bytes) -> None:
