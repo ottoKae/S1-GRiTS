@@ -310,6 +310,20 @@ processing:
   # burst-union support region first (recommended: true).
   tile_clip: true
 
+  # Bounded-memory blockwise scenes writer (recommended: true, the default).
+  # Each acquisition is mosaicked, converted to dB, has Ratio/RVI derived,
+  # tile-clipped and written to Zarr chunk-block by chunk-block; GLCM runs as a
+  # halo pass (bit-exact); COG/preview stream back from the store. Peak memory
+  # then scales with block size, halo, dtype and thread count instead of the
+  # scene dimensions. Output is byte-identical to the legacy full-frame writer
+  # (locked by tests/test_scenes_blockwise_writer.py). Thread count reuses
+  # processing.monthly.blockwise_threads. Set false ONLY to force the legacy
+  # full-frame path (e.g. reproducing historical bytes on the old code path).
+  # With despeckle on, the despeckled full array is the one unavoidable
+  # larger-than-block allocation (despeckle is globally coupled); despeckle
+  # itself is still footprint-bounded via processing.despeckle.window.
+  scenes_blockwise: true
+
   # Target resolution in meters
   target_resolution: 30.0
 

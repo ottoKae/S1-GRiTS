@@ -97,6 +97,7 @@ KNOWN_KEYS: dict = {
         "features_rvi": None,
         "features_glcm": None,
         "tile_clip": None,
+        "scenes_blockwise": None,
         "target_resolution": None,
         "zarr_chunks": {"y": None, "x": None},
         "cog_block_size": None,
