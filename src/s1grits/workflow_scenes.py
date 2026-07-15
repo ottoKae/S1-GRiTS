@@ -1120,15 +1120,17 @@ def _mosaic_align_window(
             # allocating a window.  None means "footprint unknown" -> keep.
             if sb is not None and not _bounds_intersect_block(sb, y_slice, x_slice):
                 continue
-        src_arr = np.asarray(src, dtype=np.float32)
+        # Pass the source straight to direct-copy so a lazy (GeoTIFF-backed) or
+        # memmap burst reads only the block window (Phase 3.2). Full
+        # materialisation happens only in the reproject fallback below.
         tmp = _mosaic_align_window_direct_copy(
-            src_arr, prof, dst_transform, target_crs, bh, bw
+            src, prof, dst_transform, target_crs, bh, bw
         )
         if tmp is None:
             tmp = np.full((bh, bw), np.nan, dtype=np.float32)
             try:
                 reproject(
-                    source=src_arr,
+                    source=np.asarray(src, dtype=np.float32),
                     destination=tmp,
                     src_transform=prof["transform"],
                     src_crs=prof["crs"],
@@ -2332,10 +2334,14 @@ def _mosaic_align_scene_window(
         prof = prof_list[i]
         src_nd = prof.get("nodata", None)
         src_nd = np.nan if src_nd is None else float(src_nd)
-        src_arr = np.asarray(arr_list[i]).astype("float32", copy=False)
+        # Pass the source straight to the direct-copy helper — for a lazy
+        # (GeoTIFF-backed) or memmap burst this reads ONLY the block window, the
+        # Phase 3.2 memory bound. Full materialisation happens only in the
+        # reproject fallback below (rare cross-grid case).
+        _src = arr_list[i]
 
         tmp = _mosaic_align_window_direct_copy(
-            src_arr, prof, dst_transform, target_crs, bh, bw
+            _src, prof, dst_transform, target_crs, bh, bw
         )
         if tmp is not None:
             # Direct slice copy: apply the same exclusions the sentinel warp
@@ -2347,7 +2353,7 @@ def _mosaic_align_scene_window(
         else:
             tmp = np.full((bh, bw), NODATA_SENTINEL, dtype=np.float32)
             reproject(
-                source=src_arr,
+                source=np.asarray(_src, dtype=np.float32),
                 destination=tmp,
                 src_transform=prof["transform"],
                 src_crs=prof["crs"],
@@ -5434,6 +5440,21 @@ def process_single_scenes_tile(
         batch_spill.configure(_spill_root)
     else:
         batch_spill.configure(None)
+
+    # Phase 3.2 (opt-in, memory.windowed_burst_reads): when the burst cache
+    # holds the GeoTIFF, bursts enter the batch as lazy window readers — no
+    # whole-array decode, no .npy copy; block reads fault in only their rows.
+    # Requires memory.burst_cache_dir (needs on-disk files); inert otherwise.
+    from s1grits import lazy_burst
+    _windowed = bool(config.get('memory', {}).get('windowed_burst_reads', False))
+    if _windowed and not burst_cache.is_enabled():
+        logger.warning(
+            "[LazyBurst] memory.windowed_burst_reads is set but "
+            "memory.burst_cache_dir is not — windowed reads need the on-disk "
+            "burst cache; falling back to the eager decode path."
+        )
+        _windowed = False
+    lazy_burst.configure(_windowed)
 
     _console = Console(legacy_windows=True, no_color=False, quiet=quiet)
     _console.print(f"\n[bold cyan]Tile: {mgrs_tile_id}[/bold cyan]")

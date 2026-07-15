@@ -249,6 +249,17 @@ memory:
   # reclaimed every batch. Recommended on for large-archive runs.
   batch_spill: false
   spill_dir: null
+  # Phase 3.2 of the bounded-memory migration: when the burst cache holds a
+  # GeoTIFF, a burst enters the batch as a lazy window reader instead of a
+  # whole decoded array — no full-array decode transient and no .npy spill
+  # copy, and blockwise readers fault in only the block's rows straight from
+  # the cached GeoTIFF. Values are byte-identical (locked by
+  # tests/test_lazy_burst.py). REQUIRES burst_cache_dir (it needs the on-disk
+  # files); it is a no-op and warns if that is unset. Supersedes batch_spill
+  # for the burst arrays it covers (leave batch_spill on for any bursts not in
+  # the cache). Trades a small per-block GeoTIFF open (GDAL pools the handle)
+  # for removing the decode transient and the disk duplication. Default false.
+  windowed_burst_reads: false
   clear_cache_per_batch: true
   batch_max_retries: 2
   scene_max_retries: 3

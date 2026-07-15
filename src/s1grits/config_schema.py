@@ -73,6 +73,7 @@ KNOWN_KEYS: dict = {
         "download_prefetch": None,
         "batch_spill": None,
         "spill_dir": None,
+        "windowed_burst_reads": None,
         "burst_cache_dir": None,
         "clear_cache_per_batch": None,
         "batch_max_retries": None,
