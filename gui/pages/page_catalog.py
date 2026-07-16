@@ -6,13 +6,11 @@ Layout (5 | 7 columns):
   Right — Status, live log, output paths, results table
 """
 
-import os
 import re
 from pathlib import Path
 
 import streamlit as st
 
-from gui.config_builder import validate_output_dir
 from gui.runner import CommandRunner, build_cmd
 from gui.styles import (
     build_cmd_preview,

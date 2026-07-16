@@ -1,4 +1,5 @@
-# CI matrix: the same network-free test suite on every OS users run S1-GRiTS on.
+# CI: lint + type gate, then the same network-free test suite (with coverage)
+# on every OS users run S1-GRiTS on.
 #
 # Strategy (minimal-reliable first):
 #   * pip-only install — every runtime dependency (rasterio, geopandas,
@@ -7,43 +8,57 @@
 #   * osgeo/GDAL python bindings are deliberately NOT installed: they have no
 #     pip wheels. The mosaic commands guard the import with an actionable
 #     error, and `s1grits doctor` reports osgeo as a WARN, not a failure.
-#   * Ubuntu is the required check; macOS/Windows start as informational
-#     (continue-on-error) until a few green runs establish the baseline —
-#     then remove continue-on-error to promote them to required.
+#   * All three OSes are REQUIRED checks: the informational period is over —
+#     the matrix has been green across many consecutive runs, so a real
+#     Windows/macOS regression must block a merge, not pass silently.
+#   * Triggers are deduplicated: pull_request covers PR branches, push covers
+#     main only. (Previously push also matched claude/**, so every PR ran the
+#     whole matrix twice.)
 #
-# Expected failure modes to watch for on first runs:
-#   * a transitive dependency releasing a wheel-less version (pin it here),
-#   * Windows path-length or file-locking issues in tmp-dir Zarr tests,
-#   * slower macOS runners hitting the job timeout (raise if needed).
+# Lint/type policy lives in pyproject.toml ([tool.ruff], [tool.mypy]); the
+# lint job just runs it. Local mirror: `pre-commit install` (see
+# .pre-commit-config.yaml).
 name: CI
 
 on:
   push:
-    branches: [main, "claude/**"]
+    branches: [main]
   pull_request:
 
 jobs:
+  lint:
+    name: lint (ruff + mypy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install package + dev tools (wheels only)
+        run: |
+          python -m pip install --upgrade pip
+          pip install --only-binary=:all: -e ".[dev]"
+
+      - name: ruff (lint rules from pyproject)
+        run: ruff check src tests gui tools benchmarks
+
+      - name: mypy (typed-module allowlist from pyproject)
+        run: mypy
+
   test:
     name: pytest (${{ matrix.os }}, py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.experimental }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        # os MUST be a base matrix key: include-only entries with a shared key
-        # get merged into the base combination sequentially (last one wins),
-        # collapsing the matrix to a single job. With os in the base matrix,
-        # each include entry matches its os and only adds `experimental`.
         os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.12"]
-        include:
-          - os: ubuntu-latest
-            experimental: false
-          - os: macos-latest
-            experimental: true
-          - os: windows-latest
-            experimental: true
 
     steps:
       - uses: actions/checkout@v4
@@ -68,5 +83,5 @@ jobs:
       - name: Doctor (env + template config validation, no network)
         run: python -m s1grits doctor --config config/s1grits_scenes.yaml
 
-      - name: Run network-free test suite
-        run: python -m pytest tests/ -q --tb=short
+      - name: Run network-free test suite (with coverage report)
+        run: python -m pytest tests/ -q --tb=short --cov=s1grits --cov-report=term-missing:skip-covered

@@ -11,9 +11,8 @@ Functions:
 """
 
 from pathlib import Path
-from typing import Any, Dict, List, Union, Optional
+from typing import Any, Dict, Union, Optional
 import pandas as pd
-from datetime import datetime
 
 
 def generate_coverage_report(output_dir: Union[str, Path]) -> Dict[str, Any]:

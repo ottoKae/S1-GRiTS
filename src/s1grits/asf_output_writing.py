@@ -56,15 +56,6 @@ from s1grits.asf_io import (
     NODATA_SENTINEL,
     DB_SCALE_FACTOR,
     METERS_PER_DEGREE_LAT,
-    UTM_NORTH_BASE,
-    UTM_SOUTH_BASE,
-    MAX_BACKOFF_EXPONENT,
-    DEFAULT_RETRY_TIMEOUT_S,
-    DEFAULT_CHUNK_SIZE,
-    COG_BLOCK_SIZE,
-    DEFAULT_RES_M,
-    PREVIEW_RES_M,
-    DOWNLOAD_CHUNK_BYTES,
 )
 from s1grits.asf_array_processing import (
     despeckle_2d,
@@ -2717,8 +2708,6 @@ def merge_acq_group_zarrs(
     if texture_cfg:
         for feat in texture_cfg.get("features", []):
             band_names.append(f"GLCM_{feat}")
-
-    n_bands = len(band_names)
 
     try:
         g_merged = _zarr.open_group(zarr_path, mode="a")

@@ -7,7 +7,6 @@ WKT → MGRS Tiles → Monthly compositing → Zarr/COG output
 v1.0.0 - Supports parallel processing and catalog management
 """
 
-import sys
 import os
 import gc
 import json
@@ -668,7 +667,6 @@ def _process_tile_with_memory_budget(
     # spinners and tqdm bars would garble each other and the parent progress
     # bar. Silence them in this worker process (per-tile detail still goes to
     # the log file); the parent progress bar is the single live display.
-    import os
     os.environ['TQDM_DISABLE'] = '1'
     console.quiet = True
 

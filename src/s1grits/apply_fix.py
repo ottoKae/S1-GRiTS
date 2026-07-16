@@ -54,7 +54,7 @@ fixed_function = '''def read_asf_rtc_image_data(urls: list, max_workers: int = 2
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
         fut2idx = {ex.submit(read_one_asf, url, retry_timeout_seconds): i for i, url in enumerate(urls)}
-        
+
         # Use wait() with explicit timeout instead of tqdm loop to avoid deadlock on last future
         timeout_budget = retry_timeout_seconds * 2 + 30  # Add buffer for final processing
         completed, not_done = concurrent.futures.wait(
@@ -62,7 +62,7 @@ fixed_function = '''def read_asf_rtc_image_data(urls: list, max_workers: int = 2
             timeout=timeout_budget,
             return_when=concurrent.futures.ALL_COMPLETED
         )
-        
+
         # Process completed futures with progress tracking
         completed_count = 0
         for fut in completed:
@@ -73,7 +73,7 @@ fixed_function = '''def read_asf_rtc_image_data(urls: list, max_workers: int = 2
                 results[i] = (None, None, "network_error")
             completed_count += 1
             logging.debug("Downloaded %d/%d scenes", completed_count, N)
-        
+
         # Handle any futures that timed out (should be rare)
         if not_done:
             logging.error("Timeout: %d futures not completed after %.0f seconds", len(not_done), timeout_budget)

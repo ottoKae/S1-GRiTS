@@ -6,7 +6,7 @@ Extract time series from Zarr datasets for pixels, regions, or geographic coordi
 
 import numpy as np
 import xarray as xr
-from typing import Any, Dict, Tuple, Optional, List
+from typing import Any, Dict, Tuple
 from rasterio.transform import Affine
 from pyproj import Transformer
 

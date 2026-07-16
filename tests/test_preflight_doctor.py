@@ -107,7 +107,7 @@ def test_writable_dir_probe(tmp_path):
 # doctor
 # ---------------------------------------------------------------------------
 def test_doctor_no_config_passes_in_this_env():
-    from s1grits.doctor import run_doctor, OK, FAIL
+    from s1grits.doctor import run_doctor, FAIL
     code, results = run_doctor(config_path=None, network=False)
     assert code == 0
     assert not [r for r in results if r.level == FAIL]
@@ -166,10 +166,9 @@ def test_doctor_unreadable_config_fails(tmp_path):
 
 
 def test_doctor_flags_mixed_grid_stores(tmp_path):
-    import yaml
     import numpy as np
     from rasterio.transform import Affine
-    from s1grits.doctor import check_store_grid_consistency, WARN, OK
+    from s1grits.doctor import check_store_grid_consistency, WARN
     from s1grits.workflow_scenes import _init_zarr_2band
 
     def make(tile, name, w, h):

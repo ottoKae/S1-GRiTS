@@ -162,3 +162,60 @@ where = ["src"]
 "s1grits.analysis" = ["*.py"]
 "gui" = ["*.py"]
 "gui.pages" = ["*.py"]
+
+# ---------------------------------------------------------------------------
+# Lint (ruff) — correctness-focused start: pyflakes + pycodestyle errors.
+# Style-only rules the codebase deliberately doesn't follow stay off:
+#   E701/E702 compact multi-statement lines (block-math idiom),
+#   E731 lambda assignments (window-reader closures),
+#   E741 short math names in geometry code.
+# Tighten incrementally (add rule families here) rather than big-bang.
+# ---------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = ["notebooks", "manuscript_analysis_scripts"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "W"]
+ignore = ["E701", "E702", "E731", "E741"]
+
+[tool.ruff.lint.per-file-ignores]
+"**/__init__.py" = ["F401"]                    # re-export surfaces
+"tests/*" = ["E402"]                           # sys.path bootstrap precedes imports
+"benchmarks/*" = ["E402"]
+"gui/app.py" = ["E402"]                        # streamlit-run sys.path bootstrap
+"gui/styles.py" = ["E402"]
+"src/gui/app.py" = ["E402"]
+"src/gui/styles.py" = ["E402"]
+# Legacy Streamlit GUI: deprecated in favour of `s1grits serve` (webapp) and
+# scheduled for removal — not worth churning its dead locals now.
+"gui/pages/*" = ["F841"]
+"src/gui/pages/*" = ["F841"]
+# Legacy modules with historical mid-file imports; retire with the modules
+# rather than churn them now.
+"src/s1grits/asf_output_writing.py" = ["E402"]
+"src/s1grits/workflow.py" = ["E402"]
+
+# ---------------------------------------------------------------------------
+# Types (mypy) — opt-in module list: the newer, annotated modules are checked
+# strictly enough to stay honest; the legacy workflow monoliths join as they
+# are refactored (see docs/scenes_blockwise_architecture.md follow-ups).
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+# Only the modules in `files` are reported on; imports are still resolved for
+# their types but their own errors stay silent until they join the list.
+follow_imports = "silent"
+files = [
+    "src/s1grits/batch_spill.py",
+    "src/s1grits/lazy_burst.py",
+    "src/s1grits/burst_cache.py",
+    "src/s1grits/config_schema.py",
+    "src/s1grits/runtime_limits.py",
+    "src/s1grits/memory_manager.py",
+]
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true

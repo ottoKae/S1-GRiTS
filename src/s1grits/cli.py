@@ -19,7 +19,6 @@ import sys
 from pathlib import Path
 from rich.console import Console
 from rich.table import Table
-import rioxarray  # Register .rio accessor for xarray
 
 from s1grits.__version__ import __version__
 from s1grits.logger_config import get_logger
@@ -36,7 +35,7 @@ def print_summary(results: dict):
         results: Processing results dictionary
     """
     console.print("\n")
-    console.rule(f"[bold blue]Processing Results Summary[/bold blue]", style="blue")
+    console.rule("[bold blue]Processing Results Summary[/bold blue]", style="blue")
 
     # Statistics
     success_count = sum(1 for r in results.values() if r['status'] == 'success')
@@ -56,7 +55,7 @@ def print_summary(results: dict):
     console.print(summary_table)
 
     # Detailed results table
-    detail_table = Table(title=f"\nDetailed Results", show_header=True, header_style="bold cyan")
+    detail_table = Table(title="\nDetailed Results", show_header=True, header_style="bold cyan")
     detail_table.add_column("MGRS Tile", style="cyan", width=12)
     detail_table.add_column("Status", justify="center", width=6)
     detail_table.add_column("Months", justify="right", width=7)
@@ -235,7 +234,7 @@ def _workflow_overrides(args) -> dict | None:
 def cmd_process(args):
     """Run the main processing workflow"""
     from s1grits.workflow import run_multi_mgrs_monthly_workflow
-    from s1grits.logger_config import setup_logging, get_logger
+    from s1grits.logger_config import setup_logging
     import pandas as pd
     import yaml
 
@@ -286,10 +285,10 @@ def cmd_process(args):
     console.print(f"\nTotal time: [bold]{duration}[/bold]")
 
     if all(r['status'] == 'success' for r in results.values()):
-        console.print(f"\n[bold green]Success![/bold green]\n")
+        console.print("\n[bold green]Success![/bold green]\n")
         sys.exit(0)
     else:
-        console.print(f"\n[bold yellow]WARNING: Some tasks failed[/bold yellow]\n")
+        console.print("\n[bold yellow]WARNING: Some tasks failed[/bold yellow]\n")
         sys.exit(1)
 
 
@@ -346,10 +345,10 @@ def cmd_process_static(args):
 
     n_ok = sum(1 for r in results.values() if r['status'] in ('success', 'skipped'))
     if n_ok == len(results):
-        console.print(f"\n[bold green]Success![/bold green]\n")
+        console.print("\n[bold green]Success![/bold green]\n")
         sys.exit(0)
     else:
-        console.print(f"\n[bold yellow]WARNING: Some tasks failed[/bold yellow]\n")
+        console.print("\n[bold yellow]WARNING: Some tasks failed[/bold yellow]\n")
         sys.exit(1)
 
 def cmd_catalog_validate(args):
@@ -395,7 +394,7 @@ def cmd_catalog_validate(args):
 
     # --- Display results ---
     if result['valid']:
-        console.print(f"[green]INFO   Catalog schema is valid[/green]")
+        console.print("[green]INFO   Catalog schema is valid[/green]")
         console.print(f"[dim]       Records: {result.get('record_count', '?')}[/dim]")
     else:
         issues = result.get('issues', [])
@@ -733,7 +732,7 @@ def cmd_process_scenes(args):
     console.print(f"[dim]Config:              {config_path}[/dim]")
     console.print(f"[dim]Monthly:             {monthly_enabled}[/dim]")
     console.print(f"[dim]Output:              {config.get('output', {}).get('base_dir', 'unknown')}[/dim]")
-    console.print(f"[dim]Product dirs:        scenes_{{despeckle}}_{{bands}}/[zarr|cog|preview][/dim]\n")
+    console.print("[dim]Product dirs:        scenes_{despeckle}_{bands}/[zarr|cog|preview][/dim]\n")
 
     log_file, logger = setup_logging(config)
     console.print(f"[dim]Log: {log_file}[/dim]\n")
@@ -771,11 +770,11 @@ def cmd_process_scenes(args):
     console.print(f"\nTotal time: [bold]{duration}[/bold]")
 
     if all(r['status'] == 'success' for r in results.values()):
-        console.print(f"\n[bold green]Success![/bold green]\n")
+        console.print("\n[bold green]Success![/bold green]\n")
         sys.exit(0)
     else:
         console.print(
-            f"\n[bold yellow]WARNING: Some tasks failed[/bold yellow]\n"
+            "\n[bold yellow]WARNING: Some tasks failed[/bold yellow]\n"
         )
         sys.exit(1)
 
@@ -925,7 +924,7 @@ def cmd_mosaic_scenes(args):
                 f"[green]INFO   VRT created: {out_path}[/green]"
             )
 
-    console.print(f"\n[bold green]Done.[/bold green]")
+    console.print("\n[bold green]Done.[/bold green]")
     sys.exit(0)
 
 
@@ -1249,7 +1248,7 @@ Examples:
     try:
         args.func(args)
     except KeyboardInterrupt:
-        console.print(f"\n[yellow]WARNING: Interrupted by user[/yellow]")
+        console.print("\n[yellow]WARNING: Interrupted by user[/yellow]")
         sys.exit(130)
     except Exception as e:
         console.print(f"\n[red]ERROR: {e}[/red]")

@@ -315,7 +315,6 @@ def find_tile_by_lonlat(
         ...     tile_id, direction = result
     """
     import pyproj
-    from shapely.geometry import Point
 
     catalog_path = Path(output_dir) / "catalog.parquet"
     if not catalog_path.exists():
@@ -324,8 +323,6 @@ def find_tile_by_lonlat(
     cat = pd.read_parquet(catalog_path)
     if cat.empty:
         return None
-
-    point_wgs84 = Point(lon, lat)
 
     for _, row in cat.drop_duplicates(subset=["tile_id", "flight_direction"]).iterrows():
         try:

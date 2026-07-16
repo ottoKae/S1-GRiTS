@@ -119,7 +119,7 @@ def setup_logging(config: dict) -> tuple[str, logging.Logger]:
     app_logger = logging.getLogger('s1_processor')
     app_logger.setLevel(logging.DEBUG)
 
-    app_logger.info(f"Logging system configured")
+    app_logger.info("Logging system configured")
     app_logger.info(f"  - Log file: {log_file}")
     app_logger.info(f"  - File level: {file_level}")
     app_logger.info(f"  - Console level: {console_level}")

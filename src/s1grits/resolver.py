@@ -39,10 +39,11 @@ Usage:
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 import xarray as xr
 
-from s1grits.canonical_catalog_schema import filter_complete_records, find_virtual_stack
+from s1grits.canonical_catalog_schema import filter_complete_records
 from s1grits.logger_config import get_logger
 
 logger = get_logger(__name__)

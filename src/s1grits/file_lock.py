@@ -18,12 +18,10 @@ If the lock is held, the second process will wait up to ``timeout`` seconds,
 then raise ``TimeoutError``.
 """
 
-import os
 import sys
 import time as _time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
 
 from s1grits.logger_config import get_logger
 
