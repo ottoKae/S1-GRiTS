@@ -265,9 +265,9 @@ def _render_review(cfg: dict):
             st.text_input("Download workers",   value=str(cfg.get("max_download_workers", "")), disabled=True, key="rv_dlw")
 
         st.text_input("TV Despeckle",
-                      value="On" if cfg.get("post_processing", True) else "Off",
+                      value="On" if cfg.get("monthly_despeckle", True) else "Off",
                       disabled=True, key="rv_desp")
-        if cfg.get("post_processing", True):
+        if cfg.get("monthly_despeckle", True):
             st.text_input("Reg. strength",      value=str(cfg.get("reg_param", 5.0)),          disabled=True, key="rv_reg")
 
         glcm = cfg.get("glcm_enabled", False)
@@ -324,7 +324,7 @@ def _render_right_panel(runner: CommandRunner):
             st.session_state[_LOGS_KEY]   = []
             st.session_state[_STATUS_KEY] = "running"
             # Compute actual output root with processing-level suffix
-            post_proc = st.session_state.get(_CFG_KEY, {}).get("post_processing", True)
+            post_proc = st.session_state.get(_CFG_KEY, {}).get("monthly_despeckle", True)
             suffix    = "_hARDCp" if post_proc else "_ARDC"
             st.session_state[_OUTDIR_KEY]  = str(Path(base_dir).resolve()) + suffix
             st.session_state[_LOGFILE_KEY] = ""   # resolved later from CLI output
