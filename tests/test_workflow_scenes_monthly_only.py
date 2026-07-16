@@ -8,6 +8,8 @@ import zarr
 from rasterio.transform import Affine
 
 from s1grits import workflow_scenes as ws
+from s1grits.scenes import pipeline as ws_pipeline
+from s1grits.scenes import smonthly_writer as ws_smw
 
 
 def test_valid_clean_indices_from_scene_records_maps_utc_times():
@@ -64,9 +66,9 @@ def test_monthly_only_qc_filters_incomplete_acquisitions(monkeypatch):
         "_mosaic_align",
         lambda indices, *args, **kwargs: np.ones((2, 2), dtype=np.float32),
     )
-    monkeypatch.setattr(ws, "_missing_interior_bursts", lambda *args, **kwargs: set())
+    monkeypatch.setattr(ws_pipeline, "_missing_interior_bursts", lambda *args, **kwargs: set())
     hole_fracs = iter([1.0, 0.0])
-    monkeypatch.setattr(ws, "_interior_hole_fraction", lambda *args, **kwargs: next(hole_fracs))
+    monkeypatch.setattr(ws_pipeline, "_interior_hole_fraction", lambda *args, **kwargs: next(hole_fracs))
 
     incomplete = []
     valid = ws._prepare_valid_clean_indices_for_monthly(
@@ -115,8 +117,8 @@ def test_monthly_only_qc_uses_vv_without_crosspol(monkeypatch):
         return np.ones((2, 2), dtype=np.float32)
 
     monkeypatch.setattr(ws, "_mosaic_align", fake_mosaic)
-    monkeypatch.setattr(ws, "_missing_interior_bursts", lambda *args, **kwargs: set())
-    monkeypatch.setattr(ws, "_interior_hole_fraction", lambda *args, **kwargs: 0.0)
+    monkeypatch.setattr(ws_pipeline, "_missing_interior_bursts", lambda *args, **kwargs: set())
+    monkeypatch.setattr(ws_pipeline, "_interior_hole_fraction", lambda *args, **kwargs: 0.0)
 
     valid = ws._prepare_valid_clean_indices_for_monthly(
         "17MNU",
@@ -158,7 +160,7 @@ def test_metadata_prefilter_skips_interior_missing_before_download(monkeypatch):
         }
     )
     monkeypatch.setattr(
-        ws,
+        ws_pipeline,
         "_missing_interior_bursts",
         lambda footprint, present: {"B002"} if "B003" in present else set(),
     )
@@ -473,7 +475,7 @@ def test_smonthly_blockwise_matches_legacy_small_array(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ws, "_mosaic_align", fake_mosaic_align)
     monkeypatch.setattr(ws, "_write_monthly_stac_item", lambda *args, **kwargs: "noop")
-    monkeypatch.setattr(ws, "_write_multiband_cog", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ws_smw, "_write_multiband_cog", lambda *args, **kwargs: None)
 
     def run_writer(tile_dir, *, generate_cog):
         records = ws._write_smonthly_one_track(
