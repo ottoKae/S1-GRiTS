@@ -17,6 +17,7 @@ from pathlib import Path
 from rasterio.transform import Affine
 
 from s1grits import workflow_scenes as ws
+from s1grits.scenes import mosaic as ws_mosaic
 
 
 def test_mosaic_align_window_logs_fallback_warning(caplog, monkeypatch):
@@ -54,7 +55,7 @@ def test_mosaic_align_window_direct_copy_skips_reproject(monkeypatch):
     def fail_reproject(*args, **kwargs):
         raise AssertionError("direct-copy path should not call reproject")
 
-    monkeypatch.setattr(ws, "reproject", fail_reproject)
+    monkeypatch.setattr(ws_mosaic, "reproject", fail_reproject)
 
     result = ws._mosaic_align_window(
         [0],
@@ -441,7 +442,7 @@ def test_mosaic_align_window_skips_nonoverlapping_scene(monkeypatch):
     def fail_reproject(*args, **kwargs):
         raise AssertionError("non-overlapping scene must not be processed")
 
-    monkeypatch.setattr(ws, "reproject", fail_reproject)
+    monkeypatch.setattr(ws_mosaic, "reproject", fail_reproject)
 
     bounds = ws._compute_scene_dst_bounds(
         [src], [prof], master, "EPSG:32617", height=100, width=100

@@ -34,7 +34,6 @@ import warnings
 import json
 import logging
 import os
-import shutil
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -44,17 +43,9 @@ from collections.abc import Mapping
 import numpy as np
 import pandas as pd
 import pyproj
-import rasterio
 import zarr
-from rasterio.enums import Resampling
 from rasterio.features import rasterize
-from rasterio.transform import Affine, array_bounds
-from rasterio.warp import reproject, transform_bounds
-from rasterio.windows import (
-    Window,
-    from_bounds as window_from_bounds,
-    transform as window_transform,
-)
+from rasterio.transform import Affine
 
 try:  # Fast C nanmedian; NumPy's masked-array path is ~50x slower on blocks
     import bottleneck as _bn
@@ -82,7 +73,6 @@ from s1grits.asf_io import (
     load_and_despeckle_rtc_strict,
     load_rtc_band_strict,
     _mgrs_to_utm_epsg,
-    NODATA_SENTINEL,
 )
 from s1grits.memory_manager import (
     get_memory_strategy_from_config,
@@ -90,13 +80,6 @@ from s1grits.memory_manager import (
     detect_system_memory,
 )
 from s1grits.asf_output_writing import _build_grid_from_bursts, _build_grid_from_geoms, _mosaic_align, _generate_preview_png, _get_mgrs_tile_geometry_wkt, _clip_arrays_to_wkt_4326, _check_tile_integrity, _zarr_delete_timestep
-from s1grits.stac_builder import (
-    _utm_extent_to_wgs84,
-    _epsg_int,
-    _resolve_bands,
-    STAC_VERSION,
-    ITEM_STAC_EXTENSION_URIS,
-)
 from s1grits.canonical_catalog_schema import (
     normalize_catalog_record,
     validate_collection_mapping,
@@ -106,6 +89,56 @@ from s1grits.product_instance import (
     make_product_variant,
 )
 from s1grits.file_lock import acquire_lock, release_lock
+
+# ---------------------------------------------------------------------------
+# Extracted writer machinery (move-only split). workflow_scenes remains the
+# facade: every moved name is re-exported here, so existing imports and test
+# monkeypatch seams (ws._write_scene_stac_item, ws._mosaic_align via the
+# windowed readers' facade dispatch) keep working unchanged.
+# ---------------------------------------------------------------------------
+from s1grits.scenes.blocks import (  # noqa: F401
+    N_OBS_BAND,
+    GLCM_BLOCK_HALO,
+    _apply_block_clip,
+    _begin_zarr_timestep_blockwise,
+    _block_transform,
+    _fill_value_is_nan,
+    _finalize_zarr_timestep_blockwise,
+    _iter_spatial_blocks,
+    _prepare_block_clip_geom,
+    _rollback_zarr_timestep_blockwise,
+    _run_blocks,
+    _write_smonthly_block_bands,
+)
+from s1grits.scenes.mosaic import (  # noqa: F401
+    _as_affine,
+    _bounds_intersect_block,
+    _can_window_reproject,
+    _compute_scene_dst_bounds,
+    _crs_equal,
+    _direct_copy_offsets,
+    _mosaic_align_scene_window,
+    _mosaic_align_window,
+    _mosaic_align_window_direct_copy,
+    _prealign_scenes_to_master_grid,
+    _scene_dst_bounds,
+)
+from s1grits.scenes.cog import (  # noqa: F401
+    _COG_STRIP_BUDGET_BYTES,
+    _export_scene_cog_preview_from_zarr,
+    _free_disk_bytes,
+    _tile_clip_crop_window,
+    _write_multiband_cog,
+    _write_multiband_cog_streamed,
+    _write_multiband_cog_windowed,
+)
+from s1grits.scenes.stac_items import (  # noqa: F401
+    _build_stac_item,
+    _resolve_item_bands,
+    _stac_extensions,
+    _write_monthly_stac_item,
+    _write_scene_stac_item,
+)
 
 logger = get_logger(__name__)
 console = Console(legacy_windows=True, no_color=False)
@@ -423,12 +456,6 @@ def _group_indices_by_period(dates: list, composite_mode: str) -> dict:
     return groups
 
 
-# Per-pixel valid-observation-count band written by the smonthly composite
-# writers: how many finite scene observations (from the track whose composite
-# fills each pixel) went into that month's composite value. uint8 with
-# fill_value=0 ("no observations"): a track's monthly stack depth is bounded
-# by the Sentinel-1 revisit (<= ~6 acquisitions/month), far below 255.
-N_OBS_BAND: str = "n_obs"
 
 
 def _init_zarr_2band(
@@ -775,389 +802,28 @@ def _append_zarr_timestep(
     _zarr_append(g, 'time', np.array([_new_key], dtype='int64'))
 
 
-def _iter_spatial_blocks(height: int, width: int, block_y: int, block_x: int):
-    """Yield y/x slices aligned to the configured Zarr spatial chunks."""
-    by = max(1, int(block_y or height or 1))
-    bx = max(1, int(block_x or width or 1))
-    for y0 in range(0, int(height), by):
-        y1 = min(int(height), y0 + by)
-        for x0 in range(0, int(width), bx):
-            x1 = min(int(width), x0 + bx)
-            yield slice(y0, y1), slice(x0, x1)
 
 
-def _block_transform(transform: Affine, y_slice: slice, x_slice: slice) -> Affine:
-    """Return the geotransform for a spatial block."""
-    return transform * Affine.translation(int(x_slice.start or 0), int(y_slice.start or 0))
 
 
-def _can_window_reproject(indices: list[int], final_arr: list, prof_arr: list) -> bool:
-    if not indices or prof_arr is None or len(prof_arr) <= max(indices):
-        return False
-    for idx in indices:
-        if idx >= len(final_arr):
-            return False
-        prof = prof_arr[idx]
-        if not isinstance(prof, Mapping):
-            # This should never happen after sanitization
-            logger.debug(
-                "[CAN_REPROJECT] prof_arr[%d] is %s, not Mapping (should have been sanitized)",
-                idx, type(prof).__name__ if prof is not None else "None"
-            )
-            return False
-        if prof.get("transform") is None or prof.get("crs") is None:
-            # This should never happen after sanitization
-            logger.debug(
-                "[CAN_REPROJECT] prof_arr[%d] missing transform=%s or crs=%s (should have been sanitized)",
-                idx, prof.get("transform") is not None, prof.get("crs") is not None
-            )
-            return False
-    return True
 
 
-def _as_affine(value) -> Affine:
-    return value if isinstance(value, Affine) else Affine(*value)
 
 
-def _crs_equal(left, right) -> bool:
-    try:
-        return pyproj.CRS.from_user_input(left) == pyproj.CRS.from_user_input(right)
-    except Exception:
-        return str(left).lower() == str(right).lower()
 
 
-def _direct_copy_offsets(
-    src_prof: Mapping,
-    dst_transform: Affine,
-    target_crs: str,
-    *,
-    atol: float = 1e-6,
-) -> tuple[int, int] | None:
-    """Return source row/col for a destination block if grids are aligned."""
-    if not isinstance(src_prof, Mapping):
-        return None
-    src_crs = src_prof.get("crs")
-    src_transform = src_prof.get("transform")
-    if src_crs is None or src_transform is None:
-        return None
-    if not _crs_equal(src_crs, target_crs):
-        return None
-
-    src_t = _as_affine(src_transform)
-    dst_t = _as_affine(dst_transform)
-    # Direct slicing is only valid for north-up, non-skewed grids with the same
-    # pixel size. Rotated/sheared grids stay on the GDAL reproject path.
-    if not (
-        np.isclose(src_t.b, 0.0, atol=atol)
-        and np.isclose(src_t.d, 0.0, atol=atol)
-        and np.isclose(dst_t.b, 0.0, atol=atol)
-        and np.isclose(dst_t.d, 0.0, atol=atol)
-        and np.isclose(src_t.a, dst_t.a, atol=atol)
-        and np.isclose(src_t.e, dst_t.e, atol=atol)
-    ):
-        return None
-
-    src_col_f, src_row_f = (~src_t) * (dst_t.c, dst_t.f)
-    src_col = int(round(src_col_f))
-    src_row = int(round(src_row_f))
-    if not (
-        np.isclose(src_col_f, src_col, atol=atol)
-        and np.isclose(src_row_f, src_row, atol=atol)
-    ):
-        return None
-    return src_row, src_col
 
 
-def _mosaic_align_window_direct_copy(
-    src_arr: np.ndarray,
-    src_prof: Mapping,
-    dst_transform: Affine,
-    target_crs: str,
-    bh: int,
-    bw: int,
-) -> np.ndarray | None:
-    offsets = _direct_copy_offsets(src_prof, dst_transform, target_crs)
-    if offsets is None:
-        return None
-    src_row0, src_col0 = offsets
-    src_h, src_w = src_arr.shape[-2], src_arr.shape[-1]
-
-    src_row_start = max(0, src_row0)
-    src_col_start = max(0, src_col0)
-    src_row_stop = min(src_h, src_row0 + bh)
-    src_col_stop = min(src_w, src_col0 + bw)
-    if src_row_stop <= src_row_start or src_col_stop <= src_col_start:
-        return np.full((bh, bw), np.nan, dtype=np.float32)
-
-    dst_row_start = src_row_start - src_row0
-    dst_col_start = src_col_start - src_col0
-    dst_row_stop = dst_row_start + (src_row_stop - src_row_start)
-    dst_col_stop = dst_col_start + (src_col_stop - src_col_start)
-
-    out = np.full((bh, bw), np.nan, dtype=np.float32)
-    out[dst_row_start:dst_row_stop, dst_col_start:dst_col_stop] = src_arr[
-        src_row_start:src_row_stop,
-        src_col_start:src_col_stop,
-    ].astype(np.float32, copy=False)
-    return out
 
 
-def _scene_dst_bounds(
-    src,
-    prof: Mapping,
-    transform: Affine,
-    target_crs: str,
-    height: int,
-    width: int,
-    *,
-    margin: int = 2,
-) -> tuple[int, int, int, int] | None:
-    """Pixel bounds ``(row0, row1, col0, col1)`` of a scene on the master grid.
-
-    Bounds are clipped to the grid, so a scene fully outside the grid yields an
-    empty range (``row1 <= row0`` or ``col1 <= col0``).  Returns ``None`` when
-    the footprint cannot be determined (missing profile), which callers must
-    treat as "may cover anything".
-    """
-    if src is None or not isinstance(prof, Mapping):
-        return None
-    src_transform = prof.get("transform")
-    src_crs = prof.get("crs")
-    if src_transform is None or src_crs is None:
-        return None
-    try:
-        h, w = np.asarray(src).shape[-2:]
-        left, bottom, right, top = array_bounds(h, w, _as_affine(src_transform))
-        if not _crs_equal(src_crs, target_crs):
-            left, bottom, right, top = transform_bounds(
-                src_crs, target_crs, left, bottom, right, top, densify_pts=21
-            )
-        inv = ~_as_affine(transform)
-        c0, r0 = inv * (left, top)
-        c1, r1 = inv * (right, bottom)
-    except Exception as exc:
-        logger.debug("Scene footprint bounds failed: %s", exc)
-        return None
-    eps = 1e-9  # tolerate float noise so exact pixel edges stay tight
-    row0 = int(np.floor(min(r0, r1) + eps)) - margin
-    row1 = int(np.ceil(max(r0, r1) - eps)) + margin
-    col0 = int(np.floor(min(c0, c1) + eps)) - margin
-    col1 = int(np.ceil(max(c0, c1) - eps)) + margin
-    return (
-        max(0, row0), min(int(height), row1),
-        max(0, col0), min(int(width), col1),
-    )
 
 
-def _compute_scene_dst_bounds(
-    final_arr: list,
-    prof_arr: list,
-    transform: Affine,
-    target_crs: str,
-    height: int,
-    width: int,
-) -> list[tuple[int, int, int, int] | None]:
-    """Per-scene master-grid pixel bounds, aligned with ``final_arr`` indices."""
-    bounds: list[tuple[int, int, int, int] | None] = []
-    for src, prof in zip(final_arr, prof_arr or []):
-        bounds.append(
-            _scene_dst_bounds(src, prof, transform, target_crs, height, width)
-        )
-    # prof_arr may be shorter than final_arr (tests, degraded inputs)
-    bounds.extend([None] * (len(final_arr) - len(bounds)))
-    return bounds
 
 
-def _bounds_intersect_block(
-    bounds: tuple[int, int, int, int],
-    y_slice: slice,
-    x_slice: slice,
-) -> bool:
-    row0, row1, col0, col1 = bounds
-    return (
-        row0 < int(y_slice.stop or 0)
-        and row1 > int(y_slice.start or 0)
-        and col0 < int(x_slice.stop or 0)
-        and col1 > int(x_slice.start or 0)
-    )
 
 
-def _prealign_scenes_to_master_grid(
-    final_arr: list,
-    prof_arr: list,
-    transform: Affine,
-    target_crs: str,
-    height: int,
-    width: int,
-) -> tuple[list, list]:
-    """Warp scenes that cannot be direct-copied onto the master grid, once.
-
-    Scenes whose grid differs from the master grid (other CRS/UTM zone,
-    non-integer pixel offset, different resolution) would otherwise hit the
-    GDAL ``reproject`` path once per spatial block — O(scenes x blocks) warps.
-    This replaces each such scene with a master-grid-aligned window covering
-    its footprint, so every later block read is a plain slice copy.
-
-    Returns shallow-copied lists; the caller's originals are not mutated (they
-    may be shared with the per-scene writers).  Memory cost is roughly one
-    extra copy of each warped scene for the lifetime of the returned lists.
-    """
-    if not final_arr or not prof_arr:
-        return final_arr, prof_arr
-    new_final = list(final_arr)
-    new_prof = list(prof_arr)
-    base_t = _as_affine(transform)
-    n_warped = 0
-    for idx in range(min(len(final_arr), len(prof_arr))):
-        src = final_arr[idx]
-        prof = prof_arr[idx]
-        if src is None or not isinstance(prof, Mapping):
-            continue
-        if prof.get("transform") is None or prof.get("crs") is None:
-            continue
-        if _direct_copy_offsets(prof, base_t, target_crs) is not None:
-            continue  # already slice-copyable for every block
-        b = _scene_dst_bounds(src, prof, base_t, target_crs, height, width)
-        if b is None:
-            continue
-        row0, row1, col0, col1 = b
-        if row1 <= row0 or col1 <= col0:
-            continue  # outside the master grid; block filtering skips it
-        dst_transform = base_t * Affine.translation(col0, row0)
-        dst = np.full((row1 - row0, col1 - col0), np.nan, dtype=np.float32)
-        try:
-            reproject(
-                source=np.asarray(src, dtype=np.float32),
-                destination=dst,
-                src_transform=prof["transform"],
-                src_crs=prof["crs"],
-                src_nodata=prof.get("nodata"),
-                dst_transform=dst_transform,
-                dst_crs=target_crs,
-                dst_nodata=np.nan,
-                resampling=Resampling.nearest,
-                num_threads=1,
-            )
-        except Exception as exc:
-            logger.debug(
-                "Pre-align warp failed for scene %d; keeping original: %s",
-                idx, exc,
-            )
-            continue
-        p = dict(prof)
-        p.update(
-            transform=dst_transform,
-            crs=target_crs,
-            nodata=np.nan,
-            height=dst.shape[0],
-            width=dst.shape[1],
-        )
-        new_final[idx] = dst
-        new_prof[idx] = p
-        n_warped += 1
-    if n_warped:
-        logger.info(
-            "Pre-aligned %d cross-grid scene(s) to the master grid "
-            "(one-time warp replaces per-block reprojection)",
-            n_warped,
-        )
-    return new_final, new_prof
 
 
-def _mosaic_align_window(
-    indices: list[int],
-    final_arr: list,
-    prof_arr: list,
-    height: int,
-    width: int,
-    transform: Affine,
-    target_crs: str,
-    y_slice: slice,
-    x_slice: slice,
-    scene_bounds: list | None = None,
-) -> np.ndarray | None:
-    """Mosaic only one destination block.
-
-    This is the blockwise equivalent of ``_mosaic_align`` for the scenes
-    monthly writer.  It keeps the same first-valid-pixel source policy while
-    avoiding construction of full-tile arrays for each acquisition.
-    """
-    bh = int((y_slice.stop or 0) - (y_slice.start or 0))
-    bw = int((x_slice.stop or 0) - (x_slice.start or 0))
-    if bh <= 0 or bw <= 0:
-        return None
-
-    # Tests and unusual in-memory callers may not provide rasterio profiles.
-    # Fall back to the existing full-grid helper and slice the result.
-    if not _can_window_reproject(indices, final_arr, prof_arr):
-        logger.warning(
-            "[BLOCKWISE FALLBACK] Block y=%d:%d x=%d:%d falling back to full-tile "
-            "mosaic (prof_arr incomplete: %d entries, %d arrays needed). "
-            "This negates blockwise memory efficiency.",
-            y_slice.start or 0, y_slice.stop or 0,
-            x_slice.start or 0, x_slice.stop or 0,
-            len(prof_arr) if prof_arr else 0,
-            len(final_arr) if final_arr else 0,
-        )
-        full = _mosaic_align(indices, final_arr, prof_arr, height, width, transform, target_crs)
-        if full is None:
-            return None
-        return full[y_slice, x_slice].astype(np.float32, copy=False)
-
-    out: np.ndarray | None = None
-    dst_transform = _block_transform(transform, y_slice, x_slice)
-
-    for idx in indices:
-        src = final_arr[idx]
-        prof = prof_arr[idx]
-        if src is None:
-            continue
-        if scene_bounds is not None and idx < len(scene_bounds):
-            sb = scene_bounds[idx]
-            # Known footprint that misses this block entirely: skip without
-            # allocating a window.  None means "footprint unknown" -> keep.
-            if sb is not None and not _bounds_intersect_block(sb, y_slice, x_slice):
-                continue
-        # Pass the source straight to direct-copy so a lazy (GeoTIFF-backed) or
-        # memmap burst reads only the block window (Phase 3.2). Full
-        # materialisation happens only in the reproject fallback below.
-        tmp = _mosaic_align_window_direct_copy(
-            src, prof, dst_transform, target_crs, bh, bw
-        )
-        if tmp is None:
-            tmp = np.full((bh, bw), np.nan, dtype=np.float32)
-            try:
-                reproject(
-                    source=np.asarray(src, dtype=np.float32),
-                    destination=tmp,
-                    src_transform=prof["transform"],
-                    src_crs=prof["crs"],
-                    src_nodata=prof.get("nodata"),
-                    dst_transform=dst_transform,
-                    dst_crs=target_crs,
-                    dst_nodata=np.nan,
-                    resampling=Resampling.nearest,
-                    num_threads=1,
-                )
-            except Exception as exc:
-                logger.debug("Windowed reproject failed; falling back to full mosaic: %s", exc)
-                full = _mosaic_align(indices, final_arr, prof_arr, height, width, transform, target_crs)
-                if full is None:
-                    return None
-                return full[y_slice, x_slice].astype(np.float32, copy=False)
-
-        tmp[~np.isfinite(tmp) | (tmp <= 0)] = np.nan
-        if out is None:
-            # First contributing scene: adopt its buffer directly instead of
-            # merging into a pre-allocated NaN window.  With one scene per
-            # call (the composite path) this skips the merge entirely.
-            out = tmp
-        else:
-            take = np.isnan(out) & np.isfinite(tmp)
-            if take.any():
-                out[take] = tmp[take]
-
-    return out
 
 
 def _monthly_composite_block(
@@ -1361,148 +1027,18 @@ def _resolve_blockwise_threads(value, max_workers: int = 1) -> int:
         return 1
 
 
-def _run_blocks(worker, blocks: list, num_threads: int) -> list:
-    """Run per-block work serially or in a thread pool, preserving order.
-
-    Spatial blocks are aligned to the Zarr chunk grid, so concurrent block
-    writes touch disjoint chunks (safe in zarr v3).  The heavy per-block work
-    (bottleneck nanmedian, NumPy copies, GDAL warps, codec compression)
-    releases the GIL, so threads give near-linear speedup without the memory
-    cost of extra worker processes.
-    """
-    if num_threads <= 1 or len(blocks) <= 1:
-        return [worker(i, ys, xs) for i, (ys, xs) in enumerate(blocks, 1)]
-    from concurrent.futures import ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=min(int(num_threads), len(blocks))) as ex:
-        futures = [
-            ex.submit(worker, i, ys, xs)
-            for i, (ys, xs) in enumerate(blocks, 1)
-        ]
-        return [f.result() for f in futures]
 
 
-def _begin_zarr_timestep_blockwise(
-    g: zarr.Group,
-    dt_ns: np.datetime64,
-    band_names: list[str],
-) -> tuple[int, int]:
-    """Reserve a new Zarr time slot for blockwise writes.
-
-    Band arrays are resized and initialized to NaN.  The time coordinate is
-    written only after every block succeeds, matching the existing "time last"
-    append semantics.
-    """
-    existing = set(g['time'][:].tolist()) if g['time'].shape[0] > 0 else set()
-    new_key = np.datetime64(dt_ns, 'ns').astype('int64')
-    if new_key in existing:
-        ts = pd.Timestamp(dt_ns).strftime('%Y-%m-%dT%H:%M:%S')
-        raise ValueError(
-            f"Duplicate time step {ts} already exists in Zarr store. "
-            f"Use overwrite mode or delete the store to re-process."
-        )
-
-    t = int(g['time'].shape[0])
-    for var in band_names:
-        arr = g[var]
-        if arr.ndim != 3:
-            raise ValueError(f"Band '{var}' is not a 3D time/y/x array")
-        if arr.shape[0] > t:
-            # Previous interrupted blockwise append left data without a time
-            # coordinate.  Time is authoritative because it is committed last.
-            arr.resize((t,) + arr.shape[1:])
-        if arr.shape[0] < t:
-            raise ValueError(
-                f"Band '{var}' has fewer timesteps ({arr.shape[0]}) than "
-                f"time ({t}); cannot append safely."
-            )
-        arr.resize((t + 1,) + arr.shape[1:])
-        if not _fill_value_is_nan(arr) and np.issubdtype(arr.dtype, np.floating):
-            # Legacy FLOAT stores were created with fill_value=0, so the new
-            # slot must be NaN-initialised explicitly.  NaN-filled stores get
-            # the same semantics from resize alone, without writing any chunks.
-            # Integer bands (n_obs, fill 0) get "no data" from resize alone —
-            # and cannot hold NaN.
-            arr[t, :, :] = np.nan
-    return t, int(new_key)
 
 
-def _fill_value_is_nan(arr) -> bool:
-    try:
-        return bool(np.isnan(arr.fill_value))
-    except (TypeError, ValueError, AttributeError):
-        return False
 
 
-def _finalize_zarr_timestep_blockwise(
-    g: zarr.Group,
-    time_index: int,
-    new_key: int,
-) -> None:
-    time_arr = g['time']
-    if time_arr.shape[0] > time_index:
-        time_arr.resize((time_index,))
-    time_arr.resize((time_index + 1,))
-    time_arr[time_index] = np.array(new_key, dtype='int64')
 
 
-def _rollback_zarr_timestep_blockwise(
-    g: zarr.Group,
-    time_index: int,
-    band_names: list[str],
-) -> None:
-    """Remove a reserved blockwise timestep after skip or failure."""
-    for name in band_names:
-        arr = g[name]
-        if arr.shape[0] > time_index:
-            arr.resize((time_index,) + arr.shape[1:])
-    time_arr = g['time']
-    if time_arr.shape[0] > time_index:
-        time_arr.resize((time_index,))
 
 
-def _prepare_block_clip_geom(
-    tile_clip: bool,
-    mgrs_tile_id: str,
-    target_crs: str,
-):
-    if not tile_clip:
-        return None
-    mgrs_wkt = _get_mgrs_tile_geometry_wkt(mgrs_tile_id)
-    crs_ll = pyproj.CRS.from_epsg(4326)
-    crs_t = pyproj.CRS.from_user_input(target_crs)
-    proj = pyproj.Transformer.from_crs(crs_ll, crs_t, always_xy=True).transform
-    return shp_transform(proj, shapely_wkt.loads(mgrs_wkt))
 
 
-def _apply_block_clip(
-    block_bands: dict[str, np.ndarray],
-    clip_geom,
-    transform: Affine,
-    y_slice: slice,
-    x_slice: slice,
-) -> None:
-    """Mask a block's bands to the MGRS tile polygon (NaN outside).
-
-    Always the LAST step for a block: per-pixel composites and windowed GLCM are
-    both produced on the larger burst-union support first, so this clip only
-    removes the beyond-tile margin — it never truncates a spatial window
-    (support-before-clip invariant).
-    """
-    if clip_geom is None:
-        return
-    first = next(iter(block_bands.values()), None)
-    if first is None:
-        return
-    bh, bw = first.shape
-    block_mask = rasterize(
-        [(mapping(clip_geom), 1)],
-        out_shape=(bh, bw),
-        transform=_block_transform(transform, y_slice, x_slice),
-        fill=0, dtype="uint8", all_touched=False,
-    ).astype(bool)
-    inv = ~block_mask
-    for arr in block_bands.values():
-        arr[inv] = np.nan
 
 
 def _make_smonthly_block_bands(
@@ -1544,32 +1080,8 @@ def _make_smonthly_block_bands(
     return block_bands
 
 
-def _write_smonthly_block_bands(
-    g: zarr.Group,
-    time_index: int,
-    y_slice: slice,
-    x_slice: slice,
-    band_names: list[str],
-    block_bands: dict[str, np.ndarray],
-) -> None:
-    for name in band_names:
-        dst = g[name]
-        arr = block_bands[name]
-        if np.issubdtype(dst.dtype, np.integer):
-            # Count bands (n_obs) travel through the block pipeline as float32
-            # so _apply_block_clip can NaN them like every other band; NaN
-            # means "no observations" and lands as 0 in the integer store.
-            arr = np.nan_to_num(arr, nan=0.0).astype(dst.dtype)
-        else:
-            arr = arr.astype(np.float32, copy=False)
-        dst[time_index, y_slice, x_slice] = arr
 
 
-# GLCM co-occurrence support radius (window_size//2 + distance) for the fixed
-# smonthly texture config (window_size=5, distance=1) is 3 px; 8 is a safe halo
-# that makes each block's GLCM bit-identical to the full-tile computation
-# (verified in tests/test_glcm_halo_equivalence.py).
-GLCM_BLOCK_HALO: int = 8
 
 
 def _smonthly_texture_cfg(copol_name: str, crosspol_name: str) -> dict:
@@ -1893,464 +1405,27 @@ def _get_despeckle_token(config: dict) -> str:
 # COG writer
 # ---------------------------------------------------------------------------
 
-# Working-set budget for a COG strip write: bounds BOTH the NumPy read buffer
-# (all bands of one strip) and GDAL's dirty-tile cache for that strip, so a
-# large multi-band write never exceeds the default 512 MB GDAL_CACHEMAX and the
-# strip shrinks automatically as the band count grows.
-_COG_STRIP_BUDGET_BYTES: int = 256 * 1024 * 1024
 
 
-def _free_disk_bytes(path: Path) -> int:
-    """Free bytes on the volume that will hold ``path`` (nearest existing
-    ancestor), or -1 if it cannot be determined."""
-    p = Path(path)
-    for cand in (p.parent, *p.parents):
-        try:
-            return int(shutil.disk_usage(cand).free)
-        except (OSError, ValueError):
-            continue
-    return -1
 
 
-def _write_multiband_cog_streamed(
-    cog_path: Path,
-    band_reads: list,
-    profile: dict,
-    *,
-    overview_resampling: str = "average",
-) -> None:
-    """Write a tiled, internally-overviewed multi-band COG, ALL bands per strip.
-
-    ``band_reads`` is ``[(name, read(rows: slice) -> 2D float32 strip), ...]``.
-    The image is written in tile-row-aligned horizontal strips, and every band
-    of a strip is written in a single ``dst.write(block, window=...)`` call.
-
-    Why all-bands-per-strip: writing a pixel-interleaved, compressed, tiled
-    GeoTIFF band-by-band fails once the image exceeds the GDAL block cache
-    (``GDAL_CACHEMAX``, 512 MB by default). Finishing band 1 flushes (compresses)
-    its tiles to disk; writing band 2 into the SAME tiles — pixel interleave
-    stores every band of a tile together — forces GDAL to re-access an already
-    flushed compressed block, which raises
-    ``GDALRasterBand::IRasterIO -> An error occurred while writing a dirty
-    block``. Populating every band of a tile before it is ever flushed removes
-    the revisit entirely. A 6608x5620x12 float32 image (~1.8 GB) reproduced this
-    deterministically; the strip form is bounded to
-    ``_COG_STRIP_BUDGET_BYTES`` regardless of band count.
-
-    The file is written atomically (temp + rename). A write failure is
-    re-raised with the band count, dimensions, target path and free disk space,
-    so a genuine out-of-space condition is actionable instead of surfacing as a
-    deep GDAL "dirty block" error.
-    """
-    from s1grits.atomic_write import atomic_path
-    from s1grits.runtime_limits import rasterio_env_kwargs
-
-    h = int(profile["height"]); w = int(profile["width"])
-    nb = len(band_reads)
-    block_y = int(profile.get("blockysize") or profile.get("blockxsize") or 256)
-    block_y = max(1, block_y)
-    # Tile-row-aligned strip sized so all-bands working set <= budget; >= 1 tile
-    # row, <= the image height.
-    rows_budget = max(1, _COG_STRIP_BUDGET_BYTES // max(1, nb * w * 4))
-    strip = max(block_y, (rows_budget // block_y) * block_y)
-    strip = min(strip, h)
-
-    # Preflight: a compressed 12-band float32 tile grid + overviews still needs
-    # real scratch. Warn early (never block on an estimate — deflate ratios vary)
-    # so a near-full volume is visible before the write.
-    _uncompressed = nb * w * h * 4
-    _free = _free_disk_bytes(cog_path)
-    if 0 <= _free < _uncompressed // 3:  # optimistic ~3x deflate lower bound
-        logger.warning(
-            "[COG] Low free disk for %s: %.1f GB free vs ~%.1f GB uncompressed "
-            "(%d bands, %dx%d). deflate usually fits, but overviews + the atomic "
-            "temp copy may not — free space or point output at a larger volume.",
-            cog_path.name, _free / 1e9, _uncompressed / 1e9, nb, w, h,
-        )
-
-    try:
-        with atomic_path(cog_path) as _cog_tmp:
-            with rasterio.Env(**rasterio_env_kwargs()):
-                with rasterio.open(_cog_tmp, "w", **profile) as dst:
-                    for _r0 in range(0, h, strip):
-                        _r1 = min(h, _r0 + strip)
-                        block = np.empty((nb, _r1 - _r0, w), dtype=np.float32)
-                        for _bi, (_name, _read) in enumerate(band_reads):
-                            block[_bi] = _read(slice(_r0, _r1))
-                        dst.write(block, window=Window(0, _r0, w, _r1 - _r0))
-                    for _bi, (_name, _read) in enumerate(band_reads, 1):
-                        dst.set_band_description(_bi, _name)
-
-                    _short = min(w, h)
-                    _factors = [f for f in (2, 4, 8, 16, 32) if _short // f >= 128]
-                    if _factors:
-                        dst.build_overviews(_factors, Resampling[overview_resampling])
-                        dst.update_tags(ns="rio_overview", resampling=overview_resampling)
-    except Exception as exc:
-        _free = _free_disk_bytes(cog_path)
-        _free_str = f"{_free / 1e9:.1f} GB" if _free >= 0 else "unknown"
-        raise RuntimeError(
-            f"COG export failed writing {nb}-band {w}x{h} GeoTIFF to {cog_path} "
-            f"({type(exc).__name__}: {exc}). Free space on the target volume: "
-            f"{_free_str}. The Zarr store is already written, so a re-run with "
-            f"output.existing_month: skip regenerates only the missing COG once "
-            f"space is available (or point output.base_dir at a larger volume)."
-        ) from exc
 
 
-def _write_multiband_cog(
-    cog_path: Path,
-    bands: list[tuple[str, np.ndarray]],
-    profile: dict,
-    *,
-    overview_resampling: str = "average",
-) -> None:
-    """Write a tiled, internally-overviewed multi-band GeoTIFF from in-RAM bands.
-
-    Thin wrapper over :func:`_write_multiband_cog_streamed`: the already-resident
-    band arrays are exposed as row-slice readers, so the same all-bands-per-strip
-    write path is used (robust for large multi-band compressed tiled output; see
-    that function). The STAC items advertise these assets as
-    ``profile=cloud-optimized``; the internal tiling (from ``profile``) plus the
-    overviews written here make that claim accurate.
-    """
-    band_reads = [
-        (name, (lambda rows, a=arr: np.asarray(a[rows], dtype=np.float32)))
-        for name, arr in bands
-    ]
-    _write_multiband_cog_streamed(
-        cog_path, band_reads, profile, overview_resampling=overview_resampling
-    )
 
 
 # ---------------------------------------------------------------------------
 # STAC Item writers (scene and monthly variants)
 # ---------------------------------------------------------------------------
 
-def _stac_extensions() -> list[str]:
-    """STAC extension URIs shared by every item this module emits."""
-    return list(ITEM_STAC_EXTENSION_URIS)
-
-
-def _resolve_item_bands(
-    cog_relpath: str | None, tile_dir: Path, polarization: str
-) -> list[str]:
-    """Band names for an item: read from the COG when present, else the default pair."""
-    bands = ["VV_dB", "VH_dB"]
-    if cog_relpath:
-        try:
-            cog_abs = (
-                str(tile_dir / cog_relpath)
-                if not os.path.isabs(cog_relpath)
-                else cog_relpath
-            )
-            if os.path.exists(cog_abs):
-                bands = _resolve_bands(
-                    {"cog_path": cog_relpath}, str(tile_dir), polarization
-                )
-        except Exception:
-            pass
-    return bands
-
-
-def _build_stac_item(
-    *,
-    mgrs_tile_id: str,
-    direction_label: str,
-    item_id: str,
-    datetime_str: str,
-    time_step: str,
-    collection_id: str,
-    cog_title: str,
-    tile_dir: Path,
-    transform: Affine,
-    width: int,
-    height: int,
-    target_crs: str,
-    processing_level: str,
-    pass_id: int | None,
-    track: int | None,
-    jpl_burst_ids: list[str] | None,
-    opera_ids: list[str] | None,
-    variant_properties: dict,
-    cog_relpath: str | None,
-    zarr_relpath: str | None,
-    preview_relpath: str | None,
-    product_label: str,
-    polarization: str,
-) -> str:
-    """Build and atomically write one STAC Item JSON; return the item ID.
-
-    Shared by the scene and monthly writers. Everything that differs between the
-    two variants is passed in: identity (``item_id``/``datetime_str``), the cube
-    ``time_step`` (P1D vs P1M), the ``collection_id``, the COG asset ``cog_title``
-    and the ``variant_properties`` merged into ``properties``.
-    """
-    bbox, geometry = _utm_extent_to_wgs84(
-        list(transform)[:6], width, height, target_crs
-    )
-    x_min = transform[2]
-    x_max = transform[2] + transform[0] * width
-    y_max = transform[5]
-    y_min = transform[5] + transform[4] * height
-    pixel_size = abs(transform[0])
-    epsg = _epsg_int(target_crs)
-    tform_9 = list(transform)[:9]
-    bands = _resolve_item_bands(cog_relpath, tile_dir, polarization)
-
-    item = {
-        "stac_version": STAC_VERSION,
-        "stac_extensions": _stac_extensions(),
-        "type": "Feature",
-        "id": item_id,
-        "geometry": geometry,
-        "bbox": bbox,
-        "properties": {
-            "datetime": datetime_str,
-            "platform": "sentinel-1",
-            "instruments": ["c-sar"],
-            "mgrs:tile_id": mgrs_tile_id,
-            "s1:orbit_direction": direction_label.lower(),
-            "s1:processing_level": processing_level,
-            "sat:orbit_state": direction_label.lower(),
-            "sat:absolute_orbit": pass_id,
-            "sat:relative_orbit": track,
-            "s1grits:jpl_burst_ids": jpl_burst_ids,
-            "s1grits:opera_ids": opera_ids,
-            **variant_properties,
-            "proj:epsg": epsg,
-            "proj:shape": [height, width],
-            "proj:transform": tform_9,
-            "proj:geometry": geometry,
-            "proj:bbox": bbox,
-            "cube:dimensions": {
-                "x": {
-                    "type": "spatial", "axis": "x",
-                    "extent": [round(x_min, 3), round(x_max, 3)],
-                    "step": pixel_size, "reference_system": epsg,
-                },
-                "y": {
-                    "type": "spatial", "axis": "y",
-                    "extent": [round(y_min, 3), round(y_max, 3)],
-                    "step": pixel_size, "reference_system": epsg,
-                },
-                "time": {
-                    "type": "temporal",
-                    "extent": [datetime_str, datetime_str],
-                    "step": time_step,
-                },
-                "spectral": {
-                    "type": "bands",
-                    "values": bands,
-                },
-            },
-        },
-        "collection": collection_id,
-        "assets": {},
-        "links": [
-            {"rel": "self", "href": f"./{item_id}.json"},
-            {"rel": "collection", "href": f"../../../../collections/{collection_id}/collection.json"},
-            {"rel": "root", "href": "../../../../catalog.json"},
-        ],
-    }
-
-    # Asset hrefs are computed relative to the item JSON location.
-    items_dir = tile_dir / "items" / product_label
-    _rel = lambda p: os.path.relpath(str(tile_dir / p), str(items_dir)).replace("\\", "/") if p else None
-
-    if cog_relpath:
-        item["assets"]["cog"] = {
-            "href": _rel(cog_relpath),
-            "type": "image/tiff; application=geotiff; profile=cloud-optimized",
-            "roles": ["data"],
-            "title": cog_title,
-            "eo:bands": [{"name": _b} for _b in bands],
-        }
-    if zarr_relpath:
-        item["assets"]["zarr"] = {
-            "href": _rel(zarr_relpath),
-            "type": "application/vnd.zarr; version=3",
-            "roles": ["data"],
-            "title": "Full Time Series Zarr Store",
-        }
-    if preview_relpath:
-        item["assets"]["preview"] = {
-            "href": _rel(preview_relpath),
-            "type": "image/png",
-            "roles": ["overview"],
-            "title": "RGB Preview (VH / VV / Ratio)",
-        }
-
-    items_dir.mkdir(parents=True, exist_ok=True)
-    item_path = items_dir / f"{item_id}.json"
-    from s1grits.atomic_write import atomic_write_json
-    atomic_write_json(item, item_path)
-    return item_id
-
-
-def _write_scene_stac_item(
-    mgrs_tile_id: str,
-    direction_label: str,
-    acq_ts: pd.Timestamp,
-    tile_dir: Path,
-    transform: Affine,
-    width: int,
-    height: int,
-    target_crs: str,
-    cog_relpath: str | None,
-    zarr_relpath: str,
-    preview_relpath: str | None = None,
-    processing_level: str = "hARDCp",
-    polarization: str = "VV+VH",
-    product_label: str = "scenes",
-    product_variant: str | None = None,
-    processing_signature: str | None = None,
-    processing_variant_json: str | None = None,
-    actual_bands: list[str] | None = None,
-    jpl_burst_ids: list[str] | None = None,
-    opera_ids: list[str] | None = None,
-    pass_id: int | None = None,
-    track: int | None = None,
-) -> str:
-    """
-    Write a STAC Item JSON for a single acquisition (per-pass scene).
-
-    Returns the item ID. No-op (returns None) when STAC output is disabled
-    (catalog-only build).
-    """
-    from s1grits.stac_builder import stac_output_enabled
-    if not stac_output_enabled():
-        return None
-    dt_str = acq_ts.strftime('%Y%m%dT%H%M%S')
-    item_id = f"{mgrs_tile_id}_{direction_label}_{dt_str}"
-    datetime_str = acq_ts.strftime('%Y-%m-%dT%H:%M:%SZ')
-
-    variant_properties = {
-        "s1grits:product_variant": product_variant,
-        "s1grits:processing_signature": processing_signature,
-        "s1grits:processing_variant": (
-            json.loads(processing_variant_json)
-            if processing_variant_json and isinstance(processing_variant_json, str)
-            else None
-        ),
-        "s1grits:bands": actual_bands,
-    }
-
-    item_id = _build_stac_item(
-        mgrs_tile_id=mgrs_tile_id,
-        direction_label=direction_label,
-        item_id=item_id,
-        datetime_str=datetime_str,
-        time_step="P1D",
-        collection_id="s1grits-scenes",
-        cog_title="Per-Acquisition Scene COG",
-        tile_dir=tile_dir,
-        transform=transform,
-        width=width,
-        height=height,
-        target_crs=target_crs,
-        processing_level=processing_level,
-        pass_id=pass_id,
-        track=track,
-        jpl_burst_ids=jpl_burst_ids,
-        opera_ids=opera_ids,
-        variant_properties=variant_properties,
-        cog_relpath=cog_relpath,
-        zarr_relpath=zarr_relpath,
-        preview_relpath=preview_relpath,
-        product_label=product_label,
-        polarization=polarization,
-    )
-
-    logger.info(
-        "Scene STAC Item: %s",
-        tile_dir / "items" / product_label / f"{item_id}.json",
-    )
-    return item_id
 
 
 
-def _write_monthly_stac_item(
-    mgrs_tile_id: str,
-    direction_label: str,
-    month_str: str,
-    rep_dt: pd.Timestamp,
-    tile_dir: Path,
-    transform: Affine,
-    width: int,
-    height: int,
-    target_crs: str,
-    cog_relpath: str | None,
-    zarr_relpath: str,
-    preview_relpath: str | None = None,
-    processing_level: str = "hARDCp",
-    polarization: str = "VV+VH",
-    product_label: str = "smonthly",
-    product_variant: str | None = None,
-    processing_signature: str | None = None,
-    processing_variant_json: str | None = None,
-    actual_bands: list[str] | None = None,
-    jpl_burst_ids: list[str] | None = None,
-    opera_ids: list[str] | None = None,
-    pass_id: int | None = None,
-    track: int | None = None,
-    primary_track: int | None = None,
-    track_coverage: list[dict] | None = None,
-    item_id_override: str | None = None,
-) -> str:
-    """
-    Write a STAC Item JSON for one monthly composite.
 
-    Returns the item ID. No-op (returns None) when STAC output is disabled
-    (catalog-only build).
-    """
-    from s1grits.stac_builder import stac_output_enabled
-    if not stac_output_enabled():
-        return None
-    item_id = item_id_override or f"{mgrs_tile_id}_{direction_label}_{month_str}"
-    datetime_str = f"{month_str}-01T00:00:00Z"
 
-    variant_properties = {
-        "s1:monthly_composite": "median",
-        "s1grits:primary_track": primary_track,
-        "s1grits:track_coverage": track_coverage,
-        **({"s1grits:product_variant": product_variant} if product_variant else {}),
-        **({"s1grits:processing_signature": processing_signature} if processing_signature else {}),
-        **({"s1grits:processing_variant": processing_variant_json} if processing_variant_json else {}),
-        **({"s1grits:bands": actual_bands} if actual_bands else {}),
-    }
 
-    item_id = _build_stac_item(
-        mgrs_tile_id=mgrs_tile_id,
-        direction_label=direction_label,
-        item_id=item_id,
-        datetime_str=datetime_str,
-        time_step="P1M",
-        collection_id="s1grits-smonthly",
-        cog_title="Monthly Composite COG",
-        tile_dir=tile_dir,
-        transform=transform,
-        width=width,
-        height=height,
-        target_crs=target_crs,
-        processing_level=processing_level,
-        pass_id=pass_id,
-        track=track,
-        jpl_burst_ids=jpl_burst_ids,
-        opera_ids=opera_ids,
-        variant_properties=variant_properties,
-        cog_relpath=cog_relpath,
-        zarr_relpath=zarr_relpath,
-        preview_relpath=preview_relpath,
-        product_label=product_label,
-        polarization=polarization,
-    )
 
-    logger.info(
-        "Monthly STAC Item: %s",
-        tile_dir / "items" / product_label / f"{item_id}.json",
-    )
-    return item_id
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -2361,106 +1436,6 @@ def _write_monthly_stac_item(
 # Phase 2 — blockwise scenes writer (bounded-memory per-acquisition path)
 # ---------------------------------------------------------------------------
 
-def _mosaic_align_scene_window(
-    indices: list[int],
-    arr_list: list,
-    prof_list: list,
-    height: int,
-    width: int,
-    transform: Affine,
-    target_crs: str,
-    y_slice: slice,
-    x_slice: slice,
-    scene_bounds: list | None = None,
-) -> np.ndarray | None:
-    """Windowed replica of ``_mosaic_align`` for the blockwise scenes writer.
-
-    ``_mosaic_align_window`` (the smonthly composite reader) drops non-positive
-    values, which is fine for its dB-bound consumers but NOT value-identical to
-    the scene writer's full-frame mosaic: the legacy scenes path keeps zeros /
-    negatives in the linear arrays and lets Ratio/RVI/_linear_to_db decide.
-    This variant reproduces ``_mosaic_align``'s exact validity rule per window
-    (finite, not the NODATA_SENTINEL, not the profile nodata) and its
-    first-valid-pixel fill order, so a window is bit-identical to the same
-    slice of the full-frame mosaic (locked by
-    tests/test_scenes_blockwise_writer.py).
-
-    Returns ``None`` when no burst contributes to the window (callers leave the
-    NaN-initialised Zarr slot untouched — same values as writing NaN).
-    """
-    bh = int((y_slice.stop or 0) - (y_slice.start or 0))
-    bw = int((x_slice.stop or 0) - (x_slice.start or 0))
-    if bh <= 0 or bw <= 0:
-        return None
-    valid_idx = [i for i in indices if arr_list[i] is not None]
-    if not valid_idx:
-        return None
-
-    if not _can_window_reproject(valid_idx, arr_list, prof_list):
-        # Degraded inputs without rasterio profiles (tests, unusual callers):
-        # fall back to the full-grid mosaic and slice it.
-        logger.debug(
-            "Scene window mosaic falling back to full-frame _mosaic_align "
-            "(profiles incomplete)"
-        )
-        full = _mosaic_align(
-            indices, arr_list, prof_list, height, width, transform, target_crs
-        )
-        if full is None:
-            return None
-        return np.ascontiguousarray(full[y_slice, x_slice]).astype(
-            np.float32, copy=False
-        )
-
-    dst_transform = _block_transform(transform, y_slice, x_slice)
-    out = np.full((bh, bw), np.nan, dtype=np.float32)
-    wrote_any = False
-    for i in valid_idx:
-        if scene_bounds is not None and i < len(scene_bounds):
-            sb = scene_bounds[i]
-            if sb is not None and not _bounds_intersect_block(sb, y_slice, x_slice):
-                continue
-        prof = prof_list[i]
-        src_nd = prof.get("nodata", None)
-        src_nd = np.nan if src_nd is None else float(src_nd)
-        # Pass the source straight to the direct-copy helper — for a lazy
-        # (GeoTIFF-backed) or memmap burst this reads ONLY the block window, the
-        # Phase 3.2 memory bound. Full materialisation happens only in the
-        # reproject fallback below (rare cross-grid case).
-        _src = arr_list[i]
-
-        tmp = _mosaic_align_window_direct_copy(
-            _src, prof, dst_transform, target_crs, bh, bw
-        )
-        if tmp is not None:
-            # Direct slice copy: apply the same exclusions the sentinel warp
-            # produces — profile nodata, non-finite, and (like the full-frame
-            # path) any genuine value equal to the sentinel itself.
-            valid_mask = np.isfinite(tmp) & (tmp != NODATA_SENTINEL)
-            if np.isfinite(src_nd):
-                valid_mask &= tmp != np.float32(src_nd)
-        else:
-            tmp = np.full((bh, bw), NODATA_SENTINEL, dtype=np.float32)
-            reproject(
-                source=np.asarray(_src, dtype=np.float32),
-                destination=tmp,
-                src_transform=prof["transform"],
-                src_crs=prof["crs"],
-                dst_transform=dst_transform,
-                dst_crs=target_crs,
-                resampling=Resampling.nearest,
-                src_nodata=float(src_nd),
-                dst_nodata=NODATA_SENTINEL,
-                init_dest_nodata=True,
-                num_threads=1,
-            )
-            valid_mask = (tmp != NODATA_SENTINEL) & np.isfinite(tmp)
-
-        take = np.isnan(out) & valid_mask
-        if take.any():
-            out[take] = tmp[take]
-            wrote_any = True
-    return out if wrote_any else None
 
 
 def _write_scene_timestep_blockwise(
@@ -2575,162 +1550,10 @@ def _write_scene_timestep_blockwise(
     return time_index
 
 
-def _tile_clip_crop_window(
-    wkt_4326: str,
-    target_crs: str,
-    transform: Affine,
-    height: int,
-    width: int,
-) -> tuple[int, int, int, int, Affine]:
-    """Crop window (r0, r1, c0, c1) + transform for a WKT clip, without arrays.
-
-    Replicates ``_clip_arrays_to_wkt_4326``'s window arithmetic exactly (same
-    floor/ceil/clamp and the same empty-window ValueError) so the blockwise
-    COG/preview exporter crops to the identical extent the legacy in-memory
-    clip produced.
-    """
-    crs_ll = pyproj.CRS.from_epsg(4326)
-    crs_t = pyproj.CRS.from_user_input(target_crs)
-    proj = pyproj.Transformer.from_crs(crs_ll, crs_t, always_xy=True).transform
-    geom_proj = shp_transform(proj, shapely_wkt.loads(wkt_4326))
-
-    minx, miny, maxx, maxy = geom_proj.bounds
-    win = window_from_bounds(minx, miny, maxx, maxy, transform=transform)
-
-    r0 = max(0, int(np.floor(win.row_off)))
-    c0 = max(0, int(np.floor(win.col_off)))
-    r1 = min(int(height), int(np.ceil(win.row_off + win.height)))
-    c1 = min(int(width), int(np.ceil(win.col_off + win.width)))
-    if r1 <= r0 or c1 <= c0:
-        raise ValueError("Clip window is empty; check WKT/CRS/transform.")
-    new_transform = window_transform(
-        Window(col_off=c0, row_off=r0, width=c1 - c0, height=r1 - r0), transform
-    )
-    return r0, r1, c0, c1, new_transform
 
 
-def _write_multiband_cog_windowed(
-    cog_path: Path,
-    band_reads: list,
-    profile: dict,
-    *,
-    row_strip: int = 0,
-    overview_resampling: str = "average",
-) -> None:
-    """Stream a multi-band COG from ``band_reads`` (name, row-slice reader).
-
-    Delegates to :func:`_write_multiband_cog_streamed`, which writes ALL bands
-    of each tile-row-aligned strip in one call — the correct order for a
-    pixel-interleaved compressed tiled GeoTIFF (band-sequential writes fail with
-    a GDAL "dirty block" error once the image exceeds GDAL_CACHEMAX; see the
-    streamed writer). ``row_strip`` is accepted for backward compatibility but
-    ignored: the strip height is derived from the tile size and the working-set
-    budget so it is always tile-aligned and memory-bounded.
-    """
-    _write_multiband_cog_streamed(
-        cog_path, band_reads, profile, overview_resampling=overview_resampling
-    )
 
 
-def _export_scene_cog_preview_from_zarr(
-    g: zarr.Group,
-    time_index: int,
-    band_names: list[str],
-    transform: Affine,
-    height: int,
-    width: int,
-    target_crs: str,
-    tile_clip: bool,
-    mgrs_tile_id: str,
-    generate_cog: bool,
-    generate_preview: bool,
-    cog_path: Path,
-    png_path: Path,
-    cog_block: int,
-    chunk_y: int,
-    copol_name: str,
-    crosspol_name: str,
-    tile_dir: Path,
-    dt_str: str,
-) -> tuple[str | None, str | None]:
-    """Export one scene timestep's COG + preview by reading back from Zarr.
-
-    The COG streams band strips straight from the store (memory: one strip),
-    cropped to the MGRS tile bbox when ``tile_clip`` is on — the Zarr bands
-    are already polygon-masked by the block clip, so the bbox crop reproduces
-    the legacy ``_clip_arrays_to_wkt_4326`` output exactly. The preview needs
-    the two dB planes (plus the derived display ratio) of the crop resident at
-    once — an O(crop) term, still far below the legacy all-bands residency.
-    """
-    band_names = [b for b in band_names if b != N_OBS_BAND]
-
-    r0, r1, c0, c1 = 0, int(height), 0, int(width)
-    out_transform = transform
-    if tile_clip:
-        try:
-            mgrs_wkt = _get_mgrs_tile_geometry_wkt(mgrs_tile_id)
-            r0, r1, c0, c1, out_transform = _tile_clip_crop_window(
-                mgrs_wkt, target_crs, transform, int(height), int(width)
-            )
-        except Exception as _clip_e:
-            logger.warning(
-                "tile_clip spatial crop failed for %s %s: %s",
-                mgrs_tile_id, dt_str, _clip_e,
-            )
-            r0, r1, c0, c1 = 0, int(height), 0, int(width)
-            out_transform = transform
-
-    cog_relpath = None
-    if generate_cog:
-        prof = {
-            'driver': 'GTiff', 'dtype': 'float32', 'nodata': float('nan'),
-            'width': c1 - c0, 'height': r1 - r0,
-            'count': len(band_names),
-            'crs': target_crs, 'transform': out_transform,
-            'compress': 'deflate', 'tiled': True,
-            'blockxsize': cog_block, 'blockysize': cog_block,
-        }
-        _strip = max(int(chunk_y or cog_block), int(cog_block))
-        _strip = ((_strip + int(cog_block) - 1) // int(cog_block)) * int(cog_block)
-
-        def _band_reader(_name):
-            _z = g[_name]
-
-            def _read(rows: slice) -> np.ndarray:
-                return np.asarray(
-                    _z[time_index, r0 + rows.start:r0 + rows.stop, c0:c1],
-                    dtype=np.float32,
-                )
-            return _read
-
-        _write_multiband_cog_windowed(
-            cog_path, [(n, _band_reader(n)) for n in band_names], prof,
-            row_strip=_strip,
-        )
-        cog_relpath = str(cog_path.relative_to(tile_dir))
-
-    preview_relpath = None
-    if generate_preview:
-        _vv = np.asarray(g[copol_name][time_index, r0:r1, c0:c1], dtype=np.float32)
-        _vh = np.asarray(g[crosspol_name][time_index, r0:r1, c0:c1], dtype=np.float32)
-        # Same display-ratio derivation as the legacy path: linear power ratio
-        # from the dB planes, valid where both are finite.
-        _valid = np.isfinite(_vv) & np.isfinite(_vh)
-        ratio_arr = np.full_like(_vv, np.nan, dtype=np.float32)
-        ratio_arr[_valid] = np.power(
-            10.0, (_vh[_valid] - _vv[_valid]) / 10.0
-        ).astype(np.float32)
-        _generate_preview_png(
-            vv_db=_vv,
-            vh_db=_vh,
-            ratio=ratio_arr,
-            src_transform=out_transform,
-            src_crs=target_crs,
-            output_path=str(png_path),
-        )
-        preview_relpath = str(png_path.relative_to(tile_dir))
-
-    return cog_relpath, preview_relpath
 
 
 def _write_scenes_output(
