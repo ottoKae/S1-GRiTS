@@ -486,7 +486,6 @@ def build_patch_index(
       * ``time_grid`` (np.datetime64[]), ``bands`` (list), ``patch_size`` (ph, pw).
     """
     import numpy as np
-    import pandas as pd
 
     df = query_items(source, collection=collection, tile=tile, time=time,
                      bbox=bbox, direction=direction)

@@ -11,16 +11,11 @@ Functions:
 """
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, Optional, Union
 import pandas as pd
 import rasterio
 
 from s1grits.logger_config import get_logger
-from s1grits.canonical_catalog_schema import (
-    CANONICAL_CATALOG_COLUMNS,
-    SCHEMA_VERSION,
-    filter_complete_records,
-)
 
 logger = get_logger(__name__)
 

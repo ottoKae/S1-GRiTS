@@ -9,7 +9,6 @@ always up-to-date regardless of which workflow last ran.
 """
 
 import json as _json
-import os as _os
 from pathlib import Path
 from typing import Any
 
@@ -100,7 +99,7 @@ def update_root_catalog(
         "id": "s1-grits-root",
         "title": "S1-GRiTS DataCube",
         "description": (
-            f"Sentinel-1 analysis-ready data"
+            "Sentinel-1 analysis-ready data"
             + (f": {len(df_global)} records" if df_global is not None else "")
         ),
         "links": [

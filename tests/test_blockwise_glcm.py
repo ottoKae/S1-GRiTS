@@ -15,7 +15,6 @@ from pathlib import Path
 import numpy as np
 import pytest
 import zarr
-from rasterio.transform import Affine
 
 _ROOT = Path(__file__).resolve().parents[1]
 for _p in (str(_ROOT), str(_ROOT / "src")):

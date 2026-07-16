@@ -55,7 +55,7 @@ from s1grits.canonical_catalog_schema import (
 )
 from s1grits.product_instance import (
     resolve_variant_values, make_processing_signature,
-    make_product_variant, derive_actual_bands,
+    make_product_variant,
 )
 from s1grits.product_registry import load_product_registry
 from s1grits.file_lock import acquire_lock, release_lock

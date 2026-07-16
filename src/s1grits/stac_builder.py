@@ -608,24 +608,14 @@ def write_stac_collection(
             datetimes = pd.to_datetime(_dt_col, utc=True)
             # Strip timezone for STAC (use naive UTC timestamps)
             datetimes = datetimes.dt.tz_localize(None)
+            # Only the start feeds the collection extent below; the temporal
+            # interval is deliberately open-ended ([t_start, None]).
             t_start = datetimes.min().strftime("%Y-%m-%dT00:00:00Z")
-            t_end = datetimes.max().strftime("%Y-%m-%dT00:00:00Z")
         except Exception as dt_err:
             logger.debug("Could not compute temporal extent: %s", dt_err)
-            t_start = t_end = None
+            t_start = None
     else:
-        t_start = t_end = None
-
-    # Pixel size from first valid transform record
-    pixel_size = 10.0
-    for _, row in df.iterrows():
-        t = row.get("transform")
-        if t is not None:
-            try:
-                pixel_size = float(abs(list(t)[0]))
-                break
-            except Exception as _e:
-                logger.debug("Could not extract pixel size from transform: %s", _e)
+        t_start = None
 
     # Resolve the authoritative band list from COG files.
     # Scan up to 5 records to find one whose COG is readable; use the longest

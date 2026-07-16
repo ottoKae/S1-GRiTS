@@ -11,7 +11,6 @@ This script can be run to validate that:
 
 import numpy as np
 import pandas as pd
-from pathlib import Path
 from rasterio.transform import Affine
 from rasterio.profiles import Profile
 

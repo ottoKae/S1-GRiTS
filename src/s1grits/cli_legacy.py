@@ -28,7 +28,7 @@ def print_summary(results: dict):
         results: Processing results dictionary
     """
     console.print("\n")
-    console.rule(f"[bold blue]Processing Results Summary[/bold blue]", style="blue")
+    console.rule("[bold blue]Processing Results Summary[/bold blue]", style="blue")
 
     # Statistics
     success_count = sum(1 for r in results.values() if r['status'] == 'success')
@@ -48,7 +48,7 @@ def print_summary(results: dict):
     console.print(summary_table)
 
     # Detailed results table
-    detail_table = Table(title=f"\nDetailed Results", show_header=True, header_style="bold cyan")
+    detail_table = Table(title="\nDetailed Results", show_header=True, header_style="bold cyan")
     detail_table.add_column("MGRS Tile", style="cyan", width=12)
     detail_table.add_column("Status", justify="center", width=6)
     detail_table.add_column("Months", justify="right", width=7)
@@ -211,22 +211,22 @@ Configuration File:
         # Print summary
         print_summary(results)
 
-        logger.info(f"Workflow completed")
+        logger.info("Workflow completed")
         logger.info(f"Total time: {duration}")
 
         console.print(f"\nTotal time: [bold]{duration}[/bold]")
 
         # Set exit code based on results
         if all(r['status'] == 'success' for r in results.values()):
-            console.print(f"\n[bold green]Workflow completed successfully![/bold green]\n")
+            console.print("\n[bold green]Workflow completed successfully![/bold green]\n")
             sys.exit(0)
         else:
-            console.print(f"\n[bold yellow]WARNING: Some tasks failed[/bold yellow]\n")
+            console.print("\n[bold yellow]WARNING: Some tasks failed[/bold yellow]\n")
             sys.exit(1)
 
     except KeyboardInterrupt:
         from s1grits.logger_config import get_logger
-        console.print(f"\n\n[bold yellow]WARNING: User interrupted execution[/bold yellow]")
+        console.print("\n\n[bold yellow]WARNING: User interrupted execution[/bold yellow]")
         get_logger().warning("User interrupted execution")
         sys.exit(130)
 

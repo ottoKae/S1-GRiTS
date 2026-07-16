@@ -128,9 +128,9 @@ def append_pass_data(df_rtc: gpd.GeoDataFrame, mgrs_tile_ids: list[str]) -> gpd.
     rtc_columns = df_rtc.columns.tolist()
     if not all([col in rtc_columns for col in ['jpl_burst_id', 'pass_id', 'acq_dt', 'track_number']]):
         raise ValueError('Cannot append pass data without jpl_burst_id, pass_id, acq_dt, and track_number columns.')
-   
+
     df_lut = get_lut_by_mgrs_tile_ids(mgrs_tile_ids)
-    
+
     df_rtc = pd.merge(
         df_rtc,
         df_lut[['jpl_burst_id', 'mgrs_tile_id', 'acq_group_id_within_mgrs_tile', 'orbit_pass']],
@@ -425,7 +425,6 @@ def query_rtc_static_metadata_by_burst_ids(
                       batch_num, total_batches, len(batch))
 
         results = None
-        last_error = None
         for attempt in range(1, max_query_retries + 1):
             try:
                 results = asf.search(
@@ -435,7 +434,6 @@ def query_rtc_static_metadata_by_burst_ids(
                 )
                 break  # success
             except Exception as e:
-                last_error = e
                 if attempt < max_query_retries:
                     delay = query_retry_base_delay * (2 ** (attempt - 1))
                     jitter = _random.uniform(0, delay * 0.5)

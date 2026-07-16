@@ -80,7 +80,7 @@ try:
             # Just check if URL is accessible (HEAD request)
             response = requests.head(test_url, timeout=10, allow_redirects=True)
             if response.status_code in [200, 302]:
-                print(f"✅ Download URLs are accessible")
+                print("✅ Download URLs are accessible")
             else:
                 print(f"⚠️  Download returned status {response.status_code}")
                 print(f"   URL: {test_url}")

@@ -177,7 +177,7 @@ def create_display_vrt(
         if filelist_path:
             Path(filelist_path).unlink(missing_ok=True)
 
-    print(f"\nSUCCESS: Display mosaic created")
+    print("\nSUCCESS: Display mosaic created")
     print(f"Output: {output_path}")
     print("=" * 70)
 

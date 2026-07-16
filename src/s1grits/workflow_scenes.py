@@ -46,7 +46,6 @@ import pandas as pd
 import pyproj
 import rasterio
 import zarr
-import yaml
 from rasterio.enums import Resampling
 from rasterio.features import rasterize
 from rasterio.transform import Affine, array_bounds
@@ -89,7 +88,6 @@ from s1grits.memory_manager import (
     get_memory_strategy_from_config,
     chunk_time_by_strategy,
     detect_system_memory,
-    estimate_memory_demand_gb,
 )
 from s1grits.asf_output_writing import _build_grid_from_bursts, _build_grid_from_geoms, _mosaic_align, _generate_preview_png, _get_mgrs_tile_geometry_wkt, _clip_arrays_to_wkt_4326, _check_tile_integrity, _zarr_delete_timestep
 from s1grits.stac_builder import (
@@ -104,11 +102,10 @@ from s1grits.canonical_catalog_schema import (
     validate_collection_mapping,
 )
 from s1grits.product_instance import (
-    resolve_variant_values, make_processing_signature,
-    make_product_variant, derive_actual_bands,
+    make_processing_signature,
+    make_product_variant,
 )
-from s1grits.product_registry import load_product_registry
-from s1grits.file_lock import output_lock, acquire_lock, release_lock
+from s1grits.file_lock import acquire_lock, release_lock
 
 logger = get_logger(__name__)
 console = Console(legacy_windows=True, no_color=False)
@@ -6717,7 +6714,6 @@ def _init_scenes_worker(runtime_limits) -> None:
     Also sets up per-worker logging to enable debugging of download failures
     and other worker-specific issues that don't appear in the main log.
     """
-    import logging
     import os
     from pathlib import Path
     from s1grits.runtime_limits import apply_runtime_limits
@@ -6868,9 +6864,6 @@ def run_scenes_workflow(config_path: str | Path, overrides: dict | None = None) 
         logger.info("Runtime limits disabled")
 
     despeckle_token = _get_despeckle_token(config)
-    dir_token = {"ASCENDING": "ASCENDING", "DESCENDING": "DESCENDING"}.get(
-        config.get('roi', {}).get('flight_direction'), ""
-    )
 
     # Build band token from feature flags (e.g. '_Ratio_RVI')
     _proc = config.get('processing', {})
