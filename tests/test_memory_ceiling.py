@@ -25,7 +25,8 @@ for _p in (str(_ROOT), str(_ROOT / "src")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from s1grits import workflow_scenes as ws  # noqa: E402
+from s1grits import workflow_scenes as ws
+from s1grits.scenes import smonthly_writer as ws_smw  # noqa: E402
 from benchmarks import _synthetic as syn  # noqa: E402
 
 
@@ -63,7 +64,7 @@ def test_blockwise_never_stacks_full_tile(monkeypatch, tmp_path, num_threads):
             observed["calls"] += 1
         return real_composite(stack, method, trim)
 
-    monkeypatch.setattr(ws, "_monthly_composite_block", spy_composite)
+    monkeypatch.setattr(ws_smw, "_monthly_composite_block", spy_composite)
 
     g = syn.init_store(tmp_path / "deep.zarr", height, width, chunk)
     res = ws._write_smonthly_month_zarr_blockwise(

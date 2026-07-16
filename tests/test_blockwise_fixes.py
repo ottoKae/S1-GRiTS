@@ -18,6 +18,7 @@ from rasterio.transform import Affine
 
 from s1grits import workflow_scenes as ws
 from s1grits.scenes import mosaic as ws_mosaic
+from s1grits.scenes import smonthly_writer as ws_smw
 
 
 def test_mosaic_align_window_logs_fallback_warning(caplog, monkeypatch):
@@ -277,7 +278,7 @@ def test_blockwise_progress_logging(tmp_path, caplog, monkeypatch):
             return comp, np.ones((bh, bw), dtype=np.float32)
         return comp
 
-    monkeypatch.setattr(ws, '_track_composite_block', fake_composite)
+    monkeypatch.setattr(ws_smw, '_track_composite_block', fake_composite)
 
     # Run blockwise processing
     result = ws._write_smonthly_month_zarr_blockwise(
@@ -363,8 +364,8 @@ def test_blockwise_multitrack_stops_when_block_filled(tmp_path, monkeypatch):
         bw = (x_sl.stop or 0) - (x_sl.start or 0)
         return np.ones((bh, bw), dtype=bool)
 
-    monkeypatch.setattr(ws, '_track_composite_block', fake_composite)
-    monkeypatch.setattr(ws, '_track_valid_mask_block', fake_valid_mask)
+    monkeypatch.setattr(ws_smw, '_track_composite_block', fake_composite)
+    monkeypatch.setattr(ws_smw, '_track_valid_mask_block', fake_valid_mask)
 
     result = ws._write_smonthly_month_zarr_blockwise(
         g=g,

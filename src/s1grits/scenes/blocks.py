@@ -7,6 +7,8 @@ tile clipping, and the generic band-block writer.
 """
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import pandas as pd
 import pyproj
@@ -205,3 +207,74 @@ def _write_smonthly_block_bands(
 # that makes each block's GLCM bit-identical to the full-tile computation
 # (verified in tests/test_glcm_halo_equivalence.py).
 GLCM_BLOCK_HALO: int = 8
+
+
+def _linear_to_db(arr: np.ndarray) -> np.ndarray:
+    """Convert linear power to dB (10*log10). OPERA RTC-S1 stores power values. Values <= 0 become NaN."""
+    out = np.full_like(arr, np.nan, dtype=np.float32)
+    valid = arr > 0
+    out[valid] = (10.0 * np.log10(arr[valid])).astype(np.float32)
+    return out
+
+# Auto-mode ceiling on per-tile block threads. The thread-scaling benchmark
+# (benchmarks/bench_thread_scaling.py) shows speedup plateauing at 4 threads on
+# a real tile-month (1x/1.5x/3.4x/3.4x at 1/2/4/8), so "auto" never selects
+# more than this; an explicit integer can still exceed it if a user opts in.
+BLOCKWISE_AUTO_MAX_THREADS: int = 4
+
+def _resolve_blockwise_threads(value, max_workers: int = 1) -> int:
+    """Resolve the ``monthly.blockwise_threads`` setting to a thread count.
+
+    ``value`` is either a positive integer (used as-is) or the string
+    ``"auto"``, which divides the machine's CPU cores across the tile-level
+    process pool (``max_workers``) so the total thread count stays near the
+    core count.  BLAS/GDAL stay single-threaded via RuntimeLimits, so these
+    block threads do not oversubscribe through nested parallelism.  The auto
+    value is capped at ``BLOCKWISE_AUTO_MAX_THREADS`` (measured speedup plateau)
+    and floored at 1.  Unparseable values fall back to 1.
+    """
+    if isinstance(value, str) and value.strip().lower() == "auto":
+        cpu = os.cpu_count() or 1
+        per_worker = max(1, cpu // max(1, int(max_workers)))
+        return min(per_worker, BLOCKWISE_AUTO_MAX_THREADS)
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return 1
+
+def _iter_prefetched(items: list, fetch, prefetch: bool):
+    """Yield ``(index, fetch(index, item))`` in order, optionally pipelined.
+
+    With ``prefetch=False`` this is a plain sequential loop (byte-identical
+    behaviour to the historical batch loop). With ``prefetch=True`` a
+    single background thread runs ``fetch`` for item N+1 while the caller
+    consumes item N's result — a one-batch lookahead that overlaps the
+    download phase of the next batch with the QC/composite/write phases of
+    the current one. The lookahead is exactly one: at most two fetched
+    results are alive at once (the one being consumed and the one being
+    fetched), so peak memory is bounded at ~2x a single batch.
+
+    ``fetch`` exceptions surface at the corresponding iteration, exactly as
+    they would inline. Closing the generator early cancels the queued fetch
+    and drains the in-flight one before returning.
+    """
+    n = len(items)
+    if not prefetch or n <= 1:
+        for i, item in enumerate(items, 1):
+            yield i, fetch(i, item)
+        return
+
+    from concurrent.futures import ThreadPoolExecutor
+    ex = ThreadPoolExecutor(max_workers=1, thread_name_prefix="batch-prefetch")
+    fut = None
+    try:
+        fut = ex.submit(fetch, 1, items[0])
+        for i in range(1, n + 1):
+            cur, fut = fut, None
+            if i < n:
+                fut = ex.submit(fetch, i + 1, items[i])
+            yield i, cur.result()
+    finally:
+        if fut is not None:
+            fut.cancel()
+        ex.shutdown(wait=True, cancel_futures=True)

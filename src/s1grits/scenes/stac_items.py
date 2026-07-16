@@ -344,3 +344,17 @@ def _write_monthly_stac_item(
         tile_dir / "items" / product_label / f"{item_id}.json",
     )
     return item_id
+
+
+def _ws_write_scene_stac_item(*args, **kwargs):
+    """Dispatched through the workflow_scenes facade at call time so the
+    established test seam (patching workflow_scenes._write_scene_stac_item)
+    keeps covering the moved writer."""
+    from s1grits import workflow_scenes as _ws
+    return _ws._write_scene_stac_item(*args, **kwargs)
+
+
+def _ws_write_monthly_stac_item(*args, **kwargs):
+    """Facade dispatch; see _ws_write_scene_stac_item."""
+    from s1grits import workflow_scenes as _ws
+    return _ws._write_monthly_stac_item(*args, **kwargs)
