@@ -119,7 +119,9 @@ notebook = [
     "ipywidgets>=8.0.0",
 ]
 gui = [
-    # Legacy v1.0 Streamlit desktop GUI (superseded by the 'web' extra)
+    # DEPRECATED: legacy v1.0 Streamlit desktop GUI, superseded by the 'web'
+    # extra (`s1grits serve`, docs/webapp.md). Kept working for one release
+    # cycle; scheduled for removal together with src/gui/.
     "streamlit>=1.20.0",
     "streamlit-folium>=0.18.0",
     "folium>=0.16.0",
@@ -184,13 +186,10 @@ ignore = ["E701", "E702", "E731", "E741"]
 "**/__init__.py" = ["F401"]                    # re-export surfaces
 "tests/*" = ["E402"]                           # sys.path bootstrap precedes imports
 "benchmarks/*" = ["E402"]
-"gui/app.py" = ["E402"]                        # streamlit-run sys.path bootstrap
-"gui/styles.py" = ["E402"]
-"src/gui/app.py" = ["E402"]
+"src/gui/app.py" = ["E402"]                    # streamlit-run sys.path bootstrap
 "src/gui/styles.py" = ["E402"]
 # Legacy Streamlit GUI: deprecated in favour of `s1grits serve` (webapp) and
 # scheduled for removal — not worth churning its dead locals now.
-"gui/pages/*" = ["F841"]
 "src/gui/pages/*" = ["F841"]
 # Legacy modules with historical mid-file imports; retire with the modules
 # rather than churn them now.

@@ -144,9 +144,9 @@ def build_process_config(state: dict) -> dict:
     }
 
     # ── Processing ────────────────────────────────────────────────────────
-    despeckle_on = bool(state.get("post_processing", True))
+    despeckle_on = bool(state.get("monthly_despeckle", True))
     processing: dict = {
-        "post_processing":  despeckle_on,
+        "monthly_despeckle":  despeckle_on,
         "target_crs":       None,
         "target_resolution": 30.0,
         "use_roi_mask":     False,
@@ -323,7 +323,7 @@ def extract_form_state_from_config(cfg: dict) -> dict:
     state["max_download_workers"] = int(memory.get("max_download_workers", 2))
 
     # Processing — ensure bool for toggle widget
-    state["post_processing"] = bool(processing.get("post_processing", True))
+    state["monthly_despeckle"] = bool(processing.get("monthly_despeckle", True))
     state["reg_param"] = float(despeckle.get("kwargs", {}).get("reg_param", 5.0))
 
     # GLCM

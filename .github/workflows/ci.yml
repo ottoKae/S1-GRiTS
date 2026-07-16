@@ -45,7 +45,7 @@ jobs:
           pip install --only-binary=:all: -e ".[dev]"
 
       - name: ruff (lint rules from pyproject)
-        run: ruff check src tests gui tools benchmarks
+        run: ruff check src tests tools benchmarks
 
       - name: mypy (typed-module allowlist from pyproject)
         run: mypy
