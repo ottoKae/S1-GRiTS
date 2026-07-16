@@ -25,7 +25,8 @@ if str(_ROOT / "src") not in sys.path:
 
 pytest.importorskip("rasterio")
 
-from s1grits import workflow_scenes as ws  # noqa: E402
+from s1grits import workflow_scenes as ws
+from s1grits.scenes import store as ws_store  # noqa: E402
 
 RES = 30.0
 CRS = "EPSG:32717"
@@ -52,7 +53,7 @@ def _patch_tile_wkt(monkeypatch, minx, miny, maxx, maxy):
                    list(zip(lons, lats)) + [(lons[0], lats[0])])
         + "))"
     )
-    monkeypatch.setattr(ws, "_get_mgrs_tile_geometry_wkt", lambda _tile: wkt)
+    monkeypatch.setattr(ws_store, "_get_mgrs_tile_geometry_wkt", lambda _tile: wkt)
 
 
 def test_covering_grid_is_returned_unchanged(monkeypatch):
@@ -103,6 +104,6 @@ def test_unresolvable_tile_geometry_keeps_grid(monkeypatch):
     def _boom(_tile):
         raise RuntimeError("no LUT for tile")
 
-    monkeypatch.setattr(ws, "_get_mgrs_tile_geometry_wkt", _boom)
+    monkeypatch.setattr(ws_store, "_get_mgrs_tile_geometry_wkt", _boom)
     out = ws._expand_grid_to_tile_bounds(*grid, "17MPU", CRS, RES)
     assert out[0] == grid[0] and out[1] == 100 and out[2] == 100
