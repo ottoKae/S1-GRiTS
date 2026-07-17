@@ -41,11 +41,11 @@ st.set_page_config(
 # ---------------------------------------------------------------------------
 # Deprecation: this Streamlit GUI is superseded by the v2.3 web interface
 # (`s1grits serve`, see docs/webapp.md). It remains functional for now and
-# will be removed in a future release; new features land in the web UI only.
+# will be removed in v3.0.0; new features land in the web UI only.
 # ---------------------------------------------------------------------------
 st.warning(
-    "**This Streamlit GUI is deprecated** and will be removed in a future "
-    "release. Use the new web interface instead: `s1grits serve --root "
+    "**This Streamlit GUI is deprecated** and will be removed in v3.0.0. "
+    " Use the new web interface instead: `s1grits serve --root "
     "<workspace>` (see docs/webapp.md). New features land in the web UI only.",
     icon="⚠️",
 )

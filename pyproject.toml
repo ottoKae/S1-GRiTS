@@ -120,8 +120,8 @@ notebook = [
 ]
 gui = [
     # DEPRECATED: legacy v1.0 Streamlit desktop GUI, superseded by the 'web'
-    # extra (`s1grits serve`, docs/webapp.md). Kept working for one release
-    # cycle; scheduled for removal together with src/gui/.
+    # extra (`s1grits serve`, docs/webapp.md). Kept working until v3.0.0,
+    # which removes it together with src/gui/ (development -> stable line).
     "streamlit>=1.20.0",
     "streamlit-folium>=0.18.0",
     "folium>=0.16.0",
