@@ -5,6 +5,7 @@ Provides tools for analyzing Zarr/COG outputs from s1grits processing workflow.
 
 Modules:
 - io: Load and read datasets
+- pu_learning: Positive-Unlabeled classification (Elkan-Noto)
 - timeseries: Extract and analyze time series
 - plotting: Visualization tools
 - mosaic: Mosaic creation
@@ -112,3 +113,9 @@ __all__ = [
     "analyze_temporal_gaps",
     "get_tile_statistics",
 ]
+
+from .pu_learning import (
+    PUClassifier,
+    pu_training_set,
+    predict_proba_map,
+)

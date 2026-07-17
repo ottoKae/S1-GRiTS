@@ -650,3 +650,45 @@ create_display_vrt(
 ```
 
 ---
+
+
+---
+
+## Positive-Unlabeled Learning (`s1grits.analysis.pu_learning`)
+
+Train a binary classifier when you have reliable POSITIVE points (field-
+verified deforestation, flood, crop parcels) but no trustworthy negatives —
+only the unlabeled remainder of the scene. Implements Elkan & Noto (KDD
+2008): a labeled-vs-unlabeled classifier `g(x)` estimates `c * p(y=1|x)`
+under the SCAR assumption, and the label frequency `c` is recovered from a
+positive hold-out, so calibrated probabilities follow. Requires the `ml`
+extra (`pip install "s1grits[ml]"`).
+
+```python
+from s1grits.ml_loader import load_timeseries
+from s1grits.analysis import PUClassifier, pu_training_set, predict_proba_map
+
+cube = load_timeseries(root, collection="s1grits-smonthly", tile="17MPV")
+
+# positive_mask: 2-D bool (y, x) — your verified positive pixels
+X, s, meta = pu_training_set(
+    cube, positive_mask,
+    reducers=("mean", "std"),        # temporal features per band
+    unlabeled_per_positive=25,       # subsample the unlabeled ocean of pixels
+    random_state=0,
+)
+
+clf = PUClassifier(random_state=0).fit(X, s)
+print(clf.c_)      # estimated label frequency p(s=1 | y=1)
+print(clf.prior_)  # estimated class prior p(y=1)
+
+prob = predict_proba_map(clf, cube, meta)   # (y, x) calibrated p(y=1), NaN outside
+```
+
+- `PUClassifier(method="weighted")` uses the paper's weighted refit
+  (requires a base estimator accepting `sample_weight`); pass any
+  scikit-learn-style classifier as `base_estimator`, or a known label
+  frequency via `c=`.
+- The e1 estimator assumes positives are confidently positive (near-1 true
+  posterior); with heavy class overlap it underestimates `c` — supply a
+  domain-derived `c=` in that regime.
