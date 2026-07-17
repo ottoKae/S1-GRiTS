@@ -188,6 +188,25 @@ def check_scratch_hygiene(config: dict) -> list[CheckResult]:
     """
     import os
 
+    def _pid_alive(pid: int) -> bool:
+        # psutil (already a dependency) is the portable answer; the kill-0
+        # probe is POSIX-only fallback (on Windows dead PIDs surface as plain
+        # OSError, not ProcessLookupError).
+        try:
+            import psutil
+            return bool(psutil.pid_exists(pid))
+        except ImportError:
+            pass
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True       # alive under another uid
+        except OSError:
+            return False
+
     results: list[CheckResult] = []
     base_dir = Path(((config.get("output") or {}).get("base_dir")) or "./output")
     mem = config.get("memory") or {}
@@ -200,13 +219,8 @@ def check_scratch_hygiene(config: dict) -> list[CheckResult]:
                 pid = int(d.name.split("-", 1)[1])
             except (IndexError, ValueError):
                 continue
-            try:
-                os.kill(pid, 0)   # signal 0: liveness probe only
-                continue          # process alive -> in use, not an orphan
-            except ProcessLookupError:
-                pass              # dead PID -> orphan
-            except PermissionError:
-                continue          # alive under another uid -> in use
+            if _pid_alive(pid):
+                continue          # in use, not an orphan
             orphans.append(d)
             orphan_bytes += sum(
                 f.stat().st_size for f in d.rglob("*") if f.is_file()
