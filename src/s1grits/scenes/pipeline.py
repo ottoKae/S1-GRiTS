@@ -1350,9 +1350,16 @@ def process_single_scenes_tile(
                 "batch resident in RAM)."
             )
 
+        # Peak-RSS watermark: sampled at every batch boundary (the residency
+        # peaks the bounded-memory model is supposed to cap), logged at tile
+        # end and returned in the result dict — so a production run leaves an
+        # auditable record of what the memory model actually did.
+        _peak_rss_mb = _rss_mb() or 0.0
+
         for batch_idx, _fetched in _iter_prefetched(
             date_batches, _fetch_batch, _prefetch_enabled
         ):
+            _peak_rss_mb = max(_peak_rss_mb, _rss_mb() or 0.0)
             if _fetched is None:
                 continue
             df_batch = _fetched['df_batch']
@@ -1743,6 +1750,13 @@ def process_single_scenes_tile(
 
         _console.print(f"[dim]  Done: {tile_dir}[/dim]")
 
+        _peak_rss_mb = max(_peak_rss_mb, _rss_mb() or 0.0)
+        if _peak_rss_mb:
+            logger.info(
+                "[Memory] Tile %s peak observed RSS: %.0f MB "
+                "(sampled at batch boundaries)", mgrs_tile_id, _peak_rss_mb,
+            )
+
         return {
             'status':         'success',
             'error':          None,
@@ -1754,6 +1768,7 @@ def process_single_scenes_tile(
             ),
             'dropped_tracks': _dropped_tracks,
             'incomplete_acquisitions': _incomplete_acqs,
+            'peak_rss_mb':    round(_peak_rss_mb) if _peak_rss_mb else None,
         }
 
     except Exception as e:

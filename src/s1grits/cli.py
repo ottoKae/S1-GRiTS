@@ -698,6 +698,32 @@ def cmd_doctor(args):
     sys.exit(exit_code)
 
 
+def cmd_cache_prune(args):
+    """LRU-prune the burst cache to a size cap; also removes stale .part files."""
+    from s1grits.burst_cache import prune, usage
+
+    cache_dir = args.cache_dir
+    if not cache_dir and args.config:
+        import yaml
+        with open(args.config, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        cache_dir = (cfg.get("memory") or {}).get("burst_cache_dir")
+    if not cache_dir:
+        print("ERROR: pass --cache-dir, or --config whose memory.burst_cache_dir is set",
+              file=sys.stderr)
+        sys.exit(2)
+
+    n, size = usage(cache_dir)
+    print(f"Burst cache: {n} entrie(s), {size / 1e9:.2f} GB in {cache_dir}")
+    s = prune(cache_dir, args.max_gb, dry_run=args.dry_run)
+    verb = "would evict" if s["dry_run"] else "evicted"
+    print(
+        f"prune to {args.max_gb:g} GB: {verb} {s['evicted']} entrie(s) "
+        f"({s['reclaimed_bytes'] / 1e9:.2f} GB), removed {s['stale_parts']} stale "
+        f".part file(s); now {s['entries']} entrie(s), {s['bytes'] / 1e9:.2f} GB"
+    )
+
+
 def cmd_process_scenes(args):
     """Run the scenes workflow (per-pass outputs + optional monthly)."""
     from s1grits.workflow_scenes import run_scenes_workflow
@@ -1145,6 +1171,26 @@ Examples:
         help='Also check ASF/CMR reachability (needs internet)'
     )
     parser_doctor.set_defaults(func=cmd_doctor)
+
+    # ── cache ────────────────────────────────────────────────────────────────
+    parser_cache = subparsers.add_parser(
+        'cache', help='Burst-cache maintenance'
+    )
+    cache_sub = parser_cache.add_subparsers(dest='cache_command', required=True)
+    p = cache_sub.add_parser(
+        'prune',
+        help='LRU-evict burst-cache entries down to a size cap '
+             '(safe while workers run; evicted entries just re-download)'
+    )
+    p.add_argument('--cache-dir', default=None,
+                   help='Cache directory (default: memory.burst_cache_dir from --config)')
+    p.add_argument('--config', default=None,
+                   help='YAML config to read memory.burst_cache_dir from')
+    p.add_argument('--max-gb', type=float, required=True,
+                   help='Target cache size in GB after pruning')
+    p.add_argument('--dry-run', action='store_true',
+                   help='Report what would be evicted without deleting')
+    p.set_defaults(func=cmd_cache_prune)
 
     # ── process_scenes ────────────────────────────────────────────────────────
     parser_scenes = subparsers.add_parser(

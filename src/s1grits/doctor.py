@@ -176,6 +176,68 @@ def check_filesystem(config: dict) -> list[CheckResult]:
     return results
 
 
+def check_scratch_hygiene(config: dict) -> list[CheckResult]:
+    """Report reclaimable scratch: orphaned spill dirs and burst-cache size.
+
+    - ``memory.batch_spill`` writes per-PID dirs under ``memory.spill_dir``
+      (default ``{output.base_dir}/.spill``); a crashed/killed run leaves its
+      dir behind. Orphans are detected by PID liveness, so a spill dir owned
+      by a still-running worker is never flagged.
+    - The burst cache grows without bound; its size is surfaced with the
+      ``s1grits cache prune`` remediation attached.
+    """
+    import os
+
+    results: list[CheckResult] = []
+    base_dir = Path(((config.get("output") or {}).get("base_dir")) or "./output")
+    mem = config.get("memory") or {}
+
+    spill_root = Path(mem.get("spill_dir") or (base_dir / ".spill"))
+    if spill_root.is_dir():
+        orphans, orphan_bytes = [], 0
+        for d in sorted(spill_root.glob("pid-*")):
+            try:
+                pid = int(d.name.split("-", 1)[1])
+            except (IndexError, ValueError):
+                continue
+            try:
+                os.kill(pid, 0)   # signal 0: liveness probe only
+                continue          # process alive -> in use, not an orphan
+            except ProcessLookupError:
+                pass              # dead PID -> orphan
+            except PermissionError:
+                continue          # alive under another uid -> in use
+            orphans.append(d)
+            orphan_bytes += sum(
+                f.stat().st_size for f in d.rglob("*") if f.is_file()
+            )
+        if orphans:
+            results.append(_check(
+                "fs:spill-orphans", WARN,
+                f"{len(orphans)} orphaned spill dir(s), "
+                f"{orphan_bytes / 1e9:.2f} GB under {spill_root} "
+                f"(left by interrupted runs) — safe to delete: "
+                f"rm -rf {' '.join(str(d) for d in orphans[:3])}"
+                + (" ..." if len(orphans) > 3 else "")
+            ))
+        else:
+            results.append(_check(
+                "fs:spill-orphans", OK, f"no orphaned spill dirs in {spill_root}"
+            ))
+
+    cache_dir = mem.get("burst_cache_dir")
+    if cache_dir and Path(cache_dir).is_dir():
+        from s1grits.burst_cache import usage
+        n, size = usage(cache_dir)
+        results.append(_check(
+            "fs:burst-cache-size", OK,
+            f"{n} entrie(s), {size / 1e9:.2f} GB in {cache_dir} "
+            f"(cap it with: s1grits cache prune --cache-dir {cache_dir} "
+            f"--max-gb N)"
+        ))
+    return results
+
+
 def check_store_grid_consistency(config: dict) -> list[CheckResult]:
     """Detect tiles whose existing Zarr stores sit on DIFFERENT locked grids.
 
@@ -344,6 +406,7 @@ def run_doctor(
     if config:
         results.extend(check_config(config))
         results.extend(check_filesystem(config))
+        results.extend(check_scratch_hygiene(config))
         results.extend(check_store_grid_consistency(config))
         results.extend(check_resources(config))
 
