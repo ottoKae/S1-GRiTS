@@ -8,6 +8,12 @@ the full history.
 ## [Unreleased]
 
 ### Added
+- **Positive-Unlabeled learning** (`s1grits.analysis.pu_learning`, `ml`
+  extra): Elkan-Noto PU classifier (`PUClassifier`, calibrated + weighted
+  methods, label-frequency and class-prior estimation) with Data Cube
+  helpers `pu_training_set` / `predict_proba_map` that turn a
+  `(time, band, y, x)` cube plus a 2-D positive mask into per-pixel
+  temporal-feature training data and calibrated probability maps.
 - **Layered product registry** — the Data Cube design layer is decoupled
   from the repository: built-in defaults ship inside the package
   (`s1grits.product_registry.DEFAULT_REGISTRY`), `metadata.product_config`
