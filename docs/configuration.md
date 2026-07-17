@@ -379,10 +379,43 @@ Every key below is read by the workflows (the whitelist in
 the startup warning both flag unknown keys). `tests/test_config_reference_docs.py`
 keeps this document in lockstep with that whitelist.
 
-### Metadata
+### Metadata — layered product registry
 
-- `metadata.product_config` — path to a product-registry YAML overriding the
-  built-in product definitions. Rarely needed.
+Product definitions (STAC collection ids, dimension layouts, guaranteed
+bands, variant fields) resolve through three layers; the effective registry
+is a pure function of the package version + the workflow config, never of
+the current working directory:
+
+1. **Built-in defaults** ship inside the package
+   (`s1grits.product_registry.DEFAULT_REGISTRY`) — official workflows need
+   no registry file at all.
+2. `metadata.product_config` — optional path to an overlay YAML whose
+   `products:` entries are **merged per product** over the built-ins: an
+   unknown product type is added (must define at least `collection_id`), a
+   known one is field-merged (e.g. tweak `variant_fields` of `scenes`
+   without restating the rest). A file declaring top-level `replace: true`
+   replaces the registry wholesale instead (the legacy semantics).
+3. `metadata.products` — the same `products:`-shaped mapping **inline** in
+   the workflow YAML, merged last. This is the recommended way for external
+   projects to define a custom Data Cube: one self-contained config file,
+   no dependency on this repository's config tree.
+
+```yaml
+metadata:
+  products:
+    my_flood_cube:            # new product type
+      collection_id: myproj-flood
+      derived_from: ["VV_dB"]
+    scenes:                   # tweak a built-in product
+      variant_fields:
+        - processing.spatial_despeckle
+        - processing.features_ratio
+```
+
+> **Deprecated (removal in v3.0.0):** with neither override set, a
+> `config/s1grits_products.yaml` found under the *current working directory*
+> is still auto-loaded with legacy replace semantics, with a deprecation
+> warning when it differs from the built-ins.
 
 ### ROI
 
