@@ -108,6 +108,99 @@ class BurstCache:
                 pass
 
 
+def prune(cache_dir, max_gb: float, *, dry_run: bool = False) -> dict:
+    """LRU-prune the cache directory down to ``max_gb`` total.
+
+    The cache grows without bound across multi-tile archive runs (hundreds of
+    GB of shared bursts), so this gives operators a size cap:
+
+    - eviction order is least-recently-USED first, judged by the data file's
+      ``max(atime, mtime)`` — atime when the filesystem tracks it, mtime as
+      the floor on ``noatime`` mounts (every ``put`` refreshes mtime);
+    - entries are removed as ``.bin`` + ``.sha256`` pairs so a survivor is
+      never left checksum-less (a half-removed entry would just read as a
+      miss, but why leave litter);
+    - stale ``.part`` temp files older than an hour (crashed writers) are
+      removed regardless of the budget.
+
+    Safe to run while workers are downloading: a concurrently re-added entry
+    simply gets re-published, and readers of a just-evicted entry fall back to
+    a normal download. Returns a summary dict (entries/bytes before/after,
+    evicted count, reclaimed bytes).
+    """
+    import time as _time
+
+    root = Path(cache_dir)
+    budget = int(float(max_gb) * 1e9)
+    entries = []  # (last_used, size, data_path, meta_path)
+    stale_parts = 0
+    now = _time.time()
+    if root.is_dir():
+        for data_p in root.glob("*.bin"):
+            try:
+                st = data_p.stat()
+            except OSError:
+                continue
+            # _paths() derives both names from the same base: "<key>.bin" and
+            # "<key>.sha256" — the sidecar swaps the .bin suffix, not appends.
+            meta_p = data_p.with_suffix(".sha256")
+            entries.append((max(st.st_atime, st.st_mtime), st.st_size, data_p, meta_p))
+        for part in root.glob("*.part.*"):
+            try:
+                if now - part.stat().st_mtime > 3600:
+                    if not dry_run:
+                        part.unlink()
+                    stale_parts += 1
+            except OSError:
+                pass
+
+    total = sum(size for _, size, _, _ in entries)
+    summary = {
+        "entries": len(entries), "bytes": total,
+        "evicted": 0, "reclaimed_bytes": 0, "stale_parts": stale_parts,
+        "dry_run": bool(dry_run),
+    }
+    if total <= budget:
+        return summary
+
+    for last_used, size, data_p, meta_p in sorted(entries):  # oldest first
+        if total <= budget:
+            break
+        if not dry_run:
+            for p in (data_p, meta_p):
+                try:
+                    p.unlink()
+                except OSError:
+                    continue
+        total -= size
+        summary["evicted"] += 1
+        summary["reclaimed_bytes"] += size
+    summary["bytes"] = total
+    summary["entries"] = len(entries) - summary["evicted"]
+    logger.info(
+        "[BurstCache] prune%s: evicted %d entrie(s), reclaimed %.2f GB "
+        "(now %d entries, %.2f GB; %d stale .part removed)",
+        " (dry-run)" if dry_run else "",
+        summary["evicted"], summary["reclaimed_bytes"] / 1e9,
+        summary["entries"], summary["bytes"] / 1e9, stale_parts,
+    )
+    return summary
+
+
+def usage(cache_dir) -> tuple[int, int]:
+    """(entry_count, total_bytes) of committed entries under ``cache_dir``."""
+    root = Path(cache_dir)
+    n = size = 0
+    if root.is_dir():
+        for data_p in root.glob("*.bin"):
+            try:
+                size += data_p.stat().st_size
+                n += 1
+            except OSError:
+                continue
+    return n, size
+
+
 # --------------------------------------------------------------------------- #
 # Module-level opt-in singleton (configured once per worker process).
 # --------------------------------------------------------------------------- #
