@@ -68,8 +68,8 @@ def main() -> None:
     ]
 
     print(
-        "WARNING: the Streamlit GUI is DEPRECATED and will be removed in a "
-        "future release. Use the web interface instead: "
+        "WARNING: the Streamlit GUI is DEPRECATED and will be removed in v3.0.0. "
+        " Use the web interface instead: "
         "`s1grits serve --root <workspace>` (see docs/webapp.md).",
         file=sys.stderr,
     )

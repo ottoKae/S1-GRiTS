@@ -24,7 +24,9 @@ the full history.
   `store`, `qc`, `scene_writer`, `smonthly_writer`, `pipeline`, `support`);
   `workflow_scenes` remains a full backward-compatible facade (7,152 → 499
   lines) (#22, #23, #24).
-- The **Streamlit GUI is deprecated** in favour of the v2.3 web interface
+- The **Streamlit GUI is deprecated** (removal in **v3.0.0**, together
+  with the legacy monthly/static workflows and the full-frame writer
+  opt-out) in favour of the v2.3 web interface
   (`s1grits serve`, see `docs/webapp.md`); the duplicated GUI tree was
   consolidated to `src/gui` — fixing a bug where the packaged copy emitted
   the obsolete `post_processing` config key so the despeckle toggle was
