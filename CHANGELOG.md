@@ -8,6 +8,14 @@ the full history.
 ## [Unreleased]
 
 ### Added
+- **Layered product registry** — the Data Cube design layer is decoupled
+  from the repository: built-in defaults ship inside the package
+  (`s1grits.product_registry.DEFAULT_REGISTRY`), `metadata.product_config`
+  overlays a registry file with per-product merge semantics (top-level
+  `replace: true` keeps the legacy wholesale replacement), and the new
+  inline `metadata.products` block lets a workflow YAML define a fully
+  custom Data Cube self-contained, with no dependency on
+  `config/s1grits_products.yaml`.
 - `s1grits cache prune --max-gb N` — LRU size cap for the burst cache
   (evicts least-recently-used entries as `.bin`+`.sha256` pairs; also removes
   stale `.part` temp files). Safe to run alongside active workers (#25).

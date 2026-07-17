@@ -23,7 +23,10 @@ logger = logging.getLogger(__name__)
 # "leaf or free-form subtree" (despeckle.kwargs etc. are passed through).
 KNOWN_KEYS: dict = {
     "workflow": None,
-    "metadata": {"product_config": None},
+    "metadata": {
+        "product_config": None,  # optional registry-overlay YAML path
+        "products": None,        # inline product overlay (free-form subtree)
+    },
     "roi": {
         "wkt": None,
         "manual_mgrs_tiles": None,

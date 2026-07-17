@@ -211,6 +211,7 @@ files = [
     "src/s1grits/lazy_burst.py",
     "src/s1grits/burst_cache.py",
     "src/s1grits/config_schema.py",
+    "src/s1grits/product_registry.py",
     "src/s1grits/runtime_limits.py",
     "src/s1grits/memory_manager.py",
 ]
