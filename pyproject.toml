@@ -111,6 +111,7 @@ dev = [
     "pytest-cov>=4.1.0",
     "ruff>=0.1.0",
     "mypy>=1.5.0",
+    "types-PyYAML>=6.0",   # yaml stubs for the mypy-checked modules
 ]
 notebook = [
     "jupyter>=1.0.0",
