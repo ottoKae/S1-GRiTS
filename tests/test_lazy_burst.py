@@ -197,7 +197,7 @@ def test_scenes_writer_parity_lazy_vs_eager(tmp_path):
                 transform=MASTER_T, width=W, height=H,
                 x_coords=np.arange(W), y_coords=np.arange(H),
                 tile_clip=True, features_ratio=True, features_rvi=True,
-                features_glcm=True, do_despeckle=False, scenes_blockwise=True,
+                features_glcm=True, do_despeckle=False,
             )
         store = list(tile_dir.glob("scenes_*/zarr/*.zarr"))[0]
         g = zarr.open_group(str(store), mode="r", zarr_format=3)

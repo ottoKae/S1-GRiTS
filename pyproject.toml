@@ -125,22 +125,13 @@ notebook = [
     "matplotlib>=3.7.0",
     "ipywidgets>=8.0.0",
 ]
-gui = [
-    # DEPRECATED: legacy v1.0 Streamlit desktop GUI, superseded by the 'web'
-    # extra (`s1grits serve`, docs/webapp.md). Kept working until v3.0.0,
-    # which removes it together with src/gui/ (development -> stable line).
-    "streamlit>=1.20.0",
-    "streamlit-folium>=0.18.0",
-    "folium>=0.16.0",
-    "plotly>=5.18.0",
-]
 web = [
     # v2.3 web UI: `s1grits serve` (see docs/webapp.md)
     "fastapi>=0.110.0",
     "uvicorn>=0.29.0",
 ]
 all = [
-    "s1grits[dev,notebook,gui,web,ml]",
+    "s1grits[dev,notebook,web,ml]",
 ]
 
 [project.urls]
@@ -150,8 +141,7 @@ Repository = "https://github.com/ottoKae/S1-GRiTS"
 Issues = "https://github.com/ottoKae/S1-GRiTS/issues"
 
 [project.scripts]
-s1grits     = "s1grits.cli:main"
-s1grits-gui = "s1grits.gui_entry:main"
+s1grits = "s1grits.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -169,8 +159,6 @@ where = ["src"]
     "static/*.js",
 ]
 "s1grits.analysis" = ["*.py"]
-"gui" = ["*.py"]
-"gui.pages" = ["*.py"]
 
 # ---------------------------------------------------------------------------
 # Lint (ruff) — correctness-focused start: pyflakes + pycodestyle errors.
@@ -193,11 +181,6 @@ ignore = ["E701", "E702", "E731", "E741"]
 "**/__init__.py" = ["F401"]                    # re-export surfaces
 "tests/*" = ["E402"]                           # sys.path bootstrap precedes imports
 "benchmarks/*" = ["E402"]
-"src/gui/app.py" = ["E402"]                    # streamlit-run sys.path bootstrap
-"src/gui/styles.py" = ["E402"]
-# Legacy Streamlit GUI: deprecated in favour of `s1grits serve` (webapp) and
-# scheduled for removal — not worth churning its dead locals now.
-"src/gui/pages/*" = ["F841"]
 # Legacy modules with historical mid-file imports; retire with the modules
 # rather than churn them now.
 "src/s1grits/asf_output_writing.py" = ["E402"]

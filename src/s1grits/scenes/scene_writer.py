@@ -1,9 +1,9 @@
 """Per-acquisition scenes product writer (Zarr + COG + preview + records).
 
 Extracted move-only from workflow_scenes.py (which re-exports every name
-here). The bounded-memory blockwise path is the default
-(processing.scenes_blockwise); the legacy full-frame writer remains as the
-byte-strict opt-out. Test seams are preserved via facade dispatch:
+here). The writer is the bounded-memory blockwise path: per-block
+mosaic/dB/Ratio/RVI/clip/Zarr writes, halo-blockwise GLCM, and COG/preview
+streamed back from the store. Test seams are preserved via facade dispatch:
 patching workflow_scenes._mosaic_align / ._write_scene_stac_item keeps
 covering this writer.
 """
@@ -25,8 +25,6 @@ from shapely.ops import transform as shp_transform
 
 from s1grits.asf_output_writing import (
     _check_tile_integrity,
-    _clip_arrays_to_wkt_4326,
-    _generate_preview_png,
     _get_mgrs_tile_geometry_wkt,
 )
 from s1grits.canonical_catalog_schema import normalize_catalog_record
@@ -50,7 +48,6 @@ from s1grits.scenes.blocks import (
 )
 from s1grits.scenes.cog import (
     _export_scene_cog_preview_from_zarr,
-    _write_multiband_cog,
 )
 from s1grits.scenes.mosaic import (
     _compute_scene_dst_bounds,
@@ -63,7 +60,7 @@ from s1grits.scenes.qc import (
     _missing_interior_bursts,
 )
 from s1grits.scenes.stac_items import _ws_write_scene_stac_item
-from s1grits.scenes.store import _append_zarr_timestep, _init_zarr_2band
+from s1grits.scenes.store import _init_zarr_2band
 
 logger = get_logger(__name__)
 console = Console(legacy_windows=True, no_color=False)
@@ -103,9 +100,9 @@ def _write_scene_timestep_blockwise(
     burst-union grid and clipped only after derivation.
 
     The interior-hole QC decision is made by the caller BEFORE this reserves a
-    timestep (matching the legacy full-frame order), so this only runs for
-    acquisitions that will be kept. Any exception rolls the reserved slot back
-    so the store never keeps a partial timestep. Returns the committed index.
+    timestep, so this only runs for acquisitions that will be kept. Any
+    exception rolls the reserved slot back so the store never keeps a partial
+    timestep. Returns the committed index.
     """
     _all_band_names = list(band_names) + list(glcm_band_names or [])
     blocks = list(_iter_spatial_blocks(height, width, chunk_y, chunk_x))
@@ -125,8 +122,8 @@ def _write_scene_timestep_blockwise(
             copol_name: _linear_to_db(vv_lin),
             crosspol_name: _linear_to_db(vh_lin),
         }
-        # Same expressions as the legacy full-frame writer — the blocked and
-        # full paths must stay bit-identical per pixel.
+        # Per-pixel band expressions (dB / Ratio / RVI): a block sees exactly
+        # the same inputs as any other, so results are position-independent.
         if features_ratio:
             with np.errstate(divide="ignore", invalid="ignore"):
                 _denom_r = np.where(vv_lin > 0, vv_lin, np.nan)
@@ -224,7 +221,6 @@ def _write_scenes_output(
     incomplete_sink: list | None = None,
     interior_hole_max_frac: float = 0.005,
     rebuild_on_mismatch: bool = False,
-    scenes_blockwise: bool = True,
     blockwise_threads: int = 1,
 ) -> list[dict]:
     """
@@ -233,12 +229,10 @@ def _write_scenes_output(
     Always operates in acq_group mode — each relative orbit track gets
     its own Zarr store, COGs, and previews. No time-floored grouping.
 
-    ``scenes_blockwise`` (default) routes each acquisition through the
-    bounded-memory Phase 2 path: per-block mosaic/dB/Ratio/RVI/clip/Zarr
-    writes, halo-blockwise GLCM, and COG/preview streamed back from the
-    store — value-identical to the legacy full-frame path (locked by
-    tests/test_scenes_blockwise_writer.py). ``scenes_blockwise=False`` keeps
-    the byte-strict legacy full-frame writer.
+    Each acquisition is routed through the bounded-memory blockwise path:
+    per-block mosaic/dB/Ratio/RVI/clip/Zarr writes, halo-blockwise GLCM, and
+    COG/preview streamed back from the store (locked by
+    tests/test_scenes_blockwise_writer.py).
 
     Returns catalog records with output_type='scenes'.
     """
@@ -334,45 +328,42 @@ def _write_scenes_output(
 
     catalog_records: list[dict] = []
 
-    # ---- Phase 2: blockwise write path setup ----
-    _use_blockwise = bool(scenes_blockwise)
+    # ---- Blockwise write path setup ----
     _bounds_vv = _bounds_vh = None
     _clip_geom_blocks = None
     _scene_tex_cfg = None
-    if _use_blockwise:
-        if not do_despeckle:
-            # One-time warp of cross-grid bursts onto the master lattice so
-            # per-block reads are slice copies instead of O(bursts x blocks)
-            # GDAL warps (same destination lattice => same values).
-            final_vv, prof_vv = _prealign_scenes_to_master_grid(
-                final_vv, prof_vv, transform, target_crs, height, width
-            )
-            final_vh, prof_vh = _prealign_scenes_to_master_grid(
-                final_vh, prof_vh, transform, target_crs, height, width
-            )
-            _bounds_vv = _compute_scene_dst_bounds(
-                final_vv, prof_vv, transform, target_crs, height, width
-            )
-            _bounds_vh = _compute_scene_dst_bounds(
-                final_vh, prof_vh, transform, target_crs, height, width
-            )
-        _clip_geom_blocks = _prepare_block_clip_geom(
-            tile_clip, mgrs_tile_id, target_crs
+    if not do_despeckle:
+        # One-time warp of cross-grid bursts onto the master lattice so
+        # per-block reads are slice copies instead of O(bursts x blocks)
+        # GDAL warps (same destination lattice => same values).
+        final_vv, prof_vv = _prealign_scenes_to_master_grid(
+            final_vv, prof_vv, transform, target_crs, height, width
         )
-        if features_glcm:
-            # Identical dict to the legacy full-frame compute call (the
-            # explicit ranges equal compute_glcm_texture_bands' defaults).
-            _scene_tex_cfg = {
-                "enabled": True, "inputs": [copol_name, crosspol_name],
-                "metrics": ["contrast", "homogeneity", "entropy", "correlation"],
-                "window_size": 5, "distance": 1, "angles": [0, 90],
-                "average_angles": True, "levels": 16,
-                "vv_db_range": [-25, 5], "vh_db_range": [-32, -5],
-            }
-        logger.info(
-            "[Blockwise] Scenes writer: bounded-memory per-block path "
-            "(chunk %dx%d, threads=%d)", chunk_y, chunk_x, int(blockwise_threads)
+        final_vh, prof_vh = _prealign_scenes_to_master_grid(
+            final_vh, prof_vh, transform, target_crs, height, width
         )
+        _bounds_vv = _compute_scene_dst_bounds(
+            final_vv, prof_vv, transform, target_crs, height, width
+        )
+        _bounds_vh = _compute_scene_dst_bounds(
+            final_vh, prof_vh, transform, target_crs, height, width
+        )
+    _clip_geom_blocks = _prepare_block_clip_geom(
+        tile_clip, mgrs_tile_id, target_crs
+    )
+    if features_glcm:
+        # Explicit ranges equal compute_glcm_texture_bands' defaults.
+        _scene_tex_cfg = {
+            "enabled": True, "inputs": [copol_name, crosspol_name],
+            "metrics": ["contrast", "homogeneity", "entropy", "correlation"],
+            "window_size": 5, "distance": 1, "angles": [0, 90],
+            "average_angles": True, "levels": 16,
+            "vv_db_range": [-25, 5], "vh_db_range": [-32, -5],
+        }
+    logger.info(
+        "[Blockwise] Scenes writer: bounded-memory per-block path "
+        "(chunk %dx%d, threads=%d)", chunk_y, chunk_x, int(blockwise_threads)
+    )
 
     # ---- Iterate over acquisition groups ----
     _acq_iter = sorted(_acq_group_to_rows.items(), key=lambda kv: min(pd.Timestamp(r['acq_dt']).tz_convert('UTC') for r in kv[1]))
@@ -399,7 +390,7 @@ def _write_scenes_output(
         for _r in _rows:
             _r_str = pd.Timestamp(_r['acq_dt']).tz_convert('UTC').strftime('%Y%m%dT%H%M%S')
             _idx.extend(_dt_str_to_clean_idx.get(_r_str, []))
-        if _use_blockwise and not do_despeckle:
+        if not do_despeckle:
             # Blockwise despeckle-off reads each destination block lazily in the
             # writer (_mosaic_align_scene_window); building the full-frame mosaic
             # here would defeat the O(block) memory bound. QC runs on the finite
@@ -493,8 +484,7 @@ def _write_scenes_output(
         track_number  = int(rows[0]['track_number']) if rows else -1
         pass_id       = int(rows[0]['pass_id'])       if rows else -1
 
-        # Interior-gap QC decision, shared by the legacy full-frame and the
-        # blockwise write paths so their skip/keep behaviour is byte-identical.
+        # Interior-gap QC decision.
         # Edge truncation (bursts missing at the along-track ENDS) is normal and
         # kept. We act on a real interior gap, detected two ways (either
         # triggers):
@@ -511,10 +501,10 @@ def _write_scenes_output(
 
         def _qc_decision(_raw_vv_finite) -> str:
             """Return 'keep' or 'skip' from a raw-VV finite mask; raise on the
-            abort policy. Closes over the per-acquisition accounting locals. The
-            legacy path passes the full raw mosaic mask up front; the blockwise
-            despeckle-off path passes the mask accumulated during pass 1 — same
-            logic, same decision, so the two writers skip identically."""
+            abort policy. Closes over the per-acquisition accounting locals.
+            Despeckle-on passes the full raw mosaic mask up front; despeckle-off
+            passes the mask accumulated during pass 1 — same logic, same
+            decision."""
             if _raw_vv_finite is None or not _raw_vv_finite.any():
                 logger.warning("Scene %s mosaic returned None/empty, skipping", dt_str)
                 return "skip"
@@ -571,9 +561,7 @@ def _write_scenes_output(
             return "keep"
 
         def _emit_scene_records(_zarr_rel, _cog_rel, _prev_rel) -> None:
-            """Write the scene STAC item + catalog record. Shared verbatim by
-            the blockwise and legacy write paths so both emit identical
-            metadata for the same acquisition."""
+            """Write the scene STAC item + catalog record."""
             _ws_write_scene_stac_item(
                 mgrs_tile_id, direction_label, acq_ts, tile_dir,
                 transform, width, height, target_crs,
@@ -631,43 +619,79 @@ def _write_scenes_output(
             })
             catalog_records.append(_rec)
 
-        if _use_blockwise:
-            # ---- Bounded-memory blockwise write (Phase 2) ----
-            zarr_relpath = zarr_path_group.relative_to(tile_dir)
+        # ---- Bounded-memory blockwise write ----
+        zarr_relpath = zarr_path_group.relative_to(tile_dir)
 
-            def _read_pair(_ys, _xs):
-                _vvw = _mosaic_align_scene_window(
-                    indices, final_vv, prof_vv, height, width,
-                    transform, target_crs, _ys, _xs, _bounds_vv,
+        def _read_pair(_ys, _xs):
+            _vvw = _mosaic_align_scene_window(
+                indices, final_vv, prof_vv, height, width,
+                transform, target_crs, _ys, _xs, _bounds_vv,
+            )
+            _vhw = _mosaic_align_scene_window(
+                indices, final_vh, prof_vh, height, width,
+                transform, target_crs, _ys, _xs, _bounds_vh,
+            )
+            return _vvw, _vhw
+
+        if do_despeckle:
+            # Raw mosaic exists (from _prep_acquisition); the despeckled
+            # full arrays are the block source (despeckle's global coupling
+            # makes that the one >block allocation, per the architecture doc).
+            if arr_vv_lin is None or arr_vh_lin is None:
+                logger.warning("Scene %s mosaic returned None, skipping", dt_str)
+                continue
+            _raw_vv_finite = np.isfinite(arr_vv_lin)
+
+            def _read_pair(_ys, _xs, _v=_vv_despeckled, _h=_vh_despeckled):
+                return (
+                    np.ascontiguousarray(_v[_ys, _xs]),
+                    np.ascontiguousarray(_h[_ys, _xs]),
                 )
-                _vhw = _mosaic_align_scene_window(
-                    indices, final_vh, prof_vh, height, width,
-                    transform, target_crs, _ys, _xs, _bounds_vh,
-                )
-                return _vvw, _vhw
 
-            if do_despeckle:
-                # Raw mosaic exists (from _prep_acquisition); the despeckled
-                # full arrays are the block source (despeckle's global coupling
-                # makes that the one >block allocation, per the architecture doc).
-                if arr_vv_lin is None or arr_vh_lin is None:
-                    logger.warning("Scene %s mosaic returned None, skipping", dt_str)
-                    continue
-                _raw_vv_finite = np.isfinite(arr_vv_lin)
+        # Resume: reuse an existing timestep for COG/preview without
+        # re-appending. Only OPEN the store if it already exists on disk, so a
+        # QC skip never leaves an empty store behind (the store is created only
+        # on the first kept acquisition).
+        _g_group = None
+        _time_index = None
+        if zarr_path_group.exists():
+            _g_group = _init_zarr_2band(
+                zarr_path_group, x_coords, y_coords, target_crs,
+                transform, chunk_y, chunk_x,
+                processing_level=f"scenes_{despeckle_method if do_despeckle else 'ARDC'}",
+                band_names=_band_names,
+                rebuild_on_mismatch=rebuild_on_mismatch,
+            )
+            _g_group.attrs['processing_signature'] = _scenes_sig
+            _g_group.attrs['product_variant'] = _scenes_variant
+            _g_group.attrs['processing_variant_json'] = json.dumps(_scenes_variant_vals)
+            _g_group.attrs['product_label'] = product_label
+            _time_keys = (
+                np.asarray(pd.to_datetime(_g_group['time'][:]).strftime('%Y%m%dT%H%M%S'))
+                if _g_group['time'].shape[0] > 0 else np.asarray([], dtype=object)
+            )
+            if dt_str in set(_time_keys.tolist()):
+                _time_index = int(np.where(_time_keys == dt_str)[0][0])
 
-                def _read_pair(_ys, _xs, _v=_vv_despeckled, _h=_vh_despeckled):
-                    return (
-                        np.ascontiguousarray(_v[_ys, _xs]),
-                        np.ascontiguousarray(_h[_ys, _xs]),
+        if _time_index is None:
+            # Interior-hole QC BEFORE reserving a timestep.
+            # Despeckle-off holds no full mosaic, so build the raw VV finite
+            # mask block-by-block (O(grid bytes) boolean, per the S9 budget)
+            # instead of an O(grid float) mosaic.
+            if not do_despeckle:
+                _raw_vv_finite = np.zeros((int(height), int(width)), dtype=bool)
+                for _qy, _qx in _iter_spatial_blocks(height, width, chunk_y, chunk_x):
+                    _vvw = _mosaic_align_scene_window(
+                        indices, final_vv, prof_vv, height, width,
+                        transform, target_crs, _qy, _qx, _bounds_vv,
                     )
+                    if _vvw is not None:
+                        _raw_vv_finite[_qy, _qx] = np.isfinite(_vvw)
+            if _qc_decision(_raw_vv_finite) == "skip":
+                continue
 
-            # Resume: reuse an existing timestep for COG/preview without
-            # re-appending, exactly like the legacy path. Only OPEN the store
-            # if it already exists on disk, so a QC skip never leaves an empty
-            # store behind (the legacy path creates the store only on keep).
-            _g_group = None
-            _time_index = None
-            if zarr_path_group.exists():
+            # Kept: create the store now (first kept acquisition) if needed.
+            if _g_group is None:
                 _g_group = _init_zarr_2band(
                     zarr_path_group, x_coords, y_coords, target_crs,
                     transform, chunk_y, chunk_x,
@@ -679,253 +703,32 @@ def _write_scenes_output(
                 _g_group.attrs['product_variant'] = _scenes_variant
                 _g_group.attrs['processing_variant_json'] = json.dumps(_scenes_variant_vals)
                 _g_group.attrs['product_label'] = product_label
-                _time_keys = (
-                    np.asarray(pd.to_datetime(_g_group['time'][:]).strftime('%Y%m%dT%H%M%S'))
-                    if _g_group['time'].shape[0] > 0 else np.asarray([], dtype=object)
-                )
-                if dt_str in set(_time_keys.tolist()):
-                    _time_index = int(np.where(_time_keys == dt_str)[0][0])
 
-            if _time_index is None:
-                # Interior-hole QC BEFORE reserving a timestep (legacy order).
-                # Despeckle-off holds no full mosaic, so build the raw VV finite
-                # mask block-by-block (O(grid bytes) boolean, per the S9 budget)
-                # instead of an O(grid float) mosaic.
-                if not do_despeckle:
-                    _raw_vv_finite = np.zeros((int(height), int(width)), dtype=bool)
-                    for _qy, _qx in _iter_spatial_blocks(height, width, chunk_y, chunk_x):
-                        _vvw = _mosaic_align_scene_window(
-                            indices, final_vv, prof_vv, height, width,
-                            transform, target_crs, _qy, _qx, _bounds_vv,
-                        )
-                        if _vvw is not None:
-                            _raw_vv_finite[_qy, _qx] = np.isfinite(_vvw)
-                if _qc_decision(_raw_vv_finite) == "skip":
-                    continue
-
-                # Kept: create the store now (first kept acquisition) if needed.
-                if _g_group is None:
-                    _g_group = _init_zarr_2band(
-                        zarr_path_group, x_coords, y_coords, target_crs,
-                        transform, chunk_y, chunk_x,
-                        processing_level=f"scenes_{despeckle_method if do_despeckle else 'ARDC'}",
-                        band_names=_band_names,
-                        rebuild_on_mismatch=rebuild_on_mismatch,
-                    )
-                    _g_group.attrs['processing_signature'] = _scenes_sig
-                    _g_group.attrs['product_variant'] = _scenes_variant
-                    _g_group.attrs['processing_variant_json'] = json.dumps(_scenes_variant_vals)
-                    _g_group.attrs['product_label'] = product_label
-
-                _dt_ns = np.datetime64(acq_ts.to_datetime64(), 'ns')
-                _time_index = _write_scene_timestep_blockwise(
-                    _g_group, _dt_ns, _base_band_names, _glcm_band_names,
-                    _read_pair, int(height), int(width), transform,
-                    chunk_y, chunk_x, copol_name, crosspol_name,
-                    features_ratio, features_rvi, ratio_name, rvi_name,
-                    _scene_tex_cfg, _clip_geom_blocks,
-                    num_threads=int(blockwise_threads),
-                )
-
-            _cog_name = (
-                f"s1grits_scenes_{mgrs_tile_id}_{direction_label}_"
-                f"TK{_track_tok}_{dt_str}.tif"
+            _dt_ns = np.datetime64(acq_ts.to_datetime64(), 'ns')
+            _time_index = _write_scene_timestep_blockwise(
+                _g_group, _dt_ns, _base_band_names, _glcm_band_names,
+                _read_pair, int(height), int(width), transform,
+                chunk_y, chunk_x, copol_name, crosspol_name,
+                features_ratio, features_rvi, ratio_name, rvi_name,
+                _scene_tex_cfg, _clip_geom_blocks,
+                num_threads=int(blockwise_threads),
             )
-            _png_name = (
-                f"s1grits_scenes_{mgrs_tile_id}_{direction_label}_"
-                f"TK{_track_tok}_{dt_str}.png"
-            )
-            cog_relpath, preview_relpath = _export_scene_cog_preview_from_zarr(
-                _g_group, _time_index, _band_names, transform,
-                int(height), int(width), target_crs, tile_clip, mgrs_tile_id,
-                generate_cog, generate_preview,
-                scenes_cog_dir / _cog_name, scenes_png_dir / _png_name,
-                cog_block, chunk_y, copol_name, crosspol_name, tile_dir, dt_str,
-            )
-            _emit_scene_records(zarr_relpath, cog_relpath, preview_relpath)
-            continue
 
-        # ---- Legacy full-frame write (byte-strict opt-out) ----
-        # Mosaics come from _prep_acquisition (possibly prefetched); the
-        # interior-gap check MUST see the raw mosaic, so the despeckled arrays
-        # are swapped in only after the skip decision.
-        if arr_vv_lin is None or arr_vh_lin is None:
-            logger.warning("Scene %s mosaic returned None, skipping", dt_str)
-            continue
-        if _qc_decision(np.isfinite(arr_vv_lin)) == "skip":
-            continue
-
-        # Apply spatial despeckle to the full mosaicked image (post-mosaic, not
-        # per-burst). arr_vv_lin/arr_vh_lin are on the burst-union master grid,
-        # which is larger than the MGRS tile, and the tile clip below is applied
-        # only AFTER this filter — so despeckle near the tile edge uses real
-        # beyond-tile pixels (support-before-clip invariant). Despeckle runs on
-        # the whole array (not blockwise), so there are no block seams to halo.
-        # NOTE: this per-acquisition scenes writer is the ONLY despeckle site;
-        # the smonthly monthly composite is built from raw scenes and is never
-        # despeckled (see the gate in the batch loop and config docs).
-        if do_despeckle:
-            # Computed in _prep_acquisition (identical inputs/params to the
-            # historical inline call; possibly on the pipeline thread).
-            arr_vv_lin = _vv_despeckled
-            arr_vh_lin = _vh_despeckled
-
-        arr_vv_db = _linear_to_db(arr_vv_lin)
-        arr_vh_db = _linear_to_db(arr_vh_lin)
-
-        # Optional derived bands
-        _extra_bands = []
-        if features_ratio:
-            # Ratio = VH/VV in linear domain (standard SAR convention)
-            _denom_r = np.where(arr_vv_lin > 0, arr_vv_lin, np.nan)
-            _ratio_lin = arr_vh_lin / _denom_r
-            _extra_bands.append((ratio_name, _ratio_lin.astype(np.float32)))
-        if features_rvi:
-            # RVI = 4*VH / (VV+VH) in linear domain; range [0, 4]
-            _denom_rvi = arr_vv_lin + arr_vh_lin
-            _rvi_lin = np.where(_denom_rvi > 0, 4.0 * arr_vh_lin / _denom_rvi, np.nan)
-            _extra_bands.append((rvi_name, _rvi_lin.astype(np.float32)))
-
-        # GLCM texture bands, computed on the full burst-union mosaic dB BEFORE
-        # the tile clip below, so window/co-occurrence support at the tile edge
-        # uses real beyond-tile pixels (support-before-clip).
-        _glcm_bands = []
-        if features_glcm:
-            from s1grits.asf_array_processing import compute_glcm_texture_bands
-            _tex_cfg = {
-                "enabled": True, "inputs": [copol_name, crosspol_name],
-                "metrics": ["contrast", "homogeneity", "entropy", "correlation"],
-                "window_size": 5, "distance": 1, "angles": [0, 90],
-                "average_angles": True, "levels": 16,
-                "vv_db_range": [-25, 5], "vh_db_range": [-32, -5],
-            }
-            _tex_arrays, _tex_names = compute_glcm_texture_bands(
-                arr_vv_db, arr_vh_db, _tex_cfg
-            )
-            for _name, _arr in zip(_tex_names, _tex_arrays):
-                _glcm_bands.append((_name, _arr.astype(np.float32)))
-
-        # Apply MGRS tile clip mask as the FINAL step, after despeckle, dB
-        # conversion, derived bands, and GLCM. Clipping must stay last so every
-        # spatial-window operation above ran on the larger burst-union support
-        # (support-before-clip); clipping earlier would reintroduce artificial
-        # tile-boundary artifacts.
-        if _clip_inv_mask is not None:
-            arr_vv_db[_clip_inv_mask] = np.nan
-            arr_vh_db[_clip_inv_mask] = np.nan
-            for _, _arr in _extra_bands + _glcm_bands:
-                _arr[_clip_inv_mask] = np.nan
-
-        # Build band arrays for Zarr append (always full grid)
-        _band_arrays = [(copol_name, arr_vv_db), (crosspol_name, arr_vh_db)]
-        _band_arrays.extend(_extra_bands)
-        _band_arrays.extend(_glcm_bands)
-
-        # Append to per-group Zarr (always generated, primary Data Cube product)
-        _g_group = _init_zarr_2band(
-            zarr_path_group, x_coords, y_coords, target_crs,
-            transform, chunk_y, chunk_x,
-            processing_level=f"scenes_{despeckle_method if do_despeckle else 'ARDC'}",
-            band_names=_band_names,
-            rebuild_on_mismatch=rebuild_on_mismatch,
+        _cog_name = (
+            f"s1grits_scenes_{mgrs_tile_id}_{direction_label}_"
+            f"TK{_track_tok}_{dt_str}.tif"
         )
-        # Write variant metadata to Zarr root attrs (idempotent)
-        _g_group.attrs['processing_signature'] = _scenes_sig
-        _g_group.attrs['product_variant'] = _scenes_variant
-        _g_group.attrs['processing_variant_json'] = json.dumps(_scenes_variant_vals)
-        _g_group.attrs['product_label'] = product_label
-        _existing_group = set()
-        if _g_group['time'].shape[0] > 0:
-            _existing_group = set(
-                pd.to_datetime(_g_group['time'][:]).strftime('%Y%m%dT%H%M%S')
-            )
-        if dt_str not in _existing_group:
-            dt_ns = np.datetime64(acq_ts.to_datetime64(), 'ns')
-            _append_zarr_timestep(_g_group, dt_ns, _band_arrays)
-        zarr_relpath = zarr_path_group.relative_to(tile_dir)
-
-        # Spatial crop for COG and preview output (Zarr keeps full grid)
-        # When tile_clip=True, crop arrays to MGRS tile bounding box so that
-        # COG and preview cover only the tile extent, not the full burst mosaic.
-        _cog_transform = transform
-        _cog_width, _cog_height = width, height
-        _arr_vv_cog, _arr_vh_cog = arr_vv_db, arr_vh_db
-        _extra_bands_cog = list(_extra_bands)
-        _glcm_bands_cog = list(_glcm_bands)
-
-        if tile_clip and _clip_inv_mask is not None:
-            _all_cog = (
-                [arr_vv_db, arr_vh_db]
-                + [a for _, a in _extra_bands]
-                + [a for _, a in _glcm_bands]
-            )
-            try:
-                _clipped, _cog_transform = _clip_arrays_to_wkt_4326(
-                    _all_cog, mgrs_wkt, target_crs, transform, height, width
-                )
-                _arr_vv_cog = _clipped[0]
-                _arr_vh_cog = _clipped[1]
-                _idx = 2
-                _extra_bands_cog = [
-                    (n, _clipped[_idx + i]) for i, (n, _) in enumerate(_extra_bands)
-                ]
-                _idx += len(_extra_bands)
-                _glcm_bands_cog = [
-                    (n, _clipped[_idx + i]) for i, (n, _) in enumerate(_glcm_bands)
-                ]
-                _cog_height, _cog_width = _arr_vv_cog.shape
-            except Exception as _clip_e:
-                logger.warning(
-                    "tile_clip spatial crop failed for %s %s: %s",
-                    mgrs_tile_id, dt_str, _clip_e
-                )
-
-        # Optional COG (multi-band) — uses spatially cropped arrays when tile_clip=True
-        cog_relpath = None
-        if generate_cog:
-            _all_bands_cog = (
-                [(copol_name, _arr_vv_cog), (crosspol_name, _arr_vh_cog)]
-                + _extra_bands_cog
-                + _glcm_bands_cog
-            )
-            fname = f"s1grits_scenes_{mgrs_tile_id}_{direction_label}_TK{_track_tok}_{dt_str}.tif"
-            cog_path = scenes_cog_dir / fname
-            prof = {
-                'driver': 'GTiff', 'dtype': 'float32', 'nodata': float('nan'),
-                'width': _cog_width, 'height': _cog_height,
-                'count': len(_all_bands_cog),
-                'crs': target_crs, 'transform': _cog_transform,
-                'compress': 'deflate', 'tiled': True,
-                'blockxsize': cog_block, 'blockysize': cog_block,
-            }
-            _write_multiband_cog(cog_path, _all_bands_cog, prof)
-            cog_relpath = str(cog_path.relative_to(tile_dir))
-
-        # Optional preview PNG — uses spatially cropped arrays when tile_clip=True
-        preview_relpath = None
-        if generate_preview:
-            # Ratio = VH/VV in linear power domain (per CLAUDE.md standard).
-            # _arr_*_cog are power dB (10*log10), so the linear ratio is
-            # 10**((VH_dB - VV_dB)/10).  Validity is "both finite" — a >0 mask
-            # on dB would wrongly discard the (typically negative) backscatter.
-            _valid_cog = np.isfinite(_arr_vv_cog) & np.isfinite(_arr_vh_cog)
-            ratio_arr = np.full_like(_arr_vv_cog, np.nan, dtype=np.float32)
-            ratio_arr[_valid_cog] = np.power(
-                10.0, (_arr_vh_cog[_valid_cog] - _arr_vv_cog[_valid_cog]) / 10.0
-            ).astype(np.float32)
-
-            png_name = f"s1grits_scenes_{mgrs_tile_id}_{direction_label}_TK{_track_tok}_{dt_str}.png"
-            png_path = scenes_png_dir / png_name
-            _generate_preview_png(
-                vv_db=_arr_vv_cog,
-                vh_db=_arr_vh_cog,
-                ratio=ratio_arr,
-                src_transform=_cog_transform,
-                src_crs=target_crs,
-                output_path=str(png_path),
-            )
-            preview_relpath = str(png_path.relative_to(tile_dir))
-
+        _png_name = (
+            f"s1grits_scenes_{mgrs_tile_id}_{direction_label}_"
+            f"TK{_track_tok}_{dt_str}.png"
+        )
+        cog_relpath, preview_relpath = _export_scene_cog_preview_from_zarr(
+            _g_group, _time_index, _band_names, transform,
+            int(height), int(width), target_crs, tile_clip, mgrs_tile_id,
+            generate_cog, generate_preview,
+            scenes_cog_dir / _cog_name, scenes_png_dir / _png_name,
+            cog_block, chunk_y, copol_name, crosspol_name, tile_dir, dt_str,
+        )
         _emit_scene_records(zarr_relpath, cog_relpath, preview_relpath)
 
     logger.info(

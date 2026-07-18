@@ -53,15 +53,11 @@ python -m ipykernel install --user --name py312_s1grits --display-name "Python (
 jupyter lab
 ```
 
-#### Optional: Streamlit GUI (deprecated)
-
-> **Deprecated:** the Streamlit GUI is superseded by the v2.3 web interface
-> (`s1grits serve`, see `docs/webapp.md`) and will be removed in a future
-> release. New features land in the web UI only.
+#### Optional: web interface
 
 ```bash
-pip install "s1grits[gui]"
-s1grits-gui  # Launch at http://localhost:8501
+pip install "s1grits[web]"
+s1grits serve --root <workspace>  # see docs/webapp.md
 ```
 
 #### Install all extras

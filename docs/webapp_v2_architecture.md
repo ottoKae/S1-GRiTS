@@ -6,6 +6,10 @@ v1.0 GUI (`src/gui/`, ~4,900 lines of Streamlit). Deliverable 2 — the
 implementation — lives in `src/s1grits/webapp/` and is documented in
 [`docs/webapp.md`](webapp.md).
 
+> Historical note: the v1.0 Streamlit GUI audited below was removed in v3.0.0;
+> `src/gui/` no longer exists. This document is retained for the design
+> rationale that shaped the web interface.
+
 ---
 
 ## 1. Audit of the v1.0 GUI

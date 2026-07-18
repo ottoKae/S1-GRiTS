@@ -306,29 +306,20 @@ mosaic_scenes_20240115_ASCENDING.tif
 
 ---
 
-### GUI
+### Web interface
 
-> **Deprecated:** the Streamlit GUI is superseded by the v2.3 web interface —
-> use `s1grits serve --root <workspace>` (see `docs/webapp.md`). The commands
-> below keep working until the GUI is removed in v3.0.0.
-
-Launch Streamlit web interface.
+Launch the browser UI — interactive data discovery, coverage reports, tile/scene
+inspection, mosaic creation, and time-series visualization. See `docs/webapp.md`.
 
 ```bash
-s1grits-gui
+s1grits serve --root <workspace>
 
 # Custom host/port
-s1grits-gui --host 0.0.0.0 --port 8080 --no-browser
+s1grits serve --root <workspace> --host 0.0.0.0 --port 8080
 ```
 
-**Default:** http://127.0.0.1:8501
-
-**GUI features:**
-- Interactive data discovery and browsing
-- Coverage reports and gap analysis
-- Tile/scene inspection
-- Mosaic creation interface
-- Time series visualization
+> The legacy Streamlit GUI (`s1grits-gui`) was removed in v3.0.0; `s1grits serve`
+> is its replacement.
 
 ---
 

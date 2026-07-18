@@ -749,12 +749,9 @@ def process_single_scenes_tile(
         target_crs = _mgrs_to_utm_epsg(mgrs_tile_id)
 
         tile_clip = processing_config.get("tile_clip", True)
-        # Phase 2: route the per-acquisition scenes writer through the
-        # bounded-memory blockwise path (per-block bands, halo GLCM, streamed
-        # COG). Default on; set processing.scenes_blockwise: false to force the
-        # byte-strict legacy full-frame writer. blockwise_threads reuses the
-        # smonthly monthly.blockwise_threads knob ('auto' or an int).
-        scenes_blockwise = bool(processing_config.get("scenes_blockwise", True))
+        # The per-acquisition scenes writer runs the bounded-memory blockwise
+        # path (per-block bands, halo GLCM, streamed COG). blockwise_threads
+        # reuses the smonthly monthly.blockwise_threads knob ('auto' or an int).
         scenes_blockwise_threads = _resolve_blockwise_threads(
             (processing_config.get("monthly") or {}).get("blockwise_threads", 1)
         )
@@ -1478,7 +1475,6 @@ def process_single_scenes_tile(
                     incomplete_sink=_incomplete_acqs,
                     interior_hole_max_frac=interior_hole_max_frac,
                     rebuild_on_mismatch=overwrite,
-                    scenes_blockwise=scenes_blockwise,
                     blockwise_threads=scenes_blockwise_threads,
                 )
                 all_scenes_records.extend(scenes_recs)

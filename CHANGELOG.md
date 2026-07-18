@@ -7,6 +7,20 @@ the full history.
 
 ## [Unreleased]
 
+### Removed
+- **Streamlit GUI** (`src/gui/`, the `s1grits-gui` entry point, the `gui`
+  install extra) — superseded by the v2.3 web interface (`s1grits serve`,
+  see `docs/webapp.md`). Deprecated since v2.3.3 (#21).
+- **Full-frame scenes writer opt-out** (`processing.scenes_blockwise: false`).
+  The bounded-memory blockwise writer, default and byte-validated in
+  production since v2.3.3, is now the only per-acquisition scenes path; the
+  `processing.scenes_blockwise` config key is gone.
+- **CWD auto-load of `config/s1grits_products.yaml`** — the product registry
+  no longer probes the current working directory. The effective registry is a
+  pure function of the package version plus the workflow config; use
+  `metadata.product_config` (file overlay) or `metadata.products` (inline)
+  to customise it. Built-in defaults ship in the package.
+
 ### Added
 - **Positive-Unlabeled learning** (`s1grits.analysis.pu_learning`, `ml`
   extra): Elkan-Noto PU classifier (`PUClassifier`, calibrated + weighted
@@ -38,13 +52,10 @@ the full history.
   `store`, `qc`, `scene_writer`, `smonthly_writer`, `pipeline`, `support`);
   `workflow_scenes` remains a full backward-compatible facade (7,152 → 499
   lines) (#22, #23, #24).
-- The **Streamlit GUI is deprecated** (removal in **v3.0.0**, together
-  with the legacy monthly/static workflows and the full-frame writer
-  opt-out) in favour of the v2.3 web interface
-  (`s1grits serve`, see `docs/webapp.md`); the duplicated GUI tree was
-  consolidated to `src/gui` — fixing a bug where the packaged copy emitted
-  the obsolete `post_processing` config key so the despeckle toggle was
-  silently ignored (#21).
+- GUI consolidation groundwork ahead of removal: the duplicated GUI tree was
+  merged to `src/gui` — fixing a bug where the packaged copy emitted the
+  obsolete `post_processing` config key so the despeckle toggle was silently
+  ignored (#21). (`src/gui` itself is removed in this release; see Removed.)
 - CI hardened: required lint job (ruff + mypy), coverage reporting,
   macOS/Windows promoted to required checks, deduplicated triggers (#20).
 
