@@ -190,7 +190,7 @@ class CLIRunner:
             >>> runner.run(["s1grits", "catalog", "validate", "--output-dir", "./output"])
             >>>
             >>> # Long-running tasks (streamed)
-            >>> runner.run("s1grits process --config config.yaml")
+            >>> runner.run("s1grits process_scenes --config config.yaml")
             >>> runner.run(["s1grits", "mosaic", "create", "--month", "2024-01"])
         """
         # Parse command safely
@@ -452,9 +452,15 @@ def s1grits(*args, **kwargs) -> subprocess.CompletedProcess:
     return runner.run(cmd, **kwargs)
 
 
-def process(config_path: str, **kwargs) -> subprocess.CompletedProcess:
-    """Run s1grits process command"""
-    return s1grits('process', '--config', config_path, **kwargs)
+def process_scenes(config_path: str, **kwargs) -> subprocess.CompletedProcess:
+    """Run the scenes workflow ('s1grits process_scenes'). Produces per-scene
+    products, plus monthly composites when ``processing.monthly`` is enabled."""
+    return s1grits('process_scenes', '--config', config_path, **kwargs)
+
+
+def process_static(config_path: str, **kwargs) -> subprocess.CompletedProcess:
+    """Run the static-layer workflow ('s1grits process_static')."""
+    return s1grits('process_static', '--config', config_path, **kwargs)
 
 
 def catalog_resync(output_dir: str = './output', **kwargs) -> subprocess.CompletedProcess:

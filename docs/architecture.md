@@ -62,20 +62,23 @@ MGRS Tile 17MQV, DESCENDING orbit:
 - Temporal coherence for interferometric applications
 - Efficient append-only updates
 
-### Three Workflow Comparison
+### Workflow Comparison
 
-S1-GRiTS provides three specialized workflows for different analysis needs:
+S1-GRiTS provides two specialized workflows for different analysis needs. Monthly
+composites are produced by the scenes workflow (enable `processing.monthly`, which
+emits the per-track `smonthly` product); the standalone monthly workflow was
+removed in v3.0.0.
 
-| Aspect | **Monthly Composites** | **Per-Scene Processing** | **Static Layers** |
-|--------|------------------------|--------------------------|-------------------|
-| **Purpose** | Long-term time series | Event detection | Terrain reference |
-| **Temporal Resolution** | Monthly (median composite) | Per-acquisition (6-12 day revisit) | Timeless |
-| **Primary Use Case** | Seasonal trends, multi-year analysis | Rapid change, disaster response | Incidence angle correction, masking |
-| **Output Zarr** | One per tile-direction | One per acquisition group | One per acquisition group |
-| **CLI Command** | `s1grits process` | `s1grits process_scenes` | `s1grits process_static` |
-| **Config Template** | `s1grits_monthly.yaml` | `s1grits_scenes.yaml` | `s1grits_static.yaml` |
-| **STAC Collection** | `s1grits-monthly` | `s1grits-scenes` | `s1grits-static` |
-| **Typical Data Volume** | ~500 MB/tile/year (Zarr) | ~2-3 GB/tile/year (Zarr) | ~50 MB/tile (one-time) |
-| **Processing Time** | Fast (monthly aggregation) | Moderate (per-scene outputs) | Fast (static, no time series) |
+| Aspect | **Per-Scene Processing** | **Static Layers** |
+|--------|--------------------------|-------------------|
+| **Purpose** | Event detection + monthly composites | Terrain reference |
+| **Temporal Resolution** | Per-acquisition (6-12 day revisit); optional monthly | Timeless |
+| **Primary Use Case** | Rapid change, disaster response, time series | Incidence angle correction, masking |
+| **Output Zarr** | One per acquisition group (+ `smonthly` per track) | One per acquisition group |
+| **CLI Command** | `s1grits process_scenes` | `s1grits process_static` |
+| **Config Template** | `s1grits_scenes.yaml` | `s1grits_static.yaml` |
+| **STAC Collection** | `s1grits-scenes` (+ `s1grits-smonthly`) | `s1grits-static` |
+| **Typical Data Volume** | ~2-3 GB/tile/year (Zarr) | ~50 MB/tile (one-time) |
+| **Processing Time** | Moderate (per-scene outputs) | Fast (static, no time series) |
 
 ---

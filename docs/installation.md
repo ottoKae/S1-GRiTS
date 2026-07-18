@@ -101,11 +101,10 @@ session.trust_env = True  # Allow reading .netrc
 
 Choose a workflow and edit the corresponding config file:
 
-**Monthly Composites:** `config/s1grits_monthly.yaml`
-**Per-Scene Processing:** `config/s1grits_scenes.yaml`
+**Per-Scene Processing:** `config/s1grits_scenes.yaml` (enable `processing.monthly` for composites)
 **Static Layers:** `config/s1grits_static.yaml`
 
-**Minimal config example** (monthly workflow):
+**Minimal config example** (scenes workflow):
 
 ```yaml
 roi:
@@ -148,10 +147,7 @@ every long or production run.
 ### Step 4: Run
 
 ```bash
-# Monthly composites workflow
-s1grits process --config config/s1grits_monthly.yaml
-
-# Per-scene workflow
+# Per-scene workflow (+ monthly composites via processing.monthly)
 s1grits process_scenes --config config/s1grits_scenes.yaml
 
 # Static layers workflow

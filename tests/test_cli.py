@@ -22,13 +22,13 @@ from s1grits import cli  # noqa: E402
 
 # Commands that must remain visible in the production help.
 RETAINED_VISIBLE = [
-    "process", "process_scenes", "process_static",
+    "process_scenes", "process_static",
     "catalog", "tile", "mosaic", "mosaic_scenes", "doctor",
 ]
-# Hidden from --help but must keep working (pure alias for `process`).
-HIDDEN_ALIASES = ["process_monthly"]
-# Dead references that must never reappear.
-DEAD = ["process_ablation", "process_normal40"]
+# Dead references that must never reappear. `process`/`process_monthly` were the
+# legacy monthly-composite workflow, removed in v3.0.0 (superseded by
+# process_scenes). Neither is a substring of a retained command.
+DEAD = ["process_monthly", "process_ablation", "process_normal40"]
 
 
 def _run(argv, capsys):
@@ -58,21 +58,17 @@ def test_top_level_help_lists_retained_commands(capsys):
         assert name in text, f"{name} missing from top-level --help"
 
 
-def test_top_level_help_hides_alias_and_dead_examples(capsys):
+def test_top_level_help_hides_dead_examples(capsys):
     code, text = _run(["--help"], capsys)
     assert code == 0
-    # The back-compat alias must NOT appear as its own command entry (it is only
-    # an alias of `process`, shown compactly as "process (process_monthly)").
-    standalone = [ln for ln in text.splitlines() if ln.strip().startswith("process_monthly")]
-    assert not standalone, f"process_monthly listed as a standalone command: {standalone}"
     # The SUPPRESS sentinel must never leak into help text.
     assert "==SUPPRESS==" not in text
-    # Dead example commands never reappear anywhere in help/epilog.
+    # Dead command references never reappear anywhere in help/epilog.
     for name in DEAD:
         assert name not in text, f"dead reference {name} resurfaced in help"
 
 
-@pytest.mark.parametrize("name", RETAINED_VISIBLE + HIDDEN_ALIASES)
+@pytest.mark.parametrize("name", RETAINED_VISIBLE)
 def test_each_command_help_parses(name, capsys):
     # `<cmd> --help` exits 0 and never dispatches a workflow, so this is safe.
     code, text = _run([name, "--help"], capsys)
@@ -80,6 +76,19 @@ def test_each_command_help_parses(name, capsys):
     assert "usage:" in text.lower()
 
 
-def test_hidden_alias_still_dispatches_to_process():
-    # Same handler as `process` -> the alias keeps working for old scripts.
-    assert cli.cmd_process is not None
+def test_removed_monthly_command_is_gone():
+    # The legacy monthly workflow entry points were removed in v3.0.0.
+    assert not hasattr(cli, "cmd_process")
+    code, _ = _run_expect_error(["process", "--help"])
+    assert code != 0  # argparse rejects the unknown command
+
+
+def _run_expect_error(argv):
+    old = sys.argv
+    sys.argv = ["s1grits", *argv]
+    try:
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+        return exc.value.code, None
+    finally:
+        sys.argv = old

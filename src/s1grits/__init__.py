@@ -1,7 +1,7 @@
 """
-S1-GRiTS: Sentinel-1 Monthly Grid Time Series Processor
+S1-GRiTS: Sentinel-1 Gridded RTC Time-Series Data Cube Processor
 
-Generate monthly COG/Zarr time series from ASF RTC products with
+Generate gridded COG/Zarr time series from ASF RTC products with
 MGRS tile-based processing and intelligent memory management.
 
 Subpackages:
@@ -15,16 +15,12 @@ __all__ = [
     "__version__",
     "__version_info__",
     "analysis",  # Expose analysis subpackage
-    "run_multi_mgrs_monthly_workflow",
 ]
 
 # Main processing functions will be imported on demand
 def __getattr__(name):
     """Lazy import for main processing functions"""
-    if name == "run_multi_mgrs_monthly_workflow":
-        from s1grits.workflow import run_multi_mgrs_monthly_workflow
-        return run_multi_mgrs_monthly_workflow
-    elif name == "build_s1_monthly_cog_and_zarr_crossUTM":
+    if name == "build_s1_monthly_cog_and_zarr_crossUTM":
         from s1grits.asf_output_writing import build_s1_monthly_cog_and_zarr_crossUTM
         return build_s1_monthly_cog_and_zarr_crossUTM
     elif name == "get_rtc_s1_ts_metadata_from_mgrs_tiles":

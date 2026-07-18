@@ -8,8 +8,7 @@ S1-GRiTS workflows are configured via YAML files in the `config/` directory.
 
 | File | Workflow | Description |
 |------|----------|-------------|
-| `s1grits_monthly.yaml` | Monthly composites | Long-term time series at monthly resolution |
-| `s1grits_scenes.yaml` | Per-scene processing | High-temporal-resolution outputs |
+| `s1grits_scenes.yaml` | Per-scene processing (+ monthly composites) | High-temporal-resolution outputs; enable `processing.monthly` for composites |
 | `s1grits_static.yaml` | Static layers | Time-invariant reference layers |
 
 ### ROI Configuration
@@ -473,10 +472,3 @@ metadata:
 - `processing.monthly.blockwise_threads` — threads per tile worker for
   blockwise writes (`auto` divides cores across `parallel.max_workers`); the
   scenes writer reuses this knob.
-
-### Processing (legacy monthly/static workflows only)
-
-- `processing.group_mode`, `processing.min_valid_lin`, `processing.eps_lin` —
-  read only by the legacy monthly workflow (`workflow.py`); scheduled for
-  removal with it in v3.0.0. (`workflow_static.py`, the static geometry-layer
-  workflow, is NOT being retired.)

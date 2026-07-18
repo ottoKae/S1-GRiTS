@@ -2,7 +2,6 @@
 CLI with subcommands structure
 
 Provides a professional CLI interface with subcommands:
-- s1grits process          --config config.yaml   (monthly composite workflow)
 - s1grits process_scenes   --config config.yaml   (per-pass scenes + smonthly)
 - s1grits process_static   --config config.yaml   (static geometry layers)
 - s1grits catalog  resync   --output-dir ./output
@@ -229,67 +228,6 @@ def _workflow_overrides(args) -> dict | None:
             {'generate_cog': False, 'generate_preview': False}
         )
     return overrides or None
-
-
-def cmd_process(args):
-    """Run the main processing workflow"""
-    from s1grits.workflow import run_multi_mgrs_monthly_workflow
-    from s1grits.logger_config import setup_logging
-    import pandas as pd
-    import yaml
-
-    config_path = Path(args.config)
-    if not config_path.exists():
-        console.print(f"[red]ERROR: Config file does not exist: {config_path}[/red]")
-        sys.exit(1)
-
-    with open(config_path, 'r', encoding='utf-8') as f:
-        config = yaml.safe_load(f)
-
-    expected = config.get("workflow")
-    if expected and expected != "monthly":
-        console.print(
-            f"[red]ERROR: Config workflow='{expected}' but CLI is 'process'. "
-            f"Expected workflow='monthly'.[/red]"
-        )
-        sys.exit(1)
-
-    console.rule("[bold cyan]S1-GRiTS: Sentinel-1 Gridded Time Series[/bold cyan]", style="cyan")
-    console.print(f"[dim]Config: {config_path}[/dim]\n")
-
-    log_file, logger = setup_logging(config)
-    console.print(f"[dim]Log: {log_file}[/dim]\n")
-
-    from s1grits.product_registry import load_product_registry
-    _products = load_product_registry(workflow_config=config)
-    logger.info("Product registry: %s", _products.config_path or "built-in defaults")
-    logger.info("Starting workflow: %s", config_path)
-    start_time = pd.Timestamp.now()
-
-    console.print("[dim]Processing...[/dim]")
-    results = run_multi_mgrs_monthly_workflow(config_path, overrides=_workflow_overrides(args))
-
-    end_time = pd.Timestamp.now()
-    duration = end_time - start_time
-
-    print_summary(results)
-
-    # Show output directory
-    for r in results.values():
-        if r.get('tile_dir'):
-            out_root = str(Path(r['tile_dir']).parent)
-            console.print(f"\n[bold]Output:[/bold] {out_root}")
-            break
-
-    logger.info("Workflow completed in %s", duration)
-    console.print(f"\nTotal time: [bold]{duration}[/bold]")
-
-    if all(r['status'] == 'success' for r in results.values()):
-        console.print("\n[bold green]Success![/bold green]\n")
-        sys.exit(0)
-    else:
-        console.print("\n[bold yellow]WARNING: Some tasks failed[/bold yellow]\n")
-        sys.exit(1)
 
 
 def cmd_process_static(args):
@@ -991,8 +929,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''\
 Examples:
-  # Run processing workflows (three products)
-  s1grits process          --config config/s1grits_monthly.yaml   # monthly composites
+  # Run processing workflows
   s1grits process_scenes   --config config/s1grits_scenes.yaml    # per-pass scenes + smonthly
   s1grits process_static   --config config/s1grits_static.yaml    # static geometry layers
 
@@ -1023,24 +960,11 @@ Examples:
     )
 
     # metavar hides argparse's auto-generated "{cmd1,cmd2,...}" brace list, which
-    # would otherwise expose SUPPRESS-hidden aliases (e.g. process_monthly). The
-    # per-command help lines below still list every non-suppressed command.
+    # would otherwise be a long unreadable line. The per-command help lines below
+    # still list every command.
     subparsers = parser.add_subparsers(
         dest='command', metavar='<command>', help='Available commands'
     )
-
-    # ── process ──────────────────────────────────────────────────────────────
-    # `process_monthly` is a back-compat alias: argparse accepts it but does not
-    # list it as a separate command, so the production help stays minimal while
-    # existing scripts/docs that call `process_monthly` keep working.
-    parser_process = subparsers.add_parser(
-        'process',
-        aliases=['process_monthly'],
-        help='Run the monthly composite workflow from a YAML config'
-    )
-    parser_process.add_argument('--config', required=True, help='Path to YAML config file')
-    _add_output_flags(parser_process)
-    parser_process.set_defaults(func=cmd_process)
 
     # ── process_static ───────────────────────────────────────────────────────
     parser_static = subparsers.add_parser(
