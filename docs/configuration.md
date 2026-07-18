@@ -462,10 +462,6 @@ metadata:
 
 ### Processing
 
-- `processing.scenes_blockwise` — bounded-memory blockwise scenes writer
-  (default `true`): per-block mosaic/dB/Ratio/RVI/clip/Zarr writes, halo GLCM,
-  streamed COG. Byte-identical to the legacy full-frame writer, which remains
-  as the `false` opt-out.
 - `processing.incomplete_acquisition` — policy for acquisitions with a genuine
   interior gap: `skip` (default), `write` (keep with NoData gap), `abort`.
 - `processing.interior_hole_max_frac` — interior-NoData fraction of the tile
@@ -481,5 +477,6 @@ metadata:
 ### Processing (legacy monthly/static workflows only)
 
 - `processing.group_mode`, `processing.min_valid_lin`, `processing.eps_lin` —
-  read only by the legacy monthly/static workflows (`workflow.py`,
-  `workflow_static.py`); scheduled for removal with them in v3.0.0.
+  read only by the legacy monthly workflow (`workflow.py`); scheduled for
+  removal with it in v3.0.0. (`workflow_static.py`, the static geometry-layer
+  workflow, is NOT being retired.)

@@ -89,7 +89,9 @@ the footprint factor, and shrinks S5 with it. Opt-out:
 
 ### Phase 2 — blockwise scenes writer  ✅ DELIVERED
 **Implemented: `_write_scene_timestep_blockwise` + `_export_scene_cog_preview_from_zarr`**
-(opt-out `processing.scenes_blockwise: false`). The per-acquisition write path
+(shipped v2.3.3 behind `processing.scenes_blockwise`, default on; the
+full-frame opt-out was removed in v3.0.0 — blockwise is now the only path).
+The per-acquisition write path
 now runs on the proven smonthly machinery: reserve timestep → for each
 chunk-aligned block: windowed mosaic (S3, via `_mosaic_align_scene_window` — a
 scenes-exact replica of `_mosaic_align` that, unlike the smonthly reader, keeps

@@ -173,9 +173,6 @@ and first-run guidance: **[docs/installation.md](docs/installation.md)**.
 | [FAQ](docs/faq.md) | Common questions and troubleshooting |
 | [Changelog](CHANGELOG.md) | Release history |
 
-> **Note:** the legacy Streamlit GUI (`s1grits-gui`) is deprecated in favour
-> of `s1grits serve` and will be removed in **v3.0.0**.
-
 
 ## License & Citation
 

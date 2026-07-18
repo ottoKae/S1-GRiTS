@@ -28,11 +28,9 @@ version + the workflow config — never of the current working directory):
      self-contained workflow config, with no second file and no dependency
      on this repository's config tree.
 
-DEPRECATED (removal in v3.0.0): when neither override is given and a
-``config/s1grits_products.yaml`` exists relative to the CURRENT WORKING
-DIRECTORY, it is still loaded with the legacy replace semantics, with a
-loud deprecation warning. This CWD probing is the behaviour being retired —
-it made the effective registry depend on where the process was launched.
+The effective registry never depends on the current working directory. (Up
+to v2.3.x, a ``config/s1grits_products.yaml`` in the CWD was auto-loaded when
+no override was given; that CWD probing was removed in v3.0.0.)
 
 Usage::
 
@@ -46,7 +44,6 @@ Usage::
 
 from __future__ import annotations
 
-import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -145,8 +142,6 @@ DEFAULT_REGISTRY: dict[str, Any] = {
         },
     },
 }
-
-DEFAULT_CONFIG_PATH = "config/s1grits_products.yaml"
 
 
 # ---------------------------------------------------------------------------
@@ -348,9 +343,7 @@ def load_product_registry(
     3. ``metadata.products`` inline overlay — merged last, so a single
        workflow YAML can define a fully custom Data Cube.
 
-    DEPRECATED transition path (removal in v3.0.0): with neither override
-    set, a ``config/s1grits_products.yaml`` under the current working
-    directory is still auto-loaded with legacy replace semantics.
+    The effective registry never depends on the current working directory.
     """
     meta = (workflow_config or {}).get("metadata") or {}
     meta_path = meta.get("product_config")
@@ -364,31 +357,6 @@ def load_product_registry(
             registry = ProductRegistry.from_builtin()
             registry.apply_overlay(data.get("products", {}), source=str(meta_path))
             registry._config_path = str(meta_path)
-    elif inline is None and Path(DEFAULT_CONFIG_PATH).exists():
-        data = _read_registry_file(DEFAULT_CONFIG_PATH)
-        if data == DEFAULT_REGISTRY:
-            # The repo's own example file, unedited: a byte-equal mirror of
-            # the built-ins. Nothing changes for this run when the CWD
-            # probing is removed, so no warning noise.
-            registry = ProductRegistry.from_builtin()
-        else:
-            warnings.warn(
-                "Auto-loading config/s1grits_products.yaml from the current "
-                "working directory is deprecated and will be removed in "
-                "v3.0.0. Point metadata.product_config at the file "
-                "explicitly, or define overrides inline under "
-                "metadata.products (built-in defaults ship in the package).",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            logger.warning(
-                "[ProductRegistry] DEPRECATED: auto-loaded ./%s from the "
-                "current working directory (legacy replace semantics). This "
-                "CWD probing is removed in v3.0.0 — use "
-                "metadata.product_config or metadata.products instead.",
-                DEFAULT_CONFIG_PATH,
-            )
-            registry = ProductRegistry(DEFAULT_CONFIG_PATH)
     else:
         registry = ProductRegistry.from_builtin()
 

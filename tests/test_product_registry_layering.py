@@ -1,9 +1,9 @@
 """Layered product registry: built-ins + file overlay + inline overlay.
 
 Locks the decoupling contract: the effective registry is a pure function of
-(package version + workflow config), never the current working directory —
-except the deprecated CWD auto-load transition path, which must warn loudly
-when (and only when) it changes behaviour, and dies in v3.0.0.
+(package version + workflow config), never the current working directory. A
+``config/s1grits_products.yaml`` in the CWD is ignored entirely (the v2.3.x
+auto-load transition path was removed in v3.0.0).
 """
 from __future__ import annotations
 
@@ -153,10 +153,12 @@ def test_newer_schema_version_warns_but_loads(tmp_path, caplog):
 
 
 # ---------------------------------------------------------------------------
-# Deprecated transition: CWD auto-load
+# Removed transition: a CWD config/s1grits_products.yaml is fully ignored
 # ---------------------------------------------------------------------------
 
-def test_cwd_autoload_of_edited_file_warns_and_applies(tmp_path, monkeypatch):
+def test_cwd_file_is_ignored_with_no_config(tmp_path, monkeypatch):
+    """A CWD registry file (even one that differs from the built-ins) is never
+    auto-loaded — the v2.3.x transition path was removed in v3.0.0."""
     cfgdir = tmp_path / "config"
     cfgdir.mkdir()
     (cfgdir / "s1grits_products.yaml").write_text(
@@ -164,26 +166,13 @@ def test_cwd_autoload_of_edited_file_warns_and_applies(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
-    with pytest.warns(DeprecationWarning, match="v3.0.0"):
-        reg = load_product_registry()
-    # legacy replace semantics preserved for the transition release
-    assert reg.list_product_types() == ["local"]
-
-
-def test_cwd_mirror_of_builtins_is_silent(tmp_path, monkeypatch):
-    cfgdir = tmp_path / "config"
-    cfgdir.mkdir()
-    (cfgdir / "s1grits_products.yaml").write_text(
-        yaml.safe_dump(DEFAULT_REGISTRY), encoding="utf-8",
-    )
-    monkeypatch.chdir(tmp_path)
     with warnings.catch_warnings():
-        warnings.simplefilter("error", DeprecationWarning)  # any warn -> fail
+        warnings.simplefilter("error", DeprecationWarning)  # no warning expected
         reg = load_product_registry()
-    assert set(reg.list_product_types()) == BUILTIN_TYPES
+    assert set(reg.list_product_types()) == BUILTIN_TYPES  # CWD file ignored
 
 
-def test_inline_overlay_opts_out_of_cwd_autoload(tmp_path, monkeypatch):
+def test_cwd_file_is_ignored_with_inline_overlay(tmp_path, monkeypatch):
     cfgdir = tmp_path / "config"
     cfgdir.mkdir()
     (cfgdir / "s1grits_products.yaml").write_text(
@@ -194,7 +183,7 @@ def test_inline_overlay_opts_out_of_cwd_autoload(tmp_path, monkeypatch):
     reg = load_product_registry(
         {"metadata": {"products": {"mine": {"collection_id": "inline"}}}}
     )
-    # new mechanism -> legacy CWD file ignored entirely
+    # builtins + inline only; the CWD file plays no part
     assert set(reg.list_product_types()) == BUILTIN_TYPES | {"mine"}
 
 

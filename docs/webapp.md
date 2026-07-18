@@ -117,13 +117,13 @@ curl -sH "$AUTH" "$BASE/api/timeseries?tile=17MPU&zarr_path=smonthly_ASCENDING/z
 
 ## 5. Relationship to the v1.0 GUI
 
-The Streamlit GUI (`s1grits-gui`, `pip install "s1grits[gui]"`) remains in
-the tree but is superseded. Feature mapping: Mapping/Tile tabs → map +
-detail + probe; Catalog tab → workspace summary + `catalog_resync` job;
-Process tab → job composer; the tkinter folder picker is replaced by
-`--root` at server start (headless-safe). The v1.0 runner's security
-properties (list-form subprocess, log redaction) are preserved and extended
-(whitelist, output-dir pinning, token auth).
+This web interface replaces the v1.0 Streamlit GUI (`s1grits-gui`), which was
+removed in v3.0.0. Feature mapping: Mapping/Tile tabs → map + detail + probe;
+Catalog tab → workspace summary + `catalog_resync` job; Process tab → job
+composer; the tkinter folder picker is replaced by `--root` at server start
+(headless-safe). The v1.0 runner's security properties (list-form subprocess,
+log redaction) are preserved and extended (whitelist, output-dir pinning,
+token auth).
 
 ## 6. Testing
 

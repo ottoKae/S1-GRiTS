@@ -1,13 +1,12 @@
-"""Phase 2 — blockwise scenes writer parity.
+"""Blockwise scenes writer behaviour.
 
-The bounded-memory per-acquisition scenes path (per-block mosaic / dB / Ratio /
-RVI / clip / Zarr write, halo-blockwise GLCM, and COG/preview streamed back
-from the store) must be VALUE-IDENTICAL to the legacy full-frame writer. These
-tests drive the REAL ``_write_scenes_output`` with real burst arrays + rasterio
-profiles on the master grid (so the true windowed-mosaic path runs, not the
-full-frame fallback) and compare the two writers band-for-band across the
-feature matrix: despeckle off/on x GLCM off/on x tile_clip off/on, plus the
-COG assets and the interior-hole QC skip decision.
+The per-acquisition scenes path is bounded-memory and blockwise: per-block
+mosaic / dB / Ratio / RVI / clip / Zarr write, halo-blockwise GLCM, and
+COG/preview streamed back from the store. These tests drive the REAL
+``_write_scenes_output`` with real burst arrays + rasterio profiles on the
+master grid (so the true windowed-mosaic path runs) and check the written
+bands, multi-timestep ordering, COG assets, and the interior-hole QC skip
+across the feature matrix: despeckle off/on x GLCM off/on x tile_clip off/on.
 """
 from __future__ import annotations
 
@@ -40,8 +39,8 @@ MASTER_T = Affine(RES, 0.0, 499980.0, 0.0, -RES, 8_500_000.0)
 
 def _burst(row0: int, row1: int, seed: int, *, scale: float = 1.0) -> tuple:
     """A burst array + profile ON the master grid (integer row offset), so it is
-    direct-copyable — the legacy reproject and the blockwise direct-copy then
-    agree exactly. Covers master rows [row0, row1); interior NaNs excluded."""
+    direct-copyable — the blockwise direct-copy reproduces the input exactly.
+    Covers master rows [row0, row1); interior NaNs excluded."""
     rng = np.random.default_rng(seed)
     h = row1 - row0
     a = rng.lognormal(np.log(10 ** (-12 / 10)), 0.5, (h, W)).astype(np.float32)
@@ -84,7 +83,7 @@ def _df(dates):
     return pd.DataFrame(rows)
 
 
-def _run(tmp_path, *, dates, blockwise, do_despeckle, features_glcm,
+def _run(tmp_path, *, dates, do_despeckle, features_glcm,
          tile_clip, generate_cog=False, tag=""):
     tile_dir = tmp_path / f"ws_{tag}"
     final_vv, prof_vv, final_vh, prof_vh = _batch(len(dates))
@@ -101,7 +100,6 @@ def _run(tmp_path, *, dates, blockwise, do_despeckle, features_glcm,
             do_despeckle=do_despeckle, despeckle_method="tv_bregman",
             despeckle_kwargs={"reg_param": 5.0},
             despeckle_window=True, despeckle_pipeline=False,
-            scenes_blockwise=blockwise,
         )
     store = list(tile_dir.glob("scenes_*/zarr/*.zarr"))[0]
     g = zarr.open_group(str(store), mode="r", zarr_format=3)
@@ -113,83 +111,80 @@ def _run(tmp_path, *, dates, blockwise, do_despeckle, features_glcm,
 ONE = [pd.Timestamp("2020-01-05T00:00:00Z")]
 THREE = [pd.Timestamp(f"2020-01-{d:02d}T00:00:00Z") for d in (5, 17, 29)]
 
+_BASE_BANDS = {"VV_dB", "VH_dB", "Ratio", "RVI"}
+
 
 @pytest.mark.parametrize("do_despeckle", [False, True])
 @pytest.mark.parametrize("features_glcm", [False, True])
 @pytest.mark.parametrize("tile_clip", [False, True])
-def test_blockwise_matches_legacy_bands(tmp_path, do_despeckle, features_glcm, tile_clip):
+def test_writer_bands_and_invariants(tmp_path, do_despeckle, features_glcm, tile_clip):
     tg = f"{int(do_despeckle)}{int(features_glcm)}{int(tile_clip)}"
-    legacy, _ = _run(tmp_path, dates=ONE, blockwise=False, do_despeckle=do_despeckle,
-                     features_glcm=features_glcm, tile_clip=tile_clip, tag=f"L{tg}")
-    block, _ = _run(tmp_path, dates=ONE, blockwise=True, do_despeckle=do_despeckle,
-                    features_glcm=features_glcm, tile_clip=tile_clip, tag=f"B{tg}")
-    assert set(legacy) == set(block)
-    for band in legacy:
-        np.testing.assert_array_equal(legacy[band], block[band], err_msg=band)
+    out, _ = _run(tmp_path, dates=ONE, do_despeckle=do_despeckle,
+                  features_glcm=features_glcm, tile_clip=tile_clip, tag=tg)
+    bands = {b for b in out if b != "_time"}
+    assert _BASE_BANDS <= bands
+    assert (len(bands) > len(_BASE_BANDS)) == features_glcm  # GLCM bands only when on
+    vv = out["VV_dB"]
+    assert vv.shape == (1, H, W)
+    # NaN margin (left 3 cols, burst-union edge) is preserved as NoData.
+    assert np.isnan(vv[:, :, :3]).all()
+    if tile_clip:
+        # The synthetic master grid sits outside the real 17MPU MGRS polygon,
+        # so the tile clip (applied last, support-before-clip) removes every
+        # pixel — a NoData scene, written as all-NaN.
+        assert np.isnan(vv).all()
+    else:
+        # Unclipped: real backscatter was written across the burst footprint.
+        assert np.isfinite(vv).any()
 
 
-def test_blockwise_matches_legacy_multi_timestep(tmp_path):
-    legacy, _ = _run(tmp_path, dates=THREE, blockwise=False, do_despeckle=True,
-                     features_glcm=True, tile_clip=True, tag="Lm")
-    block, _ = _run(tmp_path, dates=THREE, blockwise=True, do_despeckle=True,
-                    features_glcm=True, tile_clip=True, tag="Bm")
-    assert legacy["_time"].tolist() == block["_time"].tolist()
-    for band in legacy:
-        np.testing.assert_array_equal(legacy[band], block[band], err_msg=band)
+def test_writer_multi_timestep_ordering(tmp_path):
+    out, _ = _run(tmp_path, dates=THREE, do_despeckle=True,
+                  features_glcm=True, tile_clip=False, tag="m")
+    times = pd.to_datetime(out["_time"])
+    assert len(times) == 3
+    assert list(times) == sorted(times)  # ascending acquisition order
+    assert out["VV_dB"].shape == (3, H, W)
+    assert np.isfinite(out["VV_dB"]).any()
 
 
-def test_blockwise_cog_matches_legacy(tmp_path):
+def test_writer_emits_cog(tmp_path):
     rasterio = pytest.importorskip("rasterio")
-    _, ldir = _run(tmp_path, dates=ONE, blockwise=False, do_despeckle=False,
-                   features_glcm=True, tile_clip=True, generate_cog=True, tag="Lc")
-    _, bdir = _run(tmp_path, dates=ONE, blockwise=True, do_despeckle=False,
-                   features_glcm=True, tile_clip=True, generate_cog=True, tag="Bc")
-    lcog = list(ldir.glob("scenes_*/cog/*.tif"))[0]
-    bcog = list(bdir.glob("scenes_*/cog/*.tif"))[0]
-    with rasterio.open(lcog) as lr, rasterio.open(bcog) as br:
-        assert (lr.width, lr.height, lr.count) == (br.width, br.height, br.count)
-        assert lr.transform == br.transform
-        assert lr.descriptions == br.descriptions
-        for b in range(1, lr.count + 1):
-            np.testing.assert_array_equal(
-                lr.read(b), br.read(b), err_msg=f"COG band {b}"
-            )
+    _, bdir = _run(tmp_path, dates=ONE, do_despeckle=False,
+                   features_glcm=True, tile_clip=False, generate_cog=True, tag="c")
+    cog = list(bdir.glob("scenes_*/cog/*.tif"))[0]
+    with rasterio.open(cog) as r:
+        # VV, VH, Ratio, RVI + the four GLCM metrics x two pols.
+        assert r.count > len(_BASE_BANDS)
+        assert r.crs.to_string() == CRS
+        assert {"VV_dB", "VH_dB", "Ratio", "RVI"} <= set(r.descriptions)
 
 
-def test_blockwise_skips_interior_hole_like_legacy(tmp_path):
-    """A genuine interior NoData hole must be skipped by BOTH writers (no
-    timestep, no catalog record)."""
+def test_writer_skips_interior_hole(tmp_path):
+    """A genuine interior NoData hole is skipped (no timestep, no record, and no
+    empty store left on disk)."""
     dates = ONE
     final_vv, prof_vv, final_vh, prof_vh = _batch(1)
-    # Punch an enclosed hole into every VV burst (interior, away from edges).
+    # Punch an enclosed hole into every VV/VH burst (interior, away from edges).
     for a in final_vv:
         a[10:16, 30:40] = np.nan
     for a in final_vh:
         a[10:16, 30:40] = np.nan
     df = _df(dates)
-
-    def _go(blockwise):
-        tile_dir = tmp_path / f"hole_{int(blockwise)}"
-        with mock.patch.object(ws, "_write_scene_stac_item", lambda *a, **k: "x"):
-            recs = ws._write_scenes_output(
-                "17MPU", "ASCENDING", tile_dir,
-                [a.copy() for a in final_vv], prof_vv,
-                [a.copy() for a in final_vh], prof_vh, dates, df,
-                CRS, RES, False, False, 16, 16, 16, "ARDC",
-                transform=MASTER_T, width=W, height=H,
-                x_coords=np.arange(W), y_coords=np.arange(H),
-                tile_clip=False, features_ratio=True, features_rvi=False,
-                features_glcm=False, do_despeckle=False,
-                incomplete_policy="skip", interior_hole_max_frac=0.001,
-                scenes_blockwise=blockwise,
-            )
-        stores = list(tile_dir.glob("scenes_*/zarr/*.zarr"))
-        if not stores:
-            return len(recs), 0  # all scenes skipped -> no store created
-        g = zarr.open_group(str(stores[0]), mode="r", zarr_format=3)
-        return len(recs), int(g["time"].shape[0])
-
-    # Both writers must make the SAME skip decision (parity), and here the
-    # enclosed hole (~2% of the grid) exceeds the 0.1% threshold -> skip. A
-    # skipped-only track leaves NO store on disk in both paths.
-    assert _go(False) == _go(True) == (0, 0)
+    tile_dir = tmp_path / "hole"
+    with mock.patch.object(ws, "_write_scene_stac_item", lambda *a, **k: "x"):
+        recs = ws._write_scenes_output(
+            "17MPU", "ASCENDING", tile_dir,
+            final_vv, prof_vv, final_vh, prof_vh, dates, df,
+            CRS, RES, False, False, 16, 16, 16, "ARDC",
+            transform=MASTER_T, width=W, height=H,
+            x_coords=np.arange(W), y_coords=np.arange(H),
+            tile_clip=False, features_ratio=True, features_rvi=False,
+            features_glcm=False, do_despeckle=False,
+            incomplete_policy="skip", interior_hole_max_frac=0.001,
+        )
+    stores = list(tile_dir.glob("scenes_*/zarr/*.zarr"))
+    # The enclosed hole (~2% of the grid) exceeds the 0.1% threshold -> skip;
+    # a skipped-only track leaves NO store on disk and produces no records.
+    assert len(recs) == 0
+    assert stores == []
