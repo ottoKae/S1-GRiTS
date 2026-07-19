@@ -970,10 +970,14 @@ def process_static_for_tile(
         cog_block = processing_config.get('cog_block_size', 256)
         target_crs_cfg = processing_config.get('target_crs') or None
 
-        # Zarr output config
-        output_config = config.get('output', {})
-        formats_config = output_config.get('formats', {})
-        generate_zarr = formats_config.get('zarr', False)
+        # Zarr is the canonical, catalog-indexed static product. `catalog
+        # resync` (the authoritative catalog/STAC builder) discovers products by
+        # scanning Zarr stores under {tile}/{product}_{DIR}/zarr/, so a static
+        # run MUST always write a store to be discoverable and pairable with the
+        # scenes/smonthly cubes — a COG-only run would be silently dropped on the
+        # next resync. Always on, matching the scenes workflow (COG remains a
+        # derived visual asset). `output.formats.zarr` no longer gates static.
+        generate_zarr = True
         chunk_y = processing_config.get('zarr_chunks', {}).get('y', 512)
         chunk_x = processing_config.get('zarr_chunks', {}).get('x', 512)
 

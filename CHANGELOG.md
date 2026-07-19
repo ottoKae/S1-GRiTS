@@ -7,6 +7,16 @@ the full history.
 
 ## [Unreleased]
 
+### Fixed
+- **Static products are now discoverable by `catalog resync`.** The static
+  workflow always writes its per-track Zarr store (previously gated behind
+  `output.formats.zarr`, off by default), so `resync_catalog_from_filesystem` —
+  which discovers products by scanning Zarr stores — indexes static layers into
+  the catalog/STAC alongside scenes/smonthly instead of dropping COG-only runs.
+  Locked by a grid-alignment invariant test (static's MGRS-tile grid is the
+  pixel-aligned sub-window of the scenes burst-union grid) and a resync
+  discovery test. First step of static↔scenes production compatibility.
+
 ### Removed
 - **Streamlit GUI** (`src/gui/`, the `s1grits-gui` entry point, the `gui`
   install extra) — superseded by the v2.3 web interface (`s1grits serve`,
