@@ -16,6 +16,15 @@ the full history.
   Locked by a grid-alignment invariant test (static's MGRS-tile grid is the
   pixel-aligned sub-window of the scenes burst-union grid) and a resync
   discovery test. First step of static↔scenes production compatibility.
+- **Static layers now pair with the S1 time series through the resolver.**
+  `CubeResolver.get_aligned_products` no longer drops static as a minority
+  `grid_id` (static sits on the tile grid, a co-registered sub-window of the
+  larger dynamic grid); `open_stack` windows the static grid onto the dynamic
+  grid by an exact nearest-within-half-a-pixel reindex before merging, so
+  `open_stack(tile, ["scenes", "static"])` returns one pixel-registered
+  `(time, y, x)` Dataset (static finite inside the tile, NaN in the beyond-tile
+  margin). Also makes `CubeResolver.open` resolve tile-relative asset paths from
+  the global catalog. Locked by end-to-end pairing tests.
 
 ### Removed
 - **Streamlit GUI** (`src/gui/`, the `s1grits-gui` entry point, the `gui`

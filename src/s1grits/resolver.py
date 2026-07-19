@@ -135,17 +135,24 @@ class CubeResolver:
         require_same_processing: bool = True,
     ) -> dict[str, pd.DataFrame]:
         """
-        Return products aligned on the same spatial grid.
+        Return products aligned for stacking on a tile.
 
-        Groups records by grid_id, returning the largest group (most products
-        share the same grid). Useful for finding scenes + static that can be
-        directly stacked.
+        Time-varying products (scenes/smonthly/monthly) must share one spatial
+        grid to co-stack, so they are grouped by ``grid_id`` and the largest
+        group is returned. **Static** products sit on the MGRS-tile grid — a
+        pixel-aligned SUB-WINDOW of the (larger, query-dependent) dynamic grid,
+        hence a different ``grid_id`` — so they are included regardless of
+        ``grid_id`` and spatially windowed onto the dynamic grid at load time
+        (see :meth:`open_stack`). This is the static↔scenes pairing contract:
+        join on ``tile_id`` (+ track/direction), align by windowing.
 
         Args:
             tile_id: MGRS tile.
             product_types: Optional list of product types to include.
-            require_same_grid: If True, raises ValueError when products
-                have different grid_ids on the same tile.
+            require_same_grid: If True, raises ValueError when the selected
+                products (including static) do not all share one grid_id.
+                Static normally differs, so this is for callers that need a
+                byte-identical direct stack.
             require_same_processing: If True (default), raises ValueError when
                 a single product_type has multiple processing_signatures.
                 If False, returns results grouped by (product_type, signature).
@@ -161,24 +168,42 @@ class CubeResolver:
         df = self.query(tile_id=tile_id)
         if product_types:
             df = df[df["product_type"].isin(product_types)]
-
-        _gid_counts = df["grid_id"].value_counts()
-        if _gid_counts.empty:
+        if df.empty or "grid_id" not in df.columns:
             return {}
 
-        if require_same_grid and len(_gid_counts) > 1:
-            _gid_summary = ", ".join(
-                f"{gid} (n={n})" for gid, n in _gid_counts.items()
-            )
-            raise ValueError(
-                f"require_same_grid=True but tile '{tile_id}' has "
-                f"{len(_gid_counts)} distinct grid_ids: {_gid_summary}. "
-                f"Products on the same tile must share identical CRS, "
-                f"transform, resolution, and dimensions."
-            )
+        if require_same_grid:
+            _all_gids = df["grid_id"].dropna().unique()
+            if len(_all_gids) > 1:
+                _counts = df["grid_id"].value_counts()
+                _gid_summary = ", ".join(f"{gid} (n={n})" for gid, n in _counts.items())
+                raise ValueError(
+                    f"require_same_grid=True but tile '{tile_id}' has "
+                    f"{len(_all_gids)} distinct grid_ids: {_gid_summary}. "
+                    f"Products on the same tile must share identical CRS, "
+                    f"transform, resolution, and dimensions (note: static sits "
+                    f"on the tile grid and normally differs — use "
+                    f"require_same_grid=False and open_stack's windowing)."
+                )
 
-        target_gid = _gid_counts.index[0]
-        _aligned = df[df["grid_id"] == target_gid]
+        _is_static = df["product_type"].astype(str).str.lower() == "static"
+        _dyn = df[~_is_static]
+        _static = df[_is_static]
+
+        # Majority grid among the co-stacking (time-varying) products; static is
+        # aligned by windowing, so it is not constrained to that grid.
+        _gid_counts = _dyn["grid_id"].value_counts()
+        if _gid_counts.empty:
+            # No time-varying products — fall back to the majority static grid.
+            _gid_counts = _static["grid_id"].value_counts()
+            if _gid_counts.empty:
+                return {}
+            target_gid = _gid_counts.index[0]
+            _aligned = _static[_static["grid_id"] == target_gid]
+        else:
+            target_gid = _gid_counts.index[0]
+            _aligned = pd.concat(
+                [_dyn[_dyn["grid_id"] == target_gid], _static], ignore_index=True
+            )
 
         # Check processing_signature consistency
         _has_sig = "processing_signature" in _aligned.columns
@@ -240,6 +265,15 @@ class CubeResolver:
         if not _zp:
             raise ValueError("Record has no zarr_path")
         _full = self.root / _zp
+        if not _full.exists():
+            # Global catalogs hold asset paths relative to the TILE directory
+            # (resync/workflows write them relative_to(tile_dir)), so resolve
+            # against {root}/{tile_id}/ when the root-relative path is absent.
+            _tid = record.get("tile_id") if isinstance(record, dict) else record.get("tile_id", None)
+            if _tid:
+                _cand = self.root / str(_tid) / _zp
+                if _cand.exists():
+                    _full = _cand
         logger.info("Opening %s", _full)
 
         try:
@@ -422,20 +456,26 @@ class CubeResolver:
                 time_varying_datasets[pt] = ds
                 opened[pt] = ds
 
-        # Determine the reference time axis for static broadcast
-        # Use the first time-varying product's time coordinate
+        # Determine the reference dynamic dataset (its time axis AND spatial
+        # grid) for static alignment. Use the first time-varying product.
         reference_time = None
+        reference_ds = None
         _primary_pt = None
         for pt, ds in time_varying_datasets.items():
             if "time" in ds.dims and len(ds.time) > 0:
                 reference_time = ds.time.values
+                reference_ds = ds
                 _primary_pt = pt
                 break
 
-        # Broadcast static layers to reference time axis
-        if static_datasets and reference_time is not None:
+        # Window static layers onto the dynamic grid and broadcast to its time
+        # axis. Static is co-registered (tile grid = pixel-aligned sub-window of
+        # the dynamic grid), so this is an exact reindex, never a resample.
+        if static_datasets and reference_ds is not None:
             for static_ds in static_datasets:
-                _bc = self._broadcast_static_ds(static_ds, reference_time)
+                _bc = self._broadcast_static_ds(
+                    static_ds, reference_time, reference_ds=reference_ds
+                )
                 opened["static"] = _bc
 
         # Attempt merge
@@ -478,10 +518,33 @@ class CubeResolver:
             return opened
 
     def _broadcast_static_ds(
-        self, ds: xr.Dataset, reference_time
+        self, ds: xr.Dataset, reference_time, reference_ds: xr.Dataset | None = None
     ) -> xr.Dataset:
-        """Broadcast a static (y,x) Dataset to (time,y,x)."""
+        """Align a static (y,x) Dataset onto the dynamic grid and broadcast it
+        to (time,y,x).
+
+        Static sits on the MGRS-tile grid — a pixel-aligned sub-window of the
+        (larger, query-dependent) dynamic grid. When ``reference_ds`` is given,
+        the static grid is reindexed onto the dynamic x/y coordinates by nearest
+        match within half a pixel: an exact 1:1 pickup in the overlap (the grids
+        are co-registered), NaN in the beyond-tile margin. The result is
+        pixel-registered with the dynamic cube, so the later ``xr.merge`` is a
+        clean alignment rather than a coordinate outer-join.
+        """
         import numpy as np
+
+        # Spatial window onto the dynamic grid (exact; no interpolation).
+        if (
+            reference_ds is not None
+            and {"x", "y"} <= set(ds.coords)
+            and {"x", "y"} <= set(reference_ds.coords)
+        ):
+            _rx = np.asarray(reference_ds["x"].values)
+            _ry = np.asarray(reference_ds["y"].values)
+            _res = abs(float(_rx[1] - _rx[0])) if _rx.size > 1 else None
+            _tol = _res * 0.49 if _res else None
+            ds = ds.reindex(x=_rx, y=_ry, method="nearest", tolerance=_tol)
+
         ref_time = np.asarray(reference_time)
         n_time = len(ref_time)
 
