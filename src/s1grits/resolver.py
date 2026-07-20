@@ -565,6 +565,164 @@ class CubeResolver:
         new_vars["time"] = xr.DataArray(ref_time, dims=["time"])
         return xr.Dataset(new_vars)
 
+    # ------------------------------------------------------------------
+    # Analysis-ready training cube (materialized view)
+    # ------------------------------------------------------------------
+
+    def materialize_training_cube(
+        self,
+        tile_id: str,
+        output_path: str | Path,
+        dynamic_product_type: str = "scenes",
+        direction: str | None = None,
+        static_bands: list[str] | None = None,
+        chunks: dict | None = None,
+        overwrite: bool = False,
+    ) -> Path:
+        """Write an analysis-ready training cube for one geometry group.
+
+        Combines a dynamic ``(time, y, x)`` product (scenes/smonthly) with its
+        **geometry-correct** static layers — matched on ``geometry_group_id``
+        (same tile + track + direction), so the incidence-angle / LIA field
+        belongs to the same acquisition geometry as the backscatter — into a
+        single Zarr store:
+
+            {output_path}                      # root group
+              ├── VV_dB, VH_dB, Ratio, …       # (time, y, x) dynamic bands
+              ├── x, y, time                   # coords
+              └── static/                      # subgroup, NO time dimension
+                   ├── local_inc_angle, …      # (y, x), co-registered
+                   └── x, y
+
+        Static is stored **once** as 2-D arrays (never tiled over time); the
+        static grid is windowed onto the dynamic grid by an exact reindex
+        (nearest within half a pixel — the grids are co-registered), so every
+        pixel/patch sample carries both the SAR time series and its geometry
+        context with no per-timestep duplication. This is a *derived*,
+        regenerable product; the canonical archive stays the independent
+        scenes/static stores. Load it back with :meth:`open_training_cube`.
+
+        Args:
+            tile_id: MGRS tile.
+            output_path: Destination Zarr store path.
+            dynamic_product_type: "scenes" (default) or "smonthly".
+            direction: Optional "ASCENDING"/"DESCENDING" filter.
+            static_bands: Optional subset of static layers to include (default:
+                all bands of the matched static product).
+            chunks: Dask chunks for the dynamic read/write (e.g.
+                ``{"time": 1, "y": 512, "x": 512}``); static reuses the y/x part.
+            overwrite: Overwrite an existing store at ``output_path``.
+
+        Returns:
+            Path to the written training cube.
+
+        Raises:
+            ValueError: If no dynamic product, or no static product for the
+                geometry group, is found on the tile.
+            FileExistsError: If ``output_path`` exists and ``overwrite`` is False.
+        """
+        import numpy as np
+
+        out = Path(output_path)
+        if out.exists() and not overwrite:
+            raise FileExistsError(
+                f"{out} exists; pass overwrite=True to replace it."
+            )
+
+        dyn_df = self.query(
+            tile_id=tile_id, product_type=dynamic_product_type, direction=direction
+        )
+        if dyn_df.empty:
+            raise ValueError(
+                f"No '{dynamic_product_type}' product for tile '{tile_id}'"
+                + (f" direction '{direction}'" if direction else "")
+            )
+        dyn_rec = dyn_df.iloc[0]
+        ggid = dyn_rec.get("geometry_group_id")
+
+        # Geometry-correct static: match the dynamic product's geometry group
+        # (same track+direction) so LIA/incidence belong to the same geometry.
+        stat_df = self.query(tile_id=tile_id, product_type="static", direction=direction)
+        if ggid and "geometry_group_id" in stat_df.columns:
+            _matched = stat_df[stat_df["geometry_group_id"] == ggid]
+            if not _matched.empty:
+                stat_df = _matched
+        if stat_df.empty:
+            raise ValueError(
+                f"No static product for tile '{tile_id}' geometry group "
+                f"'{ggid}' — run the static workflow for this tile/direction."
+            )
+        stat_rec = stat_df.iloc[0]
+
+        dyn = self.open(dyn_rec, chunks=chunks)
+        stat = self.open(stat_rec)
+
+        # Window static onto the dynamic grid (exact; co-registered).
+        if {"x", "y"} <= set(dyn.coords) and {"x", "y"} <= set(stat.coords):
+            _rx = np.asarray(dyn["x"].values)
+            _ry = np.asarray(dyn["y"].values)
+            _res = abs(float(_rx[1] - _rx[0])) if _rx.size > 1 else None
+            stat = stat.reindex(
+                x=_rx, y=_ry, method="nearest",
+                tolerance=(_res * 0.49 if _res else None),
+            )
+        if static_bands:
+            _keep = [b for b in static_bands if b in stat.data_vars]
+            if _keep:
+                stat = stat[_keep]
+        # Static must not carry a time axis in the materialized cube.
+        if "time" in stat.dims:
+            stat = stat.isel(time=0, drop=True)
+        if chunks:
+            _spatial = {k: v for k, v in chunks.items() if k in ("y", "x")}
+            if _spatial:
+                stat = stat.chunk(_spatial)
+
+        # Write: dynamic to the root group, static to the `static/` subgroup.
+        dyn.to_zarr(str(out), mode="w", consolidated=False)
+        stat.to_zarr(str(out), group="static", mode="a", consolidated=False)
+
+        # Provenance + grid identity on the root group.
+        import zarr
+        g = zarr.open_group(str(out), mode="r+")
+        g.attrs["s1grits:training_cube"] = True
+        g.attrs["s1grits:tile_id"] = str(tile_id)
+        g.attrs["s1grits:geometry_group_id"] = ggid
+        g.attrs["s1grits:dynamic_product_type"] = str(dynamic_product_type)
+        g.attrs["s1grits:static_bands"] = list(stat.data_vars)
+        g.attrs["s1grits:source_dynamic_zarr"] = str(dyn_rec.get("zarr_path") or "")
+        g.attrs["s1grits:source_static_zarr"] = str(stat_rec.get("zarr_path") or "")
+        for _k in ("crs", "grid_id"):
+            _v = dyn_rec.get(_k)
+            if _v is not None and not pd.isna(_v):
+                g.attrs[_k] = str(_v)
+        _tfm = dyn_rec.get("transform")
+        if _tfm is not None:
+            g.attrs["transform"] = [float(v) for v in list(_tfm)[:6]]
+        logger.info(
+            "Training cube written: %s (dynamic=%s, static=%s, group=%s)",
+            out, dynamic_product_type, list(stat.data_vars), ggid,
+        )
+        return out
+
+    @staticmethod
+    def open_training_cube(
+        path: str | Path, chunks: dict | None = None
+    ) -> xr.Dataset:
+        """Open a cube written by :meth:`materialize_training_cube` as one
+        Dataset: the dynamic ``(time, y, x)`` bands plus the ``static/`` layers
+        (``(y, x)``, pixel-registered). Static stays 2-D — it broadcasts over
+        time on use, so no per-timestep copy is materialised in memory.
+        """
+        root = xr.open_zarr(str(path), chunks=chunks, consolidated=False)
+        try:
+            stat = xr.open_zarr(
+                str(path), group="static", chunks=chunks, consolidated=False
+            )
+        except (OSError, KeyError, ValueError, FileNotFoundError):
+            return root
+        return xr.merge([root, stat], compat="override")
+
     def close(self) -> None:
         """Release cached catalog DataFrame."""
         self._df = None

@@ -7,6 +7,24 @@ the full history.
 
 ## [Unreleased]
 
+### Added
+- **Analysis-ready training cubes** — `CubeResolver.materialize_training_cube`
+  writes a single Zarr store combining a dynamic `(time, y, x)` product with its
+  **geometry-correct** static layers (matched on `geometry_group_id`, so the
+  incidence-angle/LIA field belongs to the same acquisition geometry as the
+  backscatter) under a `static/` subgroup of `(y, x)` arrays — stored once,
+  never tiled over time, co-registered onto the dynamic grid by an exact
+  reindex. `open_training_cube` reads it back as one merged Dataset (static
+  broadcasts over time on use). Purpose-built for DL training / pixel sampling
+  with geometry channels, without duplicating static per timestep or per
+  variant; the canonical archive stays the independent scenes/static stores.
+- **Catalog linkage for static auxiliary layers** — static now shares a
+  **track-level** `geometry_group_id` with its scenes/smonthly cube (the
+  per-scene burst count `_N{nn}` stays in `item_id`/`n_bursts` as provenance),
+  so `static ⋈ scenes ON (tile_id, geometry_group_id)` is a direct join; STAC
+  items expose `s1grits:geometry_group_id` and mark static
+  `s1grits:role="auxiliary"`.
+
 ### Fixed
 - **Static products are now discoverable by `catalog resync`.** The static
   workflow always writes its per-track Zarr store (previously gated behind

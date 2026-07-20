@@ -754,13 +754,17 @@ def _write_static_stac_item(
             "end_datetime": end_datetime,
             "s1grits:time_type": "static",
             "s1grits:product_type": "static",
+            # Static geometry layers are auxiliary variables of the scenes/
+            # smonthly cube sharing this geometry group (join on tile_id +
+            # geometry_group_id).
+            "s1grits:role": "auxiliary",
             "s1grits:tile_id": mgrs_tile_id,
             "s1grits:flight_direction": direction_label,
             "sat:orbit_state": direction_label.lower() if direction_label else None,
             "sat:relative_orbit": int(track_token_safe.replace('-', '_')) if track_token_safe.replace('-', '_').isdigit() else None,
             "s1grits:track": int(track_token_safe.replace('-', '_')) if track_token_safe.replace('-', '_').isdigit() else None,
             "s1grits:n_bursts": n_bursts,
-            "s1grits:geometry_group_id": f"{mgrs_tile_id}_{direction_label}_TK{track_token_safe}_N{n_bursts:02d}",
+            "s1grits:geometry_group_id": f"{mgrs_tile_id}_{direction_label}_TK{track_token_safe}",
             "s1grits:grid_id": f"{mgrs_tile_id}_native_{int(target_res)}m",
             "s1grits:time_varying": False,
             "s1grits:array_dims": ["y", "x"],
@@ -1079,7 +1083,9 @@ def process_static_for_tile(
                 'start_datetime': None,
                 'end_datetime': None,
                 'month': None,
-                'geometry_group_id': f"{mgrs_tile_id}_{direction_label}_TK{tk_safe}_N{n_b:02d}",
+                # Track-level join key shared with scenes/smonthly (the _N{nn}
+                # burst count stays in item_id/n_bursts as provenance, not here).
+                'geometry_group_id': f"{mgrs_tile_id}_{direction_label}_TK{tk_safe}",
                 'track': int(tk_safe.replace('-', '_')) if tk_safe.replace('-', '_').isdigit() else None,
                 'n_bursts': n_b,
                 'n_scenes': None,

@@ -724,7 +724,12 @@ def _resync_locked(output_root, _skip_dirs, write_stac, stac_format) -> Dict[str
                     'start_datetime': start_dt,
                     'end_datetime': end_dt,
                     'month': dt_val.strftime('%Y-%m') if dt_val else None,
-                    'geometry_group_id': f"{tile_id}_{flight_direction or 'UNK'}_TK{track_val}{_nn_suffix}" if track_val else None,
+                    # geometry_group_id is the TRACK-level join key shared by
+                    # scenes/smonthly and their auxiliary static layers — the
+                    # per-scene burst count (_N{nn}, present in static store
+                    # names) stays in item_id/n_bursts as provenance, NOT here,
+                    # so `static ⋈ scenes ON (tile_id, geometry_group_id)` works.
+                    'geometry_group_id': f"{tile_id}_{flight_direction or 'UNK'}_TK{track_val}" if track_val else None,
                     'track': track_val,
                     'n_bursts': n_bursts_val,
                     'n_scenes': len(time_steps) if time_steps else None,

@@ -402,6 +402,10 @@ def build_stac_item_dict(
             "s1:processing_level": record.get("processing_level", "hARDCp"),
             "s1:monthly_composite": "median" if output_type in ("monthly", "smonthly") else None,
             "s1:despeckle": record.get("processing_level") != "ARDC",
+            # Track-level join key: static geometry layers are auxiliary
+            # variables of the scenes/smonthly cube sharing this geometry group.
+            "s1grits:geometry_group_id": record.get("geometry_group_id") or None,
+            "s1grits:role": "auxiliary" if output_type == "static" else None,
             "s1grits:product_variant": record.get("product_variant") or None,
             "s1grits:processing_signature": record.get("processing_signature") or None,
             "s1grits:processing_variant": (
