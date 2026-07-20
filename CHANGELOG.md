@@ -23,7 +23,10 @@ the full history.
   per-scene burst count `_N{nn}` stays in `item_id`/`n_bursts` as provenance),
   so `static ⋈ scenes ON (tile_id, geometry_group_id)` is a direct join; STAC
   items expose `s1grits:geometry_group_id` and mark static
-  `s1grits:role="auxiliary"`.
+  `s1grits:role="auxiliary"`. `catalog resync` also emits STAC `related`
+  cross-links between the products of a geometry group (one per product_type),
+  so static auxiliary geometry is navigable from the scenes/smonthly cube and
+  back.
 
 ### Fixed
 - **Static products are now discoverable by `catalog resync`.** The static

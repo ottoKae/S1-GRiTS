@@ -119,6 +119,31 @@ def test_static_and_scenes_share_track_level_geometry_group_id(cube):
     assert stat["n_bursts"] == 5
 
 
+def test_stac_related_cross_links(cube):
+    """resync emits STAC `related` links between products of the same geometry
+    group: static <-> scenes, each resolving to the sibling's item JSON."""
+    import json as _json
+    resync_catalog_from_filesystem(cube, write_stac=True, stac_format="json")
+
+    stat_items = list(cube.glob(f"{TILE}/items/static_*/**/*_static.json"))
+    scn_items = list(cube.glob(f"{TILE}/items/scenes_*/**/*.json"))
+    assert stat_items and scn_items
+
+    stat = _json.loads(stat_items[0].read_text())
+    rel = [ln for ln in stat["links"] if ln["rel"] == "related"]
+    assert any(ln.get("s1grits:product_type") == "scenes" for ln in rel), stat["links"]
+    # the related href resolves to a real sibling item on disk
+    for ln in rel:
+        assert (stat_items[0].parent / ln["href"]).resolve().exists()
+
+    scn = _json.loads(scn_items[0].read_text())
+    rel_s = [ln for ln in scn["links"] if ln["rel"] == "related"]
+    _aux = [ln for ln in rel_s if ln.get("s1grits:product_type") == "static"]
+    assert _aux, scn["links"]
+    assert _aux[0].get("s1grits:role") == "auxiliary"
+    assert (scn_items[0].parent / _aux[0]["href"]).resolve().exists()
+
+
 def test_static_stac_item_marks_auxiliary_role(cube, tmp_path):
     import pandas as pd
     cat = pd.read_parquet(cube / "catalog.parquet")

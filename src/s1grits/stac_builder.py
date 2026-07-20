@@ -226,6 +226,7 @@ def build_stac_item_dict(
     polarization: str = "VV+VH",
     tile_dir_override: str = None,
     relative_to: str = None,
+    related_items: list[dict] | None = None,
 ) -> tuple[dict, str]:
     """
     Build a STAC Item dict for one tile x time slice (no disk write).
@@ -457,6 +458,34 @@ def build_stac_item_dict(
     item["links"].append({"rel": "collection", "href": os.path.relpath(os.path.join(output_root, "collections", _cid, "collection.json"), _href_base).replace("\\", "/")})
     item["links"].append({"rel": "root", "href": os.path.relpath(os.path.join(output_root, "catalog.json"), _href_base).replace("\\", "/")})
 
+    # Cross-links to the other products of the same geometry group (one per
+    # product_type). Lets a consumer navigate scenes <-> smonthly <-> static
+    # auxiliary geometry without knowing the naming convention: static items
+    # carry `related` links to the dynamic cube and vice versa.
+    for _sib in (related_items or []):
+        _sib_rel = _sib.get("item_rel")
+        if not _sib_rel:
+            continue
+        _sib_pt = _sib.get("product_type")
+        _sib_href = os.path.relpath(
+            os.path.join(output_root, _sib_rel), _href_base
+        ).replace("\\", "/")
+        _link = {
+            "rel": "related",
+            "href": _sib_href,
+            "type": "application/geo+json",
+            "title": _sib.get("title") or (
+                f"Auxiliary static geometry ({_sib_pt})"
+                if _sib_pt == "static"
+                else f"{_sib_pt} product (same geometry group)"
+            ),
+            "s1grits:product_type": _sib_pt,
+            "s1grits:geometry_group_id": record.get("geometry_group_id"),
+        }
+        if _sib_pt == "static" and output_type != "static":
+            _link["s1grits:role"] = "auxiliary"
+        item["links"].append(_link)
+
     # Assets — hrefs are relative to the item JSON
     asset_title_prefix = {
         "scenes": "Scene",
@@ -515,6 +544,7 @@ def write_stac_item(
     output_root: str,
     polarization: str = "VV+VH",
     tile_dir_override: str = None,
+    related_items: list[dict] | None = None,
 ) -> str:
     """
     Write a STAC Item JSON for one tile x time slice.
@@ -531,6 +561,7 @@ def write_stac_item(
         return None
     item, item_abs = build_stac_item_dict(
         record, output_root, polarization, tile_dir_override=tile_dir_override,
+        related_items=related_items,
     )
     os.makedirs(os.path.dirname(item_abs), exist_ok=True)
     from s1grits.atomic_write import atomic_write_json
