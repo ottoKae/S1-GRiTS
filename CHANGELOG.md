@@ -5,7 +5,12 @@ versions follow the tags on this repository. Entries before this file was
 introduced are summarised from the merged pull requests; see `git log` for
 the full history.
 
-## [Unreleased]
+## [3.0.0] - 2026-07
+
+The **development → stable** release: the deprecated legacy paths are retired
+now that the bounded-memory scenes pipeline is validated in production. The
+static geometry-layer workflow (`workflow_static.py`, `s1grits process_static`)
+is unaffected.
 
 ### Added
 - **Analysis-ready training cubes** — `CubeResolver.materialize_training_cube`
@@ -48,6 +53,14 @@ the full history.
   the global catalog. Locked by end-to-end pairing tests.
 
 ### Removed
+- **Legacy monthly-composite workflow** (`s1grits process` /
+  `process_monthly`, `run_multi_mgrs_monthly_workflow`,
+  `process_single_mgrs_tile`) and the dead `cli_legacy.py`. Superseded by the
+  bounded-memory scenes pipeline (`s1grits process_scenes`, with
+  `processing.monthly` for composites). Historical `monthly` products remain
+  readable — the `monthly` product type and its writers/STAC handling are
+  retained. Config keys read only by this workflow (`processing.group_mode`,
+  `processing.min_valid_lin`, `processing.eps_lin`) are gone.
 - **Streamlit GUI** (`src/gui/`, the `s1grits-gui` entry point, the `gui`
   install extra) — superseded by the v2.3 web interface (`s1grits serve`,
   see `docs/webapp.md`). Deprecated since v2.3.3 (#21).

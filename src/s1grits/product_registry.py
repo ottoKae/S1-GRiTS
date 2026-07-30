@@ -127,6 +127,10 @@ DEFAULT_REGISTRY: dict[str, Any] = {
                 "processing.bands",
             ],
         },
+        # LEGACY: the standalone monthly-composite workflow was removed in
+        # v3.0.0 (superseded by the scenes pipeline's "smonthly" product). This
+        # type is retained so historical monthly catalogs/products stay
+        # readable and identifiable; no workflow produces it any more.
         "monthly": {
             "collection_id": "s1grits-monthly",
             "time_varying": True,

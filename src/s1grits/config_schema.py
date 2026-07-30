@@ -108,14 +108,11 @@ KNOWN_KEYS: dict = {
         "incomplete_acquisition": None,
         "interior_hole_max_frac": None,
         "require_complete_bursts": None,
-        # Legacy monthly/static workflows only (workflow.py / workflow_static.py):
+        # Static workflow + legacy read-compat keys (workflow_static.py):
         "texture_features": None,  # free-form GLCM config subtree
         "target_crs": None,        # static workflow; scenes auto-derives from MGRS
         "use_roi_mask": None,
-        "group_mode": None,
         "trim_fraction": None,
-        "min_valid_lin": None,
-        "eps_lin": None,
         "monthly": {
             "enabled": None,
             "only": None,

@@ -2,81 +2,19 @@
 
 ## Workflows
 
-### Workflow 1: Monthly Composites
+### Workflow 1: Monthly Composites (removed — see Per-Scene Processing)
 
-**Generate multi-year time series at monthly temporal resolution.**
-
-#### Purpose
-
-Create temporally consistent monthly composite time series suitable for:
-- Long-term trend analysis (deforestation, urbanization)
-- Seasonal vegetation monitoring
-- Multi-year climate impact studies
-- Large-scale land cover classification
-
-#### When to Use
-
-- Analysis requires **monthly or coarser** temporal resolution
-- Focus on **long-term trends** rather than individual events
-- Storage efficiency is important (monthly aggregation reduces volume)
-- Temporal speckle reduction through median compositing is desired
-
-#### Output Structure
-
-```
-{base_dir}/
-  catalog.json                              # STAC root catalog
-  catalog.parquet                           # Global Parquet index
-  collections/
-    s1grits-monthly/collection.json         # STAC Collection
-  {TILE}_{DIR}/                            # e.g., 17MPV_ASCENDING/
-    catalog.parquet                         # Tile-level index
-    zarr/
-      S1_monthly.zarr/                      # PRIMARY: Monthly time-series cube
-        ├── VV_dB/      (time, y, x)
-        ├── VH_dB/      (time, y, x)
-        ├── Ratio/      (time, y, x)
-        ├── RVI/        (time, y, x)
-        ├── time/       [2024-01, 2024-02, ...]
-        ├── y/          [pixel coordinates]
-        └── x/          [pixel coordinates]
-    cog/
-      {TILE}_S1_Monthly_{DIR}_{YYYY-MM}.tif   # COG per month
-    preview/
-      {TILE}_S1_Monthly_{DIR}_{YYYY-MM}.png   # PNG per month
-    {TILE}_{DIR}_{YYYY-MM}.json                # STAC Item per month
-```
-
-#### CLI Command
-
-```bash
-s1grits process --config config/s1grits_monthly.yaml
-```
-
-#### Key Configuration
-
-```yaml
-workflow: "monthly"   # Not explicitly set; default behavior
-
-processing:
-  post_processing: true        # Enable TV-Bregman spatial despeckle
-  despeckle:
-    monthly_despeckle: true
-    method: "tv_bregman"
-    kwargs:
-      reg_param: 5.0           # Regularization strength
-
-  texture_features:
-    enabled: false             # Optional GLCM texture bands
-```
-
-#### Zarr Schema
-
-- **Dimensions:** `(time, y, x)` — time is unlimited, spatial dims are fixed per tile
-- **Chunk size:** 512×512 pixels (cloud-optimized for parallel access)
-- **Variables:** VV_dB, VH_dB, Ratio, RVI (+ optional GLCM bands if enabled)
-- **Coordinates:** time (datetime64), y (float), x (float)
-- **CRS:** Native UTM zone derived from MGRS tile
+> The standalone monthly-composite workflow (`s1grits process`) was **removed
+> in v3.0.0**. Monthly composites are now produced by the scenes workflow: run
+> **Workflow 2: Per-Scene Processing** and enable `processing.monthly` to emit
+> the per-track `smonthly` composite cube alongside (or instead of, via
+> `processing.monthly.only`) the per-scene product. This shares the
+> bounded-memory blockwise pipeline and avoids a second full pass over the
+> bursts.
+>
+> Monthly products written by earlier releases remain fully readable — the
+> `monthly` STAC/catalog product type is retained, and `s1grits mosaic`
+> continues to mosaic them.
 
 ---
 

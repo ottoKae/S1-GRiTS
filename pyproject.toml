@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "s1grits"
-version = "2.3.3"
+version = "3.0.0"
 description = "S1-GRiTS: Sentinel-1 Gridded Radiometrically Terrain-Corrected gamma0 Monthly Composite Time Series"
 readme = "README.md"
 # Pinned to Python 3.12. The package itself is pure Python, but the geoscience

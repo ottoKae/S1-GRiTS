@@ -8,8 +8,7 @@ S1-GRiTS provides **10+ commands** covering the full workflow: processing, catal
 
 | Command | Purpose | Workflow |
 |---------|---------|----------|
-| `s1grits process` (alias `s1grits process_monthly`) | Monthly composite time series | Monthly |
-| `s1grits process_scenes` | Per-acquisition scene outputs | Scenes |
+| `s1grits process_scenes` | Per-acquisition scene outputs (+ optional monthly composites) | Scenes |
 | `s1grits process_static` | Time-invariant static layers | Static |
 | `s1grits catalog resync` | Rebuild catalog + STAC from filesystem (no re-processing) | All |
 | `s1grits doctor` | Preflight: environment, config, disk, store-grid consistency, resource plan (`--config`, `--network`) | All |
@@ -24,7 +23,7 @@ S1-GRiTS provides **10+ commands** covering the full workflow: processing, catal
 
 ```bash
 s1grits --help
-s1grits process --help
+s1grits process_scenes --help
 s1grits catalog --help
 s1grits mosaic --help
 ```
@@ -35,22 +34,11 @@ s1grits mosaic --help
 
 #### Monthly Composites
 
-Generate monthly composite time series.
-
-```bash
-s1grits process --config config/s1grits_monthly.yaml
-```
-
-**What it does:**
-1. Query ASF for RTC-S1 bursts in ROI and time range
-2. Download and process bursts per MGRS tile
-3. Create monthly median composites
-4. Apply TV-Bregman spatial despeckle (if enabled)
-5. Compute derived features (Ratio, RVI, GLCM)
-6. Write Zarr data cube + COG + preview
-7. Generate STAC Items and update catalogs
-
-**Output:** `{base_dir}/{TILE}_{DIR}/zarr/S1_monthly.zarr`
+> The standalone monthly workflow (`s1grits process`) was removed in v3.0.0.
+> Monthly composites are now produced by the scenes workflow — enable
+> `processing.monthly` in the `process_scenes` config (`smonthly` product). See
+> Per-Scene Processing below. Historical `monthly` products stay readable and
+> can be mosaicked with `s1grits mosaic`.
 
 ---
 
@@ -328,10 +316,7 @@ s1grits serve --root <workspace> --host 0.0.0.0 --port 8080
 #### Process All Tiles for 2024
 
 ```bash
-# Monthly workflow
-s1grits process --config config/2024_monthly.yaml
-
-# Scenes workflow  
+# Scenes workflow (+ monthly composites via processing.monthly)
 s1grits process_scenes --config config/2024_scenes.yaml
 ```
 

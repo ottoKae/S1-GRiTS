@@ -32,7 +32,7 @@ def _load(name: str) -> dict:
 # Shipped templates must be clean: every documented key is actually read.
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize(
-    "name", ["s1grits_scenes.yaml", "s1grits_monthly.yaml"]
+    "name", ["s1grits_scenes.yaml"]
 )
 def test_shipped_template_has_no_unknown_keys(name):
     problems = find_unknown_config_keys(_load(name))
