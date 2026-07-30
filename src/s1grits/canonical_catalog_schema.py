@@ -39,7 +39,7 @@ logger = get_logger(__name__)
 # ---------------------------------------------------------------------------
 # Schema version — bump when columns are added, removed, or renamed
 # ---------------------------------------------------------------------------
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 GRID_ID_VERSION = 1       # bump when make_grid_id hash algorithm changes
 _GRID_ROUND_PRECISION = 9  # decimal places for transform/resolution rounding
 
@@ -74,6 +74,9 @@ CANONICAL_CATALOG_COLUMNS: list[str] = [
     "grid_version",         # int: hash algorithm version
     "resolution_x",         # float: pixel width in CRS units
     "resolution_y",         # float: pixel height in CRS units
+    "grid_source",          # str: workflow_scenes | mgrs_tile | null
+    "reference_grid_id",    # str: source dynamic grid id for static products
+    "reference_zarr_path",  # str: source dynamic Zarr path for static products
 
     # ---- Temporal ----
     "datetime",             # timestamp or null (static = null)

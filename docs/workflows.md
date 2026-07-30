@@ -170,6 +170,11 @@ Produce static reference layers suitable for:
 s1grits process_static --config config/s1grits_static.yaml
 ```
 
+For pixel-exact static/scenes cubes, run `process_scenes` first, use the same
+`output.base_dir`, and set `static_layers.grid_reference: required`. Static
+then adopts the corresponding scenes Zarr grid per direction and track. See
+[Static and dynamic scenes: pixel-exact workflow](static_scenes_alignment.md).
+
 #### Key Configuration
 
 ```yaml

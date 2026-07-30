@@ -409,6 +409,9 @@ def build_stac_item_dict(
             "s1grits:role": "auxiliary" if output_type == "static" else None,
             "s1grits:product_variant": record.get("product_variant") or None,
             "s1grits:processing_signature": record.get("processing_signature") or None,
+            "s1grits:grid_source": record.get("grid_source") or None,
+            "s1grits:reference_grid_id": record.get("reference_grid_id") or None,
+            "s1grits:reference_zarr_path": record.get("reference_zarr_path") or None,
             "s1grits:processing_variant": (
                 json.loads(record["processing_variant_json"])
                 if record.get("processing_variant_json") and isinstance(record.get("processing_variant_json"), str)

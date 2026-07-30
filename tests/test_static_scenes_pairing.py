@@ -132,6 +132,21 @@ def test_open_stack_merges_and_windows_static(cube):
     assert np.isnan(margin).all()
 
 
+def test_open_stack_rejects_ambiguous_tracks(cube):
+    import pandas as pd
+    cat_path = cube / "catalog.parquet"
+    cat = pd.read_parquet(cat_path)
+    extra = cat.copy()
+    extra["geometry_group_id"] = extra["geometry_group_id"].str.replace("TK40", "TK41")
+    extra["track"] = 41
+    pd.concat([cat, extra], ignore_index=True).to_parquet(cat_path, index=False)
+    r = CubeResolver(cube)
+    with pytest.raises(ValueError, match="Multiple geometry groups"):
+        r.open_stack(TILE, ["scenes", "static"])
+    selected = r.open_stack(TILE, ["scenes", "static"], track=40)
+    assert isinstance(selected, xr.Dataset)
+
+
 def test_open_stack_static_pixel_registered_with_scenes(cube):
     r = CubeResolver(cube)
     stack = r.open_stack(TILE, ["scenes", "static"])

@@ -759,6 +759,9 @@ def _resync_locked(output_root, _skip_dirs, write_stac, stac_format) -> Dict[str
                     'width': _grid_size,
                     'height': int(g['y'].shape[0]) if 'y' in g else None,
                     'grid_id': f"{tile_id}_native_{int(abs(float(g.attrs['transform'][0]))) if 'transform' in g.attrs else 30}m",
+                    'grid_source': g.attrs.get('grid_source', None),
+                    'reference_grid_id': g.attrs.get('reference_grid_id', None),
+                    'reference_zarr_path': g.attrs.get('reference_zarr_path', None),
                     'datetime': dt_val,
                     'start_datetime': start_dt,
                     'end_datetime': end_dt,
@@ -768,7 +771,10 @@ def _resync_locked(output_root, _skip_dirs, write_stac, stac_format) -> Dict[str
                     # per-scene burst count (_N{nn}, present in static store
                     # names) stays in item_id/n_bursts as provenance, NOT here,
                     # so `static ⋈ scenes ON (tile_id, geometry_group_id)` works.
-                    'geometry_group_id': f"{tile_id}_{flight_direction or 'UNK'}_TK{track_val}" if track_val else None,
+                    'geometry_group_id': (
+                        g.attrs.get('geometry_group_id')
+                        or (f"{tile_id}_{flight_direction or 'UNK'}_TK{track_val}" if track_val else None)
+                    ),
                     'track': track_val,
                     'n_bursts': n_bursts_val,
                     'n_scenes': len(time_steps) if time_steps else None,

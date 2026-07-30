@@ -75,6 +75,11 @@ static_layers:
   # Set enabled=true to generate static layers
   enabled: true
 
+  # Adopt the matching workflow_scenes Zarr grid for every direction/track.
+  # "required" guarantees identical transform, shape, grid_id and pixels, so
+  # run process_scenes before process_static. "auto" permits tile-grid fallback.
+  grid_reference: "required"
+
   # Layer names to produce (true = enable, false = skip)
   layers:
     local_inc_angle: true

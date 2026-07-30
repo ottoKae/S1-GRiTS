@@ -5,6 +5,13 @@ versions follow the tags on this repository. Entries before this file was
 introduced are summarised from the merged pull requests; see `git log` for
 the full history.
 
+## Unreleased
+
+- Static layers can adopt the matching scenes Zarr grid per tile, direction,
+  and track, preserving exact grid identity through catalog resync.
+- Resolver stacking and training-cube materialization reject ambiguous tracks
+  and non-integer pixel-grid offsets instead of silently pairing/resampling.
+
 ## [3.0.0] - 2026-07
 
 The **development → stable** release: the deprecated legacy paths are retired

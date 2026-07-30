@@ -113,6 +113,99 @@ def _get_enabled_layers(config: dict) -> list[str]:
     return [name for name in ALL_STATIC_LAYERS if layer_cfg.get(name, False)]
 
 
+def _dynamic_grid_for_static_group(
+    tile_dir: Path,
+    mgrs_tile_id: str,
+    direction_label: str,
+    track_token: str,
+    config: dict,
+) -> dict[str, Any] | None:
+    """Load the locked grid of the matching scenes Zarr store.
+
+    ``workflow_scenes`` is authoritative for a dynamic cube's spatial grid.
+    When that cube already exists, static layers must be mosaicked directly
+    onto the same lattice and extent instead of creating a second tile-only
+    grid and relying on a later resolver reindex.
+
+    ``static_layers.grid_reference`` controls behaviour:
+
+    * ``auto`` (default): adopt scenes when present, otherwise use tile grid;
+    * ``required``: fail when the matching scenes store is absent;
+    * ``tile``: retain the legacy MGRS-tile grid.
+    """
+    static_cfg = config.get("static_layers") or {}
+    mode = str(static_cfg.get("grid_reference", "auto")).strip().lower()
+    if mode not in {"auto", "required", "tile"}:
+        raise ValueError(
+            "static_layers.grid_reference must be one of: auto, required, tile"
+        )
+    if mode == "tile":
+        return None
+
+    tk = str(track_token).replace("_", "-")
+    wanted_label = static_cfg.get("reference_product_label")
+    product_dirs = (
+        [tile_dir / str(wanted_label)]
+        if wanted_label
+        else sorted(tile_dir.glob(f"scenes_{direction_label}*"))
+    )
+    name = f"s1grits_scenes_{mgrs_tile_id}_{direction_label}_TK{tk}.zarr"
+    candidates = [d / "zarr" / name for d in product_dirs if (d / "zarr" / name).exists()]
+
+    if not candidates:
+        if mode == "required":
+            raise FileNotFoundError(
+                f"No matching scenes Zarr grid for {mgrs_tile_id} "
+                f"{direction_label} TK{tk}. Run workflow_scenes first or set "
+                "static_layers.grid_reference=auto/tile."
+            )
+        return None
+
+    grids: list[dict[str, Any]] = []
+    for path in candidates:
+        g = zarr.open_group(str(path), mode="r")
+        if "x" not in g or "y" not in g or "transform" not in g.attrs or "crs" not in g.attrs:
+            raise ValueError(f"Reference scenes store lacks grid metadata: {path}")
+        x = np.asarray(g["x"][:], dtype=np.float64)
+        y = np.asarray(g["y"][:], dtype=np.float64)
+        if x.ndim != 1 or y.ndim != 1 or x.size == 0 or y.size == 0:
+            raise ValueError(f"Reference scenes store has invalid x/y coordinates: {path}")
+        tfm = Affine(*[float(v) for v in list(g.attrs["transform"])[:6]])
+        expected_x = tfm.c + (np.arange(x.size) + 0.5) * tfm.a
+        expected_y = tfm.f + (np.arange(y.size) + 0.5) * tfm.e
+        if not (
+            np.allclose(x, expected_x, rtol=0, atol=max(abs(tfm.a), 1.0) * 1e-8)
+            and np.allclose(y, expected_y, rtol=0, atol=max(abs(tfm.e), 1.0) * 1e-8)
+        ):
+            raise ValueError(
+                f"Reference scenes x/y coordinates disagree with its affine transform: {path}"
+            )
+        grids.append({
+            "path": path,
+            "product_label": path.parent.parent.name,
+            "crs": str(g.attrs["crs"]),
+            "transform": tfm,
+            "width": int(x.size),
+            "height": int(y.size),
+            "x": x,
+            "y": y,
+            "grid_id": g.attrs.get("grid_id"),
+        })
+
+    signatures = {
+        (v["crs"], tuple(v["transform"])[:6], v["width"], v["height"])
+        for v in grids
+    }
+    if len(signatures) > 1:
+        labels = ", ".join(v["product_label"] for v in grids)
+        raise ValueError(
+            f"Multiple scenes variants have different grids for {mgrs_tile_id} "
+            f"{direction_label} TK{tk}: {labels}. Set "
+            "static_layers.reference_product_label explicitly."
+        )
+    return grids[0]
+
+
 # ---------------------------------------------------------------------------
 # COG output
 # ---------------------------------------------------------------------------
@@ -209,6 +302,22 @@ def _init_zarr_static(
                     f"existing=({z_h},{z_w}) new=({H},{W}). "
                     f"Delete the Zarr store or use a matching grid to re-run."
                 )
+            elif str(g_check.attrs.get('crs', '')) != str(target_crs):
+                raise ValueError(
+                    f"CRS mismatch for {zarr_path}: existing={g_check.attrs.get('crs')} "
+                    f"new={target_crs}"
+                )
+            elif not np.allclose(
+                np.asarray(g_check.attrs.get('transform', []), dtype=float)[:6],
+                np.asarray(list(transform)[:6], dtype=float), rtol=0, atol=1e-9,
+            ):
+                raise ValueError(f"Affine transform mismatch for {zarr_path}")
+            elif not np.array_equal(np.asarray(g_check['x'][:]), np.asarray(x_coords)):
+                raise ValueError(f"x-coordinate mismatch for {zarr_path}")
+            elif not np.array_equal(np.asarray(g_check['y'][:]), np.asarray(y_coords)):
+                raise ValueError(f"y-coordinate mismatch for {zarr_path}")
+            elif any(name not in g_check for name in band_names):
+                raise ValueError(f"Static band set mismatch for {zarr_path}")
             g = zarr.open_group(str(zarr_path), mode='r+', zarr_format=3)
             logger.info("[Zarr] Opened existing static store, grid locked %dx%d",
                         z_w, z_h)
@@ -474,6 +583,7 @@ def _process_one_static_group(
     chunk_x: int = 512,
     x_coords: np.ndarray | None = None,
     y_coords: np.ndarray | None = None,
+    reference_grid: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Download and mosaic static layers for ONE acquisition group.
@@ -531,6 +641,24 @@ def _process_one_static_group(
             zarr_exists = _zarr_check_path.exists()
 
         if all_cogs_exist and zarr_exists:
+            _existing_grid: dict[str, Any] = {}
+            if generate_zarr:
+                # Validate the existing store against the requested/reference
+                # grid before treating the group as resumable.
+                _eg = _init_zarr_static(
+                    _zarr_check_path, x_coords, y_coords, target_crs,
+                    master_transform, chunk_y, chunk_x, band_names=layers,
+                )
+                _existing_grid = {
+                    'grid_source': _eg.attrs.get('grid_source', 'mgrs_tile'),
+                    'reference_zarr_path': _eg.attrs.get('reference_zarr_path'),
+                    'reference_product_label': _eg.attrs.get('reference_product_label'),
+                    'grid_id': _eg.attrs.get('grid_id'),
+                    'transform': list(_eg.attrs.get('transform', list(master_transform)[:6]))[:6],
+                    'width': int(_eg.attrs.get('width', len(_eg['x']))),
+                    'height': int(_eg.attrs.get('height', len(_eg['y']))),
+                    'crs': str(_eg.attrs.get('crs', target_crs)),
+                }
             logger.info(
                 "[Static] All outputs exist for group %s, skipping",
                 name_prefix,
@@ -544,6 +672,7 @@ def _process_one_static_group(
                 'zarr_path': str(_zarr_check_path) if generate_zarr else None,
                 'start_datetime': _start_iso,
                 'end_datetime': _end_iso,
+                **_existing_grid,
             }
 
     _console.print(
@@ -627,6 +756,22 @@ def _process_one_static_group(
         g_zarr.attrs['product_variant'] = _prod_var_z
         g_zarr.attrs['processing_variant_json'] = _json.dumps(_variant_vals_z)
         g_zarr.attrs['product_label'] = product_label
+        _ggid = f"{mgrs_tile_id}_{direction_label}_TK{track_token_safe}"
+        g_zarr.attrs['geometry_group_id'] = _ggid
+        if reference_grid is not None:
+            g_zarr.attrs['grid_source'] = 'workflow_scenes'
+            g_zarr.attrs['reference_product_type'] = 'scenes'
+            g_zarr.attrs['reference_product_label'] = reference_grid['product_label']
+            g_zarr.attrs['reference_zarr_path'] = str(reference_grid['path'].relative_to(static_dir.parent)).replace('\\', '/')
+            if reference_grid.get('grid_id'):
+                g_zarr.attrs['reference_grid_id'] = str(reference_grid['grid_id'])
+                if str(g_zarr.attrs.get('grid_id')) != str(reference_grid['grid_id']):
+                    raise RuntimeError(
+                        "Static grid_id does not match its workflow_scenes reference; "
+                        "refusing to write a misregistered product."
+                    )
+        else:
+            g_zarr.attrs['grid_source'] = 'mgrs_tile'
 
     for layer in layers:
         out_path = str(cog_dir / f"{name_prefix}_{layer}.tif")
@@ -688,6 +833,17 @@ def _process_one_static_group(
         'zarr_path': str(zarr_path) if zarr_path else None,
         'start_datetime': _start_iso,
         'end_datetime': _end_iso,
+        'grid_source': 'workflow_scenes' if reference_grid is not None else 'mgrs_tile',
+        'reference_zarr_path': (
+            str(reference_grid['path'].relative_to(static_dir.parent)).replace('\\', '/')
+            if reference_grid is not None else None
+        ),
+        'reference_product_label': reference_grid.get('product_label') if reference_grid else None,
+        'grid_id': g_zarr.attrs.get('grid_id') if g_zarr is not None else None,
+        'transform': list(master_transform)[:6],
+        'width': int(width),
+        'height': int(height),
+        'crs': str(target_crs),
     }
 
 
@@ -970,8 +1126,13 @@ def process_static_for_tile(
 
         # ---- Build master grid (MGRS tile grid, shared across all groups) ----
         processing_config = config.get('processing') or {}
-        target_res = processing_config.get('target_resolution', 30.0)
-        cog_block = processing_config.get('cog_block_size', 256)
+        static_config = config.get('static_layers') or {}
+        target_res = processing_config.get(
+            'target_resolution', static_config.get('target_resolution', 30.0)
+        )
+        cog_block = processing_config.get(
+            'cog_block_size', static_config.get('cog_block_size', 256)
+        )
         target_crs_cfg = processing_config.get('target_crs') or None
 
         # Zarr is the canonical, catalog-indexed static product. `catalog
@@ -982,8 +1143,9 @@ def process_static_for_tile(
         # next resync. Always on, matching the scenes workflow (COG remains a
         # derived visual asset). `output.formats.zarr` no longer gates static.
         generate_zarr = True
-        chunk_y = processing_config.get('zarr_chunks', {}).get('y', 512)
-        chunk_x = processing_config.get('zarr_chunks', {}).get('x', 512)
+        _chunk_cfg = processing_config.get('zarr_chunks') or static_config.get('zarr_chunks') or {}
+        chunk_y = _chunk_cfg.get('y', 512)
+        chunk_x = _chunk_cfg.get('x', 512)
 
         target_crs = target_crs_cfg if target_crs_cfg else _mgrs_to_utm_epsg(mgrs_tile_id)
 
@@ -1003,6 +1165,25 @@ def process_static_for_tile(
         # ---- Process each group ----
         groups_written = []
         for group in groups:
+            reference_grid = _dynamic_grid_for_static_group(
+                tile_dir, mgrs_tile_id, direction_label,
+                group['track_token'], config,
+            )
+            if reference_grid is not None:
+                group_transform = reference_grid['transform']
+                group_width = reference_grid['width']
+                group_height = reference_grid['height']
+                group_crs = reference_grid['crs']
+                group_x = reference_grid['x']
+                group_y = reference_grid['y']
+                logger.info(
+                    "[Static] Adopting scenes grid for %s %s TK%s: %s (%dx%d)",
+                    mgrs_tile_id, direction_label, group['track_token'],
+                    reference_grid['product_label'], group_width, group_height,
+                )
+            else:
+                group_transform, group_width, group_height = master_transform, width, height
+                group_crs, group_x, group_y = target_crs, x_coords, y_coords
             group_result = _process_one_static_group(
                 rows=group['rows'],
                 layers=layers,
@@ -1011,10 +1192,10 @@ def process_static_for_tile(
                 direction_label=direction_label,
                 track_token=group['track_token'],
                 n_bursts=group['n_bursts'],
-                master_transform=master_transform,
-                width=width,
-                height=height,
-                target_crs=target_crs,
+                master_transform=group_transform,
+                width=group_width,
+                height=group_height,
+                target_crs=group_crs,
                 cog_block=cog_block,
                 overwrite=overwrite,
                 max_workers=max_workers,
@@ -1024,8 +1205,9 @@ def process_static_for_tile(
                 generate_zarr=generate_zarr,
                 chunk_y=chunk_y,
                 chunk_x=chunk_x,
-                x_coords=x_coords,
-                y_coords=y_coords,
+                x_coords=group_x,
+                y_coords=group_y,
+                reference_grid=reference_grid,
             )
             groups_written.append(group_result)
 
@@ -1038,6 +1220,10 @@ def process_static_for_tile(
             n_b = g.get('n_bursts', 0)
             zarr_p = static_dir / 'zarr' / f's1grits_static_{mgrs_tile_id}_{direction_label}_TK{tk_safe}_N{n_b:02d}.zarr'
             cog_rel = g.get('layers_written', {}).get(layers[0]) if layers else None
+            g_transform = Affine(*g.get('transform', list(master_transform)[:6]))
+            g_width = int(g.get('width', width))
+            g_height = int(g.get('height', height))
+            g_crs = str(g.get('crs', target_crs))
 
             # Write STAC item
             _write_static_stac_item(
@@ -1050,10 +1236,10 @@ def process_static_for_tile(
                 target_res=target_res,
                 band_names=layers,
                 product_label=product_label,
-                master_transform=master_transform,
-                width=width,
-                height=height,
-                target_crs=target_crs,
+                master_transform=g_transform,
+                width=g_width,
+                height=g_height,
+                target_crs=g_crs,
                 cog_path=Path(cog_rel) if cog_rel else None,
                 start_datetime=g.get('start_datetime'),
                 end_datetime=g.get('end_datetime'),
@@ -1075,10 +1261,14 @@ def process_static_for_tile(
                 'product_label': product_label,
                 'tile_id': mgrs_tile_id,
                 'flight_direction': direction_label,
-                'crs': str(target_crs),
-                'transform': list(master_transform)[:6],
-                'width': width,
-                'height': height,
+                'crs': g_crs,
+                'transform': list(g_transform)[:6],
+                'width': g_width,
+                'height': g_height,
+                'grid_id': g.get('grid_id'),
+                'grid_source': g.get('grid_source'),
+                'reference_grid_id': g.get('grid_id') if g.get('grid_source') == 'workflow_scenes' else None,
+                'reference_zarr_path': g.get('reference_zarr_path'),
                 'datetime': None,
                 'start_datetime': None,
                 'end_datetime': None,

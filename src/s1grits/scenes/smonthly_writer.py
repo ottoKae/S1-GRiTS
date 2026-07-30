@@ -1140,6 +1140,9 @@ def _write_smonthly_one_track(
     g.attrs['product_variant'] = _smonthly_variant
     g.attrs['processing_variant_json'] = json.dumps(_smonthly_variant_vals)
     g.attrs['product_label'] = product_label
+    g.attrs['geometry_group_id'] = (
+        f"{mgrs_tile_id}_{direction_label}{_tk_suffix}"
+    )
     # n_bursts is no longer in the store name (it is time-varying and would
     # fragment the track); record it as store-level provenance so a filesystem
     # rescan can still recover a burst count for the track.
