@@ -754,13 +754,17 @@ def _write_static_stac_item(
             "end_datetime": end_datetime,
             "s1grits:time_type": "static",
             "s1grits:product_type": "static",
+            # Static geometry layers are auxiliary variables of the scenes/
+            # smonthly cube sharing this geometry group (join on tile_id +
+            # geometry_group_id).
+            "s1grits:role": "auxiliary",
             "s1grits:tile_id": mgrs_tile_id,
             "s1grits:flight_direction": direction_label,
             "sat:orbit_state": direction_label.lower() if direction_label else None,
             "sat:relative_orbit": int(track_token_safe.replace('-', '_')) if track_token_safe.replace('-', '_').isdigit() else None,
             "s1grits:track": int(track_token_safe.replace('-', '_')) if track_token_safe.replace('-', '_').isdigit() else None,
             "s1grits:n_bursts": n_bursts,
-            "s1grits:geometry_group_id": f"{mgrs_tile_id}_{direction_label}_TK{track_token_safe}_N{n_bursts:02d}",
+            "s1grits:geometry_group_id": f"{mgrs_tile_id}_{direction_label}_TK{track_token_safe}",
             "s1grits:grid_id": f"{mgrs_tile_id}_native_{int(target_res)}m",
             "s1grits:time_varying": False,
             "s1grits:array_dims": ["y", "x"],
@@ -970,10 +974,14 @@ def process_static_for_tile(
         cog_block = processing_config.get('cog_block_size', 256)
         target_crs_cfg = processing_config.get('target_crs') or None
 
-        # Zarr output config
-        output_config = config.get('output', {})
-        formats_config = output_config.get('formats', {})
-        generate_zarr = formats_config.get('zarr', False)
+        # Zarr is the canonical, catalog-indexed static product. `catalog
+        # resync` (the authoritative catalog/STAC builder) discovers products by
+        # scanning Zarr stores under {tile}/{product}_{DIR}/zarr/, so a static
+        # run MUST always write a store to be discoverable and pairable with the
+        # scenes/smonthly cubes — a COG-only run would be silently dropped on the
+        # next resync. Always on, matching the scenes workflow (COG remains a
+        # derived visual asset). `output.formats.zarr` no longer gates static.
+        generate_zarr = True
         chunk_y = processing_config.get('zarr_chunks', {}).get('y', 512)
         chunk_x = processing_config.get('zarr_chunks', {}).get('x', 512)
 
@@ -1075,7 +1083,9 @@ def process_static_for_tile(
                 'start_datetime': None,
                 'end_datetime': None,
                 'month': None,
-                'geometry_group_id': f"{mgrs_tile_id}_{direction_label}_TK{tk_safe}_N{n_b:02d}",
+                # Track-level join key shared with scenes/smonthly (the _N{nn}
+                # burst count stays in item_id/n_bursts as provenance, not here).
+                'geometry_group_id': f"{mgrs_tile_id}_{direction_label}_TK{tk_safe}",
                 'track': int(tk_safe.replace('-', '_')) if tk_safe.replace('-', '_').isdigit() else None,
                 'n_bursts': n_b,
                 'n_scenes': None,

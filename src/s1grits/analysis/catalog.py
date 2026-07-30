@@ -537,6 +537,45 @@ def get_catalog_statistics(catalog_path: Union[str, Path]) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Geometry-group sibling index — for STAC `related` cross-links
+# ---------------------------------------------------------------------------
+
+def _geometry_group_sibling_index(df) -> dict:
+    """Map ``(tile_id, geometry_group_id)`` → ``{product_type: {item_rel,
+    product_type}}`` with ONE representative item per product_type (first seen).
+
+    Products of the same geometry group (scenes/smonthly and their auxiliary
+    static layers, joined on the track-level ``geometry_group_id``) get STAC
+    ``related`` cross-links to each other. Bounded to one link per sibling
+    product_type so a many-acquisition scenes group does not bloat items.
+    """
+    idx: dict = {}
+    _cols = {"tile_id", "geometry_group_id", "product_type", "item_path"}
+    if not _cols <= set(df.columns):
+        return idx
+    for _, row in df.iterrows():
+        ggid, tid = row.get("geometry_group_id"), row.get("tile_id")
+        pt, ip = row.get("product_type"), row.get("item_path")
+        if not (ggid and tid and pt and ip) or pd.isna(ggid) or pd.isna(ip):
+            continue
+        reps = idx.setdefault((str(tid), str(ggid)), {})
+        reps.setdefault(str(pt), {
+            "item_rel": f"{tid}/{ip}".replace("\\", "/"),
+            "product_type": str(pt),
+        })
+    return idx
+
+
+def _siblings_for(idx: dict, record: dict) -> list:
+    """The geometry-group siblings of ``record`` (excluding its own product_type)."""
+    reps = idx.get(
+        (str(record.get("tile_id")), str(record.get("geometry_group_id"))), {}
+    )
+    _own = str(record.get("product_type"))
+    return [v for k, v in reps.items() if k != _own]
+
+
+# ---------------------------------------------------------------------------
 # Filesystem resync — rebuild catalog + STAC from actual Zarr/COG data
 # ---------------------------------------------------------------------------
 
@@ -724,7 +763,12 @@ def _resync_locked(output_root, _skip_dirs, write_stac, stac_format) -> Dict[str
                     'start_datetime': start_dt,
                     'end_datetime': end_dt,
                     'month': dt_val.strftime('%Y-%m') if dt_val else None,
-                    'geometry_group_id': f"{tile_id}_{flight_direction or 'UNK'}_TK{track_val}{_nn_suffix}" if track_val else None,
+                    # geometry_group_id is the TRACK-level join key shared by
+                    # scenes/smonthly and their auxiliary static layers — the
+                    # per-scene burst count (_N{nn}, present in static store
+                    # names) stays in item_id/n_bursts as provenance, NOT here,
+                    # so `static ⋈ scenes ON (tile_id, geometry_group_id)` works.
+                    'geometry_group_id': f"{tile_id}_{flight_direction or 'UNK'}_TK{track_val}" if track_val else None,
                     'track': track_val,
                     'n_bursts': n_bursts_val,
                     'n_scenes': len(time_steps) if time_steps else None,
@@ -760,6 +804,9 @@ def _resync_locked(output_root, _skip_dirs, write_stac, stac_format) -> Dict[str
     global_path = output_root / 'catalog.parquet'
     df_global.to_parquet(global_path, index=False)
 
+    # Geometry-group sibling index for STAC `related` cross-links.
+    _sib_index = _geometry_group_sibling_index(df_global)
+
     present_cids = (
         set(df_global["collection_id"].dropna().unique())
         if "collection_id" in df_global.columns else set()
@@ -784,6 +831,7 @@ def _resync_locked(output_root, _skip_dirs, write_stac, stac_format) -> Dict[str
                         _rec, str(output_root),
                         tile_dir_override=_rec.get("tile_id"),
                         relative_to=str(coll_dir),
+                        related_items=_siblings_for(_sib_index, _rec),
                     )
                     item_dicts.append(_item)
                 except Exception as _ie:
@@ -805,7 +853,10 @@ def _resync_locked(output_root, _skip_dirs, write_stac, stac_format) -> Dict[str
         for _, _row in df_global.iterrows():
             _rec = _row.to_dict()
             try:
-                _p = write_stac_item(_rec, str(output_root), tile_dir_override=_rec.get("tile_id"))
+                _p = write_stac_item(
+                    _rec, str(output_root), tile_dir_override=_rec.get("tile_id"),
+                    related_items=_siblings_for(_sib_index, _rec),
+                )
                 written_item_abs.add(str(Path(_p).resolve()))
             except Exception as _ie:
                 logger.warning("STAC item failed for %s: %s", _rec.get("item_id"), _ie)

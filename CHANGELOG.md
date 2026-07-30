@@ -7,6 +7,46 @@ the full history.
 
 ## [Unreleased]
 
+### Added
+- **Analysis-ready training cubes** — `CubeResolver.materialize_training_cube`
+  writes a single Zarr store combining a dynamic `(time, y, x)` product with its
+  **geometry-correct** static layers (matched on `geometry_group_id`, so the
+  incidence-angle/LIA field belongs to the same acquisition geometry as the
+  backscatter) under a `static/` subgroup of `(y, x)` arrays — stored once,
+  never tiled over time, co-registered onto the dynamic grid by an exact
+  reindex. `open_training_cube` reads it back as one merged Dataset (static
+  broadcasts over time on use). Purpose-built for DL training / pixel sampling
+  with geometry channels, without duplicating static per timestep or per
+  variant; the canonical archive stays the independent scenes/static stores.
+- **Catalog linkage for static auxiliary layers** — static now shares a
+  **track-level** `geometry_group_id` with its scenes/smonthly cube (the
+  per-scene burst count `_N{nn}` stays in `item_id`/`n_bursts` as provenance),
+  so `static ⋈ scenes ON (tile_id, geometry_group_id)` is a direct join; STAC
+  items expose `s1grits:geometry_group_id` and mark static
+  `s1grits:role="auxiliary"`. `catalog resync` also emits STAC `related`
+  cross-links between the products of a geometry group (one per product_type),
+  so static auxiliary geometry is navigable from the scenes/smonthly cube and
+  back.
+
+### Fixed
+- **Static products are now discoverable by `catalog resync`.** The static
+  workflow always writes its per-track Zarr store (previously gated behind
+  `output.formats.zarr`, off by default), so `resync_catalog_from_filesystem` —
+  which discovers products by scanning Zarr stores — indexes static layers into
+  the catalog/STAC alongside scenes/smonthly instead of dropping COG-only runs.
+  Locked by a grid-alignment invariant test (static's MGRS-tile grid is the
+  pixel-aligned sub-window of the scenes burst-union grid) and a resync
+  discovery test. First step of static↔scenes production compatibility.
+- **Static layers now pair with the S1 time series through the resolver.**
+  `CubeResolver.get_aligned_products` no longer drops static as a minority
+  `grid_id` (static sits on the tile grid, a co-registered sub-window of the
+  larger dynamic grid); `open_stack` windows the static grid onto the dynamic
+  grid by an exact nearest-within-half-a-pixel reindex before merging, so
+  `open_stack(tile, ["scenes", "static"])` returns one pixel-registered
+  `(time, y, x)` Dataset (static finite inside the tile, NaN in the beyond-tile
+  margin). Also makes `CubeResolver.open` resolve tile-relative asset paths from
+  the global catalog. Locked by end-to-end pairing tests.
+
 ### Removed
 - **Streamlit GUI** (`src/gui/`, the `s1grits-gui` entry point, the `gui`
   install extra) — superseded by the v2.3 web interface (`s1grits serve`,
