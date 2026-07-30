@@ -29,6 +29,21 @@
 # Workflow type (validated by CLI)
 workflow: "scenes"
 
+# Optional integrated RTC-STATIC post-stage. Change only run_after_scenes to
+# true to download every static layer for the direction/track grids actually
+# produced by this scenes run. Static is written beside scenes under each tile.
+static_layers:
+  run_after_scenes: false
+  grid_reference: "required"
+  on_failure: "fail"              # fail | warn
+  layers:
+    local_inc_angle: true
+    inc_angle: true
+    ls_map: true
+    number_of_looks: true
+    rtc_anf_beta0: true
+    rtc_anf_sigma0: true
+
 # ---------------------------------------------------------------------------
 # Metadata — product registry reference
 # ---------------------------------------------------------------------------

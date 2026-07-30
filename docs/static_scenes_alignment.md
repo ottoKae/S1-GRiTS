@@ -16,6 +16,19 @@ s1grits process_static --config config/s1grits_static.yaml
 s1grits catalog resync --output-dir ../outputs
 ```
 
+Alternatively, use a single scenes command by adding this block to its YAML:
+
+```yaml
+static_layers:
+  run_after_scenes: true
+  grid_reference: required
+  on_failure: fail
+```
+
+With no `layers` mapping, all supported RTC-STATIC layers are downloaded. The
+post-stage runs after the scenes output lock is released and only for tiles and
+tracks whose scenes Zarr stores were successfully created.
+
 The static configuration should require a dynamic reference:
 
 ```yaml

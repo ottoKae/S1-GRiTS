@@ -9,6 +9,8 @@ the full history.
 
 - Static layers can adopt the matching scenes Zarr grid per tile, direction,
   and track, preserving exact grid identity through catalog resync.
+- A scenes YAML can set `static_layers.run_after_scenes: true` to download and
+  write matching RTC-STATIC layers as a lock-safe post-stage.
 - Resolver stacking and training-cube materialization reject ambiguous tracks
   and non-integer pixel-grid offsets instead of silently pairing/resampling.
 

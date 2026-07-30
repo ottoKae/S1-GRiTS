@@ -126,6 +126,8 @@ KNOWN_KEYS: dict = {
     },
     "static_layers": {
         "enabled": None,
+        "run_after_scenes": None,
+        "on_failure": None,
         "layers": None,
         "grid_reference": None,
         "reference_product_label": None,

@@ -30,6 +30,7 @@ CLI entry point: s1grits process_static --config config.yaml
 
 import json as _json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -107,9 +108,14 @@ def _get_enabled_layers(config: dict) -> list[str]:
         Empty list if static_layers.enabled is false or section is absent.
     """
     static_cfg = config.get('static_layers', {})
-    if not static_cfg.get('enabled', False):
+    if not (
+        static_cfg.get('enabled', False)
+        or static_cfg.get('run_after_scenes', False)
+    ):
         return []
     layer_cfg = static_cfg.get('layers', {})
+    if not layer_cfg and static_cfg.get('run_after_scenes', False):
+        return list(ALL_STATIC_LAYERS)
     return [name for name in ALL_STATIC_LAYERS if layer_cfg.get(name, False)]
 
 
@@ -134,7 +140,8 @@ def _dynamic_grid_for_static_group(
     * ``tile``: retain the legacy MGRS-tile grid.
     """
     static_cfg = config.get("static_layers") or {}
-    mode = str(static_cfg.get("grid_reference", "auto")).strip().lower()
+    _default_mode = "required" if static_cfg.get("run_after_scenes", False) else "auto"
+    mode = str(static_cfg.get("grid_reference", _default_mode)).strip().lower()
     if mode not in {"auto", "required", "tile"}:
         raise ValueError(
             "static_layers.grid_reference must be one of: auto, required, tile"
@@ -204,6 +211,19 @@ def _dynamic_grid_for_static_group(
             "static_layers.reference_product_label explicitly."
         )
     return grids[0]
+
+
+def _scene_reference_tracks(
+    tile_dir: Path, mgrs_tile_id: str, direction_label: str
+) -> set[int]:
+    """Return track numbers represented by scenes Zarr stores on disk."""
+    tracks: set[int] = set()
+    pattern = f"s1grits_scenes_{mgrs_tile_id}_{direction_label}_TK*.zarr"
+    for path in tile_dir.glob(f"scenes_{direction_label}*/zarr/{pattern}"):
+        match = re.search(r"_TK([\d-]+)\.zarr$", path.name)
+        if match:
+            tracks.update(int(v) for v in match.group(1).split("-") if v.isdigit())
+    return tracks
 
 
 # ---------------------------------------------------------------------------
@@ -674,6 +694,33 @@ def _process_one_static_group(
                 'end_datetime': _end_iso,
                 **_existing_grid,
             }
+
+        # An integrated scenes->static run must download only the acquisition
+        # geometries that actually produced dynamic stores in this run/output.
+        # This avoids querying every LUT track touching the MGRS tile and then
+        # failing because no corresponding burst-union grid exists.
+        if (config.get('static_layers') or {}).get('run_after_scenes', False):
+            _reference_tracks = _scene_reference_tracks(
+                tile_dir, mgrs_tile_id, direction_label
+            )
+            if not _reference_tracks:
+                return {
+                    'status': 'failed',
+                    'error': f'No scenes Zarr tracks found for {mgrs_tile_id} {direction_label}.',
+                    'tile_dir': str(tile_dir),
+                    'groups_written': [],
+                }
+            df_lut = df_lut[df_lut['track_number'].isin(_reference_tracks)].reset_index(drop=True)
+            if df_lut.empty:
+                return {
+                    'status': 'failed',
+                    'error': (
+                        f'Scenes tracks {sorted(_reference_tracks)} do not match LUT tracks '
+                        f'for {mgrs_tile_id}.'
+                    ),
+                    'tile_dir': str(tile_dir),
+                    'groups_written': [],
+                }
 
     _console.print(
         f"  [dim]Group TK{track_token_safe}: {n_bursts} burst(s)[/dim]"
@@ -1338,7 +1385,11 @@ def process_static_for_tile(
 # Workflow entry point
 # ---------------------------------------------------------------------------
 
-def run_static_layer_workflow(config_path: str | Path, overrides: dict | None = None) -> dict[str, dict]:
+def run_static_layer_workflow(
+    config_path: str | Path,
+    overrides: dict | None = None,
+    tile_ids: list[str] | None = None,
+) -> dict[str, dict]:
     """
     Main static layer workflow: YAML config -> per-acq-group static COG files.
 
@@ -1379,7 +1430,7 @@ def run_static_layer_workflow(config_path: str | Path, overrides: dict | None = 
     console.rule("[bold cyan]S1-GRiTS: Static Layer Workflow (per acq-group)[/bold cyan]", style="cyan")
     console.print(f"[dim]Layers: {', '.join(layers)}[/dim]\n")
 
-    mgrs_tile_ids = enumerate_mgrs_tiles(config)
+    mgrs_tile_ids = list(tile_ids) if tile_ids is not None else enumerate_mgrs_tiles(config)
 
     # Output root: base_dir directly — multi-modal DataCube root
     output_root = Path(config.get('output', {}).get('base_dir', './output'))

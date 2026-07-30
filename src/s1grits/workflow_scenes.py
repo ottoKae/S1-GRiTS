@@ -183,6 +183,53 @@ logger = get_logger(__name__)
 console = Console(legacy_windows=True, no_color=False)
 
 
+def _run_static_poststage(
+    config_path: str | Path,
+    config: dict,
+    overrides: dict | None,
+    results: dict[str, dict],
+) -> dict[str, dict]:
+    """Run integrated static processing for successful scenes tiles only."""
+    _static_cfg = config.get('static_layers') or {}
+    if not _static_cfg.get('run_after_scenes', False):
+        return results
+    _failure_policy = str(_static_cfg.get('on_failure', 'fail')).lower()
+    if _failure_policy not in {'fail', 'warn'}:
+        raise ValueError("static_layers.on_failure must be 'fail' or 'warn'")
+    _successful_tiles = [
+        tile for tile, result in results.items()
+        if result.get('status') == 'success'
+    ]
+    if not _successful_tiles:
+        logger.warning("Static post-stage skipped: no scenes tile succeeded")
+        return results
+
+    from s1grits.workflow_static import run_static_layer_workflow
+    logger.info(
+        "Starting static post-stage for %d successful scenes tile(s)",
+        len(_successful_tiles),
+    )
+    _static_results = run_static_layer_workflow(
+        config_path, overrides=overrides, tile_ids=_successful_tiles,
+    )
+    _static_failures = []
+    for tile in _successful_tiles:
+        _sr = _static_results.get(tile, {
+            'status': 'failed', 'error': 'Static post-stage returned no result',
+        })
+        results[tile]['static'] = _sr
+        results[tile]['static_status'] = _sr.get('status')
+        if _sr.get('status') not in ('success', 'skipped'):
+            _static_failures.append((tile, _sr.get('error')))
+    if _static_failures:
+        _detail = '; '.join(f"{tile}: {err}" for tile, err in _static_failures)
+        if _failure_policy == 'warn':
+            logger.warning("Static post-stage incomplete: %s", _detail)
+        else:
+            raise RuntimeError(f"Static post-stage failed: {_detail}")
+    return results
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -494,6 +541,11 @@ def run_scenes_workflow(config_path: str | Path, overrides: dict | None = None) 
             n_ok, n_all, total_scenes,
         )
 
-        return results
     finally:
         release_lock(_lock_info)
+
+    # Optional post-stage. It runs only after the scenes lock is released,
+    # because the static workflow uses the same output-root lock. Limit it to
+    # tiles whose dynamic products completed successfully so `required` grid
+    # references cannot accidentally fall back or bind to stale output.
+    return _run_static_poststage(config_path, config, overrides, results)

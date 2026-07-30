@@ -12,7 +12,12 @@ if str(_ROOT / "src") not in sys.path:
 
 zarr = pytest.importorskip("zarr")
 from rasterio.transform import Affine  # noqa: E402
-from s1grits.workflow_static import _dynamic_grid_for_static_group  # noqa: E402
+from s1grits.workflow_static import (  # noqa: E402
+    ALL_STATIC_LAYERS,
+    _dynamic_grid_for_static_group,
+    _get_enabled_layers,
+    _scene_reference_tracks,
+)
 
 TILE = "17MPU"
 DIRN = "DESCENDING"
@@ -48,3 +53,18 @@ def test_required_scenes_grid_fails_when_missing(tmp_path):
             tmp_path / TILE, TILE, DIRN, "40",
             {"static_layers": {"grid_reference": "required"}},
         )
+
+
+def test_integrated_mode_discovers_only_written_scene_tracks(tmp_path):
+    tile_dir = tmp_path / TILE
+    zdir = tile_dir / f"scenes_{DIRN}_ARDC" / "zarr"
+    zdir.mkdir(parents=True)
+    (zdir / f"s1grits_scenes_{TILE}_{DIRN}_TK40.zarr").mkdir()
+    (zdir / f"s1grits_scenes_{TILE}_{DIRN}_TK69-172.zarr").mkdir()
+    (zdir / f"unrelated_{TILE}_TK99.zarr").mkdir()
+    assert _scene_reference_tracks(tile_dir, TILE, DIRN) == {40, 69, 172}
+
+
+def test_integrated_mode_defaults_to_all_static_layers():
+    cfg = {"static_layers": {"run_after_scenes": True}}
+    assert _get_enabled_layers(cfg) == ALL_STATIC_LAYERS

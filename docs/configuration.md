@@ -200,6 +200,8 @@ output:
 
 static_layers:
   enabled: true
+  run_after_scenes: false          # true: integrated post-stage in scenes YAML
+  on_failure: fail                # fail | warn for the integrated post-stage
   grid_reference: required        # required | auto | tile
   reference_product_label: null   # Pin a scenes_* variant if grids differ
   layers:
@@ -224,6 +226,12 @@ static_layers:
 scenes Zarr must exist for every direction/track, and static adopts its CRS,
 affine transform, shape, coordinates, and `grid_id`. See
 [the pixel-exact static/scenes workflow](static_scenes_alignment.md).
+
+In a scenes YAML, set only `static_layers.run_after_scenes: true` to enable the
+post-stage. When `layers` is omitted, all six RTC-STATIC layers are downloaded.
+Only tracks that produced scenes Zarr stores are queried. `on_failure: fail`
+makes the combined command unsuccessful if static output is incomplete;
+`warn` preserves successful scenes results and records the static failure.
 
 #### Common Processing Options (All Workflows)
 
