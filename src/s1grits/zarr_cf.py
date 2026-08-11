@@ -66,7 +66,8 @@ def add_cf_grid_mapping(g, target_crs: str) -> None:
         _ay.attrs["axis"] = "Y"
 
     # Scalar CF grid_mapping variable carrying the full CRS (WKT + CF params).
-    sr = g.create_array("spatial_ref", shape=(), dtype="int64", overwrite=True, dimension_names=[])
+    from s1grits.zarr_encoding import create_zarr_array
+    sr = create_zarr_array(g, "spatial_ref", shape=(), dtype="int64", overwrite=True, dimension_names=[])
     sr[...] = 0
     sr.attrs["_ARRAY_DIMENSIONS"] = []
     for k, v in cf.items():

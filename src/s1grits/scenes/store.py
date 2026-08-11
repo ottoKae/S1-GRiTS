@@ -20,6 +20,7 @@ from shapely.ops import transform as shp_transform
 from s1grits.asf_output_writing import _get_mgrs_tile_geometry_wkt
 from s1grits.scenes.blocks import N_OBS_BAND
 from s1grits.logger_config import get_logger
+from s1grits.zarr_encoding import create_zarr_array, record_zarr_compression
 
 logger = get_logger(__name__)
 
@@ -121,11 +122,12 @@ def _init_zarr_2band(
     g.attrs['geometry_group_id'] = None  # set by caller
     g.attrs['time_varying'] = True
     g.attrs['array_dims'] = ['time', 'y', 'x']
-    _a = g.create_array('x', data=x_coords, overwrite=True, dimension_names=['x'])
+    record_zarr_compression(g.attrs)
+    _a = create_zarr_array(g, 'x', data=x_coords, overwrite=True, dimension_names=['x'])
     _a.attrs['_ARRAY_DIMENSIONS'] = ['x']
-    _a = g.create_array('y', data=y_coords, overwrite=True, dimension_names=['y'])
+    _a = create_zarr_array(g, 'y', data=y_coords, overwrite=True, dimension_names=['y'])
     _a.attrs['_ARRAY_DIMENSIONS'] = ['y']
-    _a = g.create_array('time', shape=(0,), chunks=(1,), dtype='datetime64[ns]', overwrite=True, dimension_names=['time'])
+    _a = create_zarr_array(g, 'time', shape=(0,), chunks=(1,), dtype='datetime64[ns]', overwrite=True, dimension_names=['time'])
     _a.attrs['_ARRAY_DIMENSIONS'] = ['time']
     for var in band_names:
         # fill_value=NaN lets blockwise appends resize without materialising
@@ -136,7 +138,7 @@ def _init_zarr_2band(
             _dtype, _fill = 'uint8', 0
         else:
             _dtype, _fill = 'float32', np.nan
-        _a = g.create_array(var, shape=(0, _h, _w), chunks=(1, chunk_y, chunk_x), dtype=_dtype, fill_value=_fill, overwrite=True, dimension_names=['time', 'y', 'x'])
+        _a = create_zarr_array(g, var, shape=(0, _h, _w), chunks=(1, chunk_y, chunk_x), dtype=_dtype, fill_value=_fill, overwrite=True, dimension_names=['time', 'y', 'x'])
         _a.attrs['_ARRAY_DIMENSIONS'] = ['time', 'y', 'x']
 
     # CF-compliant grid_mapping so generic readers (GDAL/QGIS/rioxarray) can

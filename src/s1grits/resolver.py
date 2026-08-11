@@ -762,8 +762,15 @@ class CubeResolver:
                 stat = stat.chunk(_spatial)
 
         # Write: dynamic to the root group, static to the `static/` subgroup.
-        dyn.to_zarr(str(out), mode="w", consolidated=False)
-        stat.to_zarr(str(out), group="static", mode="a", consolidated=False)
+        from s1grits.zarr_encoding import xarray_zstd7_encoding
+        dyn.to_zarr(
+            str(out), mode="w", consolidated=False,
+            encoding=xarray_zstd7_encoding(dyn),
+        )
+        stat.to_zarr(
+            str(out), group="static", mode="a", consolidated=False,
+            encoding=xarray_zstd7_encoding(stat),
+        )
 
         # Provenance + grid identity on the root group.
         import zarr

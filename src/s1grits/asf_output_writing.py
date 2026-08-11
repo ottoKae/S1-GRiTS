@@ -66,6 +66,7 @@ from s1grits.mgrs_burst_data import get_mgrs_data_path
 from s1grits.atomic_write import atomic_path
 from s1grits.stac_builder import write_stac_item, write_stac_collection
 from s1grits.canonical_catalog_schema import normalize_catalog_record, rebase_catalog_paths
+from s1grits.zarr_encoding import create_zarr_array, record_zarr_compression
 
 # Optional dependency: sar_texture is not part of the core package.
 # Import at module level so Cython can compile this file without a function-body import.
@@ -150,8 +151,8 @@ def _write_zarr_dataset(grp, name, arr, chunk_y, chunk_x, on_time_conflict):
             del grp[name]
         else:
             return
-    grp.create_array(
-        name, data=arr,
+    create_zarr_array(
+        grp, name, data=arr,
         chunks=(chunk_y, chunk_x),
         fill_value=float("nan"),
         overwrite=True,
@@ -1751,11 +1752,12 @@ def build_s1_monthly_cog_and_zarr_crossUTM(
                 g.attrs['product_variant'] = kwargs['product_variant']
             if kwargs.get('processing_variant_json'):
                 g.attrs['processing_variant_json'] = kwargs['processing_variant_json']
-            _a = g.create_array("x", data=zarr_x_coords, overwrite=True, dimension_names=["x"])
+            record_zarr_compression(g.attrs)
+            _a = create_zarr_array(g, "x", data=zarr_x_coords, overwrite=True, dimension_names=["x"])
             _a.attrs["_ARRAY_DIMENSIONS"] = ["x"]
-            _a = g.create_array("y", data=zarr_y_coords, overwrite=True, dimension_names=["y"])
+            _a = create_zarr_array(g, "y", data=zarr_y_coords, overwrite=True, dimension_names=["y"])
             _a.attrs["_ARRAY_DIMENSIONS"] = ["y"]
-            _a = g.create_array("time", shape=(0,), chunks=(1,), dtype="datetime64[ns]", overwrite=True, dimension_names=["time"])
+            _a = create_zarr_array(g, "time", shape=(0,), chunks=(1,), dtype="datetime64[ns]", overwrite=True, dimension_names=["time"])
             _a.attrs["_ARRAY_DIMENSIONS"] = ["time"]
             _zarr_vars = [copol_name, crosspol_name]
             if features_ratio:
@@ -1763,11 +1765,11 @@ def build_s1_monthly_cog_and_zarr_crossUTM(
             if features_rvi:
                 _zarr_vars.append(rvi_name)
             for var in _zarr_vars:
-                _a = g.create_array(var, shape=(0, zarr_height, zarr_width), chunks=(1, chunk_y, chunk_x), dtype="float32", fill_value=np.nan, overwrite=True, dimension_names=["time", "y", "x"])
+                _a = create_zarr_array(g, var, shape=(0, zarr_height, zarr_width), chunks=(1, chunk_y, chunk_x), dtype="float32", fill_value=np.nan, overwrite=True, dimension_names=["time", "y", "x"])
                 _a.attrs["_ARRAY_DIMENSIONS"] = ["time", "y", "x"]
             if features_glcm or (texture_cfg and texture_cfg.get("enabled")):
                 for var in _get_texture_band_names(texture_cfg or {}):
-                    _a = g.create_array(var, shape=(0, zarr_height, zarr_width), chunks=(1, chunk_y, chunk_x), dtype="float32", fill_value=np.nan, overwrite=True, dimension_names=["time", "y", "x"])
+                    _a = create_zarr_array(g, var, shape=(0, zarr_height, zarr_width), chunks=(1, chunk_y, chunk_x), dtype="float32", fill_value=np.nan, overwrite=True, dimension_names=["time", "y", "x"])
                     _a.attrs["_ARRAY_DIMENSIONS"] = ["time", "y", "x"]
 
             # CF-compliant grid_mapping so generic readers (GDAL/QGIS/rioxarray)
@@ -2046,11 +2048,12 @@ def build_s1_monthly_cog_and_zarr_tileUTM(
                 g.attrs['product_variant'] = kwargs['product_variant']
             if kwargs.get('processing_variant_json'):
                 g.attrs['processing_variant_json'] = kwargs['processing_variant_json']
-            _a = g.create_array("x", data=zarr_x_coords, overwrite=True, dimension_names=["x"])
+            record_zarr_compression(g.attrs)
+            _a = create_zarr_array(g, "x", data=zarr_x_coords, overwrite=True, dimension_names=["x"])
             _a.attrs["_ARRAY_DIMENSIONS"] = ["x"]
-            _a = g.create_array("y", data=zarr_y_coords, overwrite=True, dimension_names=["y"])
+            _a = create_zarr_array(g, "y", data=zarr_y_coords, overwrite=True, dimension_names=["y"])
             _a.attrs["_ARRAY_DIMENSIONS"] = ["y"]
-            _a = g.create_array("time", shape=(0,), chunks=(1,), dtype="datetime64[ns]", overwrite=True, dimension_names=["time"])
+            _a = create_zarr_array(g, "time", shape=(0,), chunks=(1,), dtype="datetime64[ns]", overwrite=True, dimension_names=["time"])
             _a.attrs["_ARRAY_DIMENSIONS"] = ["time"]
             _zarr_vars = [copol_name, crosspol_name]
             if features_ratio:
@@ -2058,11 +2061,11 @@ def build_s1_monthly_cog_and_zarr_tileUTM(
             if features_rvi:
                 _zarr_vars.append(rvi_name)
             for var in _zarr_vars:
-                _a = g.create_array(var, shape=(0, zarr_height, zarr_width), chunks=(1, chunk_y, chunk_x), dtype="float32", fill_value=np.nan, overwrite=True, dimension_names=["time", "y", "x"])
+                _a = create_zarr_array(g, var, shape=(0, zarr_height, zarr_width), chunks=(1, chunk_y, chunk_x), dtype="float32", fill_value=np.nan, overwrite=True, dimension_names=["time", "y", "x"])
                 _a.attrs["_ARRAY_DIMENSIONS"] = ["time", "y", "x"]
             if features_glcm or (texture_cfg and texture_cfg.get("enabled")):
                 for var in _get_texture_band_names(texture_cfg or {}):
-                    _a = g.create_array(var, shape=(0, zarr_height, zarr_width), chunks=(1, chunk_y, chunk_x), dtype="float32", fill_value=np.nan, overwrite=True, dimension_names=["time", "y", "x"])
+                    _a = create_zarr_array(g, var, shape=(0, zarr_height, zarr_width), chunks=(1, chunk_y, chunk_x), dtype="float32", fill_value=np.nan, overwrite=True, dimension_names=["time", "y", "x"])
                     _a.attrs["_ARRAY_DIMENSIONS"] = ["time", "y", "x"]
 
             # CF-compliant grid_mapping so generic readers (GDAL/QGIS/rioxarray)
@@ -2313,11 +2316,12 @@ def build_s1_monthly_median_cube(
                 g.attrs['product_variant'] = kwargs['product_variant']
             if kwargs.get('processing_variant_json'):
                 g.attrs['processing_variant_json'] = kwargs['processing_variant_json']
-            _a = g.create_array("x", data=zarr_x_coords, overwrite=True, dimension_names=["x"])
+            record_zarr_compression(g.attrs)
+            _a = create_zarr_array(g, "x", data=zarr_x_coords, overwrite=True, dimension_names=["x"])
             _a.attrs["_ARRAY_DIMENSIONS"] = ["x"]
-            _a = g.create_array("y", data=zarr_y_coords, overwrite=True, dimension_names=["y"])
+            _a = create_zarr_array(g, "y", data=zarr_y_coords, overwrite=True, dimension_names=["y"])
             _a.attrs["_ARRAY_DIMENSIONS"] = ["y"]
-            _a = g.create_array("time", shape=(0,), chunks=(1,), dtype="datetime64[ns]", overwrite=True, dimension_names=["time"])
+            _a = create_zarr_array(g, "time", shape=(0,), chunks=(1,), dtype="datetime64[ns]", overwrite=True, dimension_names=["time"])
             _a.attrs["_ARRAY_DIMENSIONS"] = ["time"]
             _zarr_vars = [copol_name, crosspol_name]
             if features_ratio:
@@ -2325,11 +2329,11 @@ def build_s1_monthly_median_cube(
             if features_rvi:
                 _zarr_vars.append(rvi_name)
             for var in _zarr_vars:
-                _a = g.create_array(var, shape=(0, zarr_height, zarr_width), chunks=(1, chunk_y, chunk_x), dtype="float32", fill_value=np.nan, overwrite=True, dimension_names=["time", "y", "x"])
+                _a = create_zarr_array(g, var, shape=(0, zarr_height, zarr_width), chunks=(1, chunk_y, chunk_x), dtype="float32", fill_value=np.nan, overwrite=True, dimension_names=["time", "y", "x"])
                 _a.attrs["_ARRAY_DIMENSIONS"] = ["time", "y", "x"]
             if features_glcm or (texture_cfg and texture_cfg.get("enabled")):
                 for var in _get_texture_band_names(texture_cfg or {}):
-                    _a = g.create_array(var, shape=(0, zarr_height, zarr_width), chunks=(1, chunk_y, chunk_x), dtype="float32", fill_value=np.nan, overwrite=True, dimension_names=["time", "y", "x"])
+                    _a = create_zarr_array(g, var, shape=(0, zarr_height, zarr_width), chunks=(1, chunk_y, chunk_x), dtype="float32", fill_value=np.nan, overwrite=True, dimension_names=["time", "y", "x"])
                     _a.attrs["_ARRAY_DIMENSIONS"] = ["time", "y", "x"]
 
             # CF-compliant grid_mapping so generic readers (GDAL/QGIS/rioxarray)

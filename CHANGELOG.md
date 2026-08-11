@@ -7,6 +7,13 @@ the full history.
 
 ## Unreleased
 
+## [3.0.0] - 2026-08-11
+
+The **development → stable** release retires deprecated paths, completes the
+catalog-backed dynamic/static data-cube contract, and standardizes lossless
+Zarr compression now that the bounded-memory scenes pipeline is validated in
+production.
+
 ### Added
 - Scenes YAML can set `static_layers.run_after_scenes: true` to create the six
   matching raw RTC-STATIC layers as a lock-safe post-stage.
@@ -15,6 +22,9 @@ the full history.
 - A Chinese README (`README.zh-CN.md`) mirrors the English project overview.
 
 ### Changed
+- All newly created scenes, smonthly, static, and materialized training-cube
+  Zarr v3 arrays use lossless Zstandard level-7 compression without shuffle.
+  Existing stores retain their original codec and remain append-compatible.
 - Static and dynamic products now share one base directory, root catalog, exact
   pixel grid, and track-level `geometry_group_id`, including multi-track tokens
   such as `TK18-19`.
@@ -29,13 +39,6 @@ the full history.
   direction, and track.
 - Resolver stacking and training-cube materialization reject ambiguous tracks
   and non-integer pixel-grid offsets instead of silently pairing or resampling.
-
-## [3.0.0] - 2026-07
-
-The **development → stable** release: the deprecated legacy paths are retired
-now that the bounded-memory scenes pipeline is validated in production. The
-static geometry-layer workflow (`workflow_static.py`, `s1grits process_static`)
-is unaffected.
 
 ### Added
 - **Analysis-ready training cubes** — `CubeResolver.materialize_training_cube`

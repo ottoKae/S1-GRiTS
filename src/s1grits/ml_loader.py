@@ -600,7 +600,12 @@ class PatchDataset:
         out = np.ascontiguousarray(patch)
         try:
             import torch
-            out = torch.from_numpy(out)
+            # Some environments expose a namespace/stub named ``torch``
+            # without the actual tensor API. Treat it like an unavailable
+            # optional dependency and preserve the documented NumPy fallback.
+            from_numpy = getattr(torch, "from_numpy", None)
+            if callable(from_numpy):
+                out = from_numpy(out)
         except ImportError:
             pass  # torch-free: return the numpy patch as documented
         if self.return_meta:

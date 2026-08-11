@@ -38,6 +38,7 @@ import numpy as np
 import pandas as pd
 import rasterio
 import zarr
+from s1grits.zarr_encoding import create_zarr_array, record_zarr_compression
 from rasterio.transform import Affine
 from rich.console import Console
 
@@ -500,12 +501,13 @@ def _init_zarr_static(
     g.attrs['geometry_group_id'] = None  # set by caller if applicable
     g.attrs['time_varying'] = False
     g.attrs['array_dims'] = ['y', 'x']
-    _a = g.create_array('x', data=x_coords, overwrite=True, dimension_names=['x'])
+    record_zarr_compression(g.attrs)
+    _a = create_zarr_array(g, 'x', data=x_coords, overwrite=True, dimension_names=['x'])
     _a.attrs['_ARRAY_DIMENSIONS'] = ['x']
-    _a = g.create_array('y', data=y_coords, overwrite=True, dimension_names=['y'])
+    _a = create_zarr_array(g, 'y', data=y_coords, overwrite=True, dimension_names=['y'])
     _a.attrs['_ARRAY_DIMENSIONS'] = ['y']
     for var in band_names:
-        _a = g.create_array(var, shape=(_h, _w), chunks=(chunk_y, chunk_x), dtype='float32', fill_value=np.nan, overwrite=True, dimension_names=['y', 'x'])
+        _a = create_zarr_array(g, var, shape=(_h, _w), chunks=(chunk_y, chunk_x), dtype='float32', fill_value=np.nan, overwrite=True, dimension_names=['y', 'x'])
         _a.attrs['_ARRAY_DIMENSIONS'] = ['y', 'x']
 
     return g

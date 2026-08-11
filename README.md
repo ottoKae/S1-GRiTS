@@ -149,7 +149,7 @@ S1-GRiTS is designed for researchers and practitioners who need **large-scale, l
 
 **Core Capabilities:**
 
-1. **Zarr-First Data Cube Architecture** — Zarr stores are the primary time-series product; COG/preview are optional derivative exports
+1. **Zarr-First Data Cube Architecture** — Zarr stores are the primary time-series product, with lossless Zstandard level-7 compression for new stores; COG/preview are optional derivative exports
 2. **Cloud-Native S3 Streaming** — Zero-disk download; data streamed directly from ASF S3
 3. **MGRS Grid Alignment** — Products aligned to 100km MGRS tiles in native UTM projections
 4. **Orbit-Direction Separation** — ASCENDING and DESCENDING processed independently for geometric consistency

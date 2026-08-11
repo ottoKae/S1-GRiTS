@@ -78,7 +78,7 @@ S1_monthly.zarr/
 **Chunk Configuration:**
 - Spatial: 512 × 512 pixels
 - Temporal: 1 time step per chunk
-- Compression: Blosc (default)
+- Compression: lossless Zstandard level 7, without shuffle (new stores)
 
 **Typical Dimensions for 100km MGRS Tile:**
 - `y`: 3660 (at 30m resolution)
