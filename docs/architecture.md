@@ -75,8 +75,8 @@ removed in v3.0.0.
 | **Temporal Resolution** | Per-acquisition (6-12 day revisit); optional monthly | Timeless |
 | **Primary Use Case** | Rapid change, disaster response, time series | Incidence angle correction, masking |
 | **Output Zarr** | One per acquisition group (+ `smonthly` per track) | One per acquisition group |
-| **CLI Command** | `s1grits process_scenes` | `s1grits process_static` |
-| **Config Template** | `s1grits_scenes.yaml` | `s1grits_static.yaml` |
+| **CLI Command** | `s1grits process_scenes` | integrated YAML / `s1grits static ensure` |
+| **Config Template** | `s1grits_scenes.yaml` | `static_layers` in the scenes YAML |
 | **STAC Collection** | `s1grits-scenes` (+ `s1grits-smonthly`) | `s1grits-static` |
 | **Typical Data Volume** | ~2-3 GB/tile/year (Zarr) | ~50 MB/tile (one-time) |
 | **Processing Time** | Moderate (per-scene outputs) | Fast (static, no time series) |

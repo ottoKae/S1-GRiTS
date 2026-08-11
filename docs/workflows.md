@@ -167,7 +167,7 @@ Produce static reference layers suitable for:
 #### CLI Command
 
 ```bash
-s1grits process_static --config config/s1grits_static.yaml
+s1grits static ensure --output-dir ./output --product-label smonthly_ASCENDING
 ```
 
 For pixel-exact static/scenes cubes, run `process_scenes` first, use the same

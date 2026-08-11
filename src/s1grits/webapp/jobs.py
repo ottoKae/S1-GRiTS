@@ -60,11 +60,6 @@ JOB_TYPES: dict[str, dict] = {
         "needs_config": True,
         "title": "Monthly workflow",
     },
-    "process_static": {
-        "args": ["process_static", "--config", "{config}"],
-        "needs_config": True,
-        "title": "Static geometry layers",
-    },
     "catalog_resync": {
         # NOTE: the CLI flag is --output-dir (a --dir job fails at argparse
         # before doing anything).

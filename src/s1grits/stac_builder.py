@@ -412,6 +412,8 @@ def build_stac_item_dict(
             "s1grits:grid_source": record.get("grid_source") or None,
             "s1grits:reference_grid_id": record.get("reference_grid_id") or None,
             "s1grits:reference_zarr_path": record.get("reference_zarr_path") or None,
+            "s1grits:reference_product_type": record.get("reference_product_type") or None,
+            "s1grits:reference_product_label": record.get("reference_product_label") or None,
             "s1grits:processing_variant": (
                 json.loads(record["processing_variant_json"])
                 if record.get("processing_variant_json") and isinstance(record.get("processing_variant_json"), str)

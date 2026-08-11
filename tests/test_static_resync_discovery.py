@@ -121,6 +121,14 @@ def test_static_zarr_is_discovered_by_resync(tmp_path):
     # Static carries no time axis.
     assert pd.isna(stat["datetime"])
 
+    first = cat.sort_values(["tile_id", "product_type", "item_id"]).reset_index(drop=True)
+    second_result = resync_catalog_from_filesystem(out_root, write_stac=False)
+    assert second_result["success"], second_result
+    second = pd.read_parquet(out_root / "catalog.parquet").sort_values(
+        ["tile_id", "product_type", "item_id"]
+    ).reset_index(drop=True)
+    pd.testing.assert_frame_equal(first, second)
+
 
 def test_static_and_scenes_grids_differ(tmp_path):
     """Documents the pairing challenge: same tile, DIFFERENT grid_id (the
@@ -136,3 +144,19 @@ def test_static_and_scenes_grids_differ(tmp_path):
     g_static = cat[cat["product_type"] == "static"].iloc[0]["grid_id"]
     g_scenes = cat[cat["product_type"] == "scenes"].iloc[0]["grid_id"]
     assert g_static != g_scenes  # different extents → different grid_id
+
+
+def test_resync_uses_complete_filename_track_token_over_stale_attr(tmp_path):
+    out_root = tmp_path / "cube"
+    out_root.mkdir()
+    original = _write_scenes_store(out_root)
+    combined = original.with_name(original.name.replace("TK40", "TK40-41"))
+    original.rename(combined)
+    g = zarr.open_group(str(combined), mode="r+")
+    g.attrs["geometry_group_id"] = f"{TILE}_{DIRN}_TK40"
+
+    result = resync_catalog_from_filesystem(out_root, write_stac=False)
+    assert result["success"], result
+    row = pd.read_parquet(out_root / "catalog.parquet").iloc[0]
+    assert row["item_id"] == f"{TILE}_{DIRN}_TK40-41_scenes"
+    assert row["geometry_group_id"] == f"{TILE}_{DIRN}_TK40-41"

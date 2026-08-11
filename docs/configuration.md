@@ -9,7 +9,7 @@ S1-GRiTS workflows are configured via YAML files in the `config/` directory.
 | File | Workflow | Description |
 |------|----------|-------------|
 | `s1grits_scenes.yaml` | Per-scene processing (+ monthly composites) | High-temporal-resolution outputs; enable `processing.monthly` for composites |
-| `s1grits_static.yaml` | Static layers | Time-invariant reference layers |
+| `s1grits_scenes.yaml` → `static_layers` | Raw static companions | Time-invariant reference layers |
 
 ### ROI Configuration
 
@@ -203,6 +203,7 @@ static_layers:
   run_after_scenes: false          # true: integrated post-stage in scenes YAML
   on_failure: fail                # fail | warn for the integrated post-stage
   grid_reference: required        # required | auto | tile
+  reference_product_type: auto    # auto | smonthly | scenes
   reference_product_label: null   # Pin a scenes_* variant if grids differ
   layers:
     local_inc_angle: true
@@ -223,8 +224,9 @@ static_layers:
 ```
 
 `grid_reference: required` is recommended for machine learning: a matching
-scenes Zarr must exist for every direction/track, and static adopts its CRS,
-affine transform, shape, coordinates, and `grid_id`. See
+dynamic Zarr must exist for every direction/track, and static adopts its CRS,
+affine transform, shape, coordinates, and `grid_id`. Use
+`reference_product_type: smonthly` for monthly-only archives. See
 [the pixel-exact static/scenes workflow](static_scenes_alignment.md).
 
 In a scenes YAML, set only `static_layers.run_after_scenes: true` to enable the

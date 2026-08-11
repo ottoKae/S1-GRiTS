@@ -552,10 +552,9 @@ def test_resync_job_uses_the_real_cli_flag():
 
 def test_job_types_cover_datacube_lifecycle(client):
     types = client.get("/api/job-types").json()
-    for expected in ("process_scenes", "process", "process_static",
+    for expected in ("process_scenes", "process",
                      "catalog_resync", "doctor"):
         assert expected in types, f"missing job type {expected}"
-    assert types["process_static"]["needs_config"] is True
     assert types["catalog_resync"]["needs_config"] is False
 
 

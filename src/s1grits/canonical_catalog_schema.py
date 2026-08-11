@@ -1,7 +1,7 @@
 """
 canonical_catalog_schema.py
 ===========================
-Shared canonical schema (41 columns) for all S1-GRiTS catalog records.
+Shared canonical schema for all S1-GRiTS catalog records.
 
 ALL workflows must normalise their catalog records through
 ``normalize_catalog_record()`` before writing to catalog.parquet.
@@ -39,7 +39,7 @@ logger = get_logger(__name__)
 # ---------------------------------------------------------------------------
 # Schema version — bump when columns are added, removed, or renamed
 # ---------------------------------------------------------------------------
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 GRID_ID_VERSION = 1       # bump when make_grid_id hash algorithm changes
 _GRID_ROUND_PRECISION = 9  # decimal places for transform/resolution rounding
 
@@ -77,6 +77,8 @@ CANONICAL_CATALOG_COLUMNS: list[str] = [
     "grid_source",          # str: workflow_scenes | mgrs_tile | null
     "reference_grid_id",    # str: source dynamic grid id for static products
     "reference_zarr_path",  # str: source dynamic Zarr path for static products
+    "reference_product_type",   # str: scenes | smonthly | null
+    "reference_product_label",  # str: selected dynamic product directory | null
 
     # ---- Temporal ----
     "datetime",             # timestamp or null (static = null)

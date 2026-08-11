@@ -25,7 +25,7 @@ Output structure:
           cog/{TILE}_{DIR}_TK{track}_N{bursts:02d}_ls_map.tif
           ...
 
-CLI entry point: s1grits process_static --config config.yaml
+Production entries: the workflow_scenes post-stage or ``s1grits static ensure``.
 """
 
 import json as _json
@@ -113,9 +113,12 @@ def _get_enabled_layers(config: dict) -> list[str]:
         or static_cfg.get('run_after_scenes', False)
     ):
         return []
-    layer_cfg = static_cfg.get('layers', {})
-    if not layer_cfg and static_cfg.get('run_after_scenes', False):
+    # Production static is an indivisible six-layer raw-aligned product.
+    # Integrated scenes runs and catalog-driven ensure runs must never create
+    # partial products whose meaning depends on a user-maintained layer list.
+    if static_cfg.get('run_after_scenes', False) or static_cfg.get('_catalog_ensure', False):
         return list(ALL_STATIC_LAYERS)
+    layer_cfg = static_cfg.get('layers', {})
     return [name for name in ALL_STATIC_LAYERS if layer_cfg.get(name, False)]
 
 
@@ -126,9 +129,10 @@ def _dynamic_grid_for_static_group(
     track_token: str,
     config: dict,
 ) -> dict[str, Any] | None:
-    """Load the locked grid of the matching scenes Zarr store.
+    """Load the locked grid of the matching dynamic Zarr store.
 
-    ``workflow_scenes`` is authoritative for a dynamic cube's spatial grid.
+    ``workflow_scenes`` is authoritative for a dynamic cube's spatial grid,
+    including monthly-only ``smonthly`` stores.
     When that cube already exists, static layers must be mosaicked directly
     onto the same lattice and extent instead of creating a second tile-only
     grid and relying on a later resolver reindex.
@@ -151,32 +155,64 @@ def _dynamic_grid_for_static_group(
 
     tk = str(track_token).replace("_", "-")
     wanted_label = static_cfg.get("reference_product_label")
-    product_dirs = (
-        [tile_dir / str(wanted_label)]
-        if wanted_label
-        else sorted(tile_dir.glob(f"scenes_{direction_label}*"))
-    )
-    name = f"s1grits_scenes_{mgrs_tile_id}_{direction_label}_TK{tk}.zarr"
-    candidates = [d / "zarr" / name for d in product_dirs if (d / "zarr" / name).exists()]
+    wanted_type = str(
+        static_cfg.get("reference_product_type", "auto")
+    ).strip().lower()
+    if wanted_type not in {"auto", "scenes", "smonthly"}:
+        raise ValueError(
+            "static_layers.reference_product_type must be one of: "
+            "auto, scenes, smonthly"
+        )
+
+    candidates: list[tuple[Path, str]] = []
+    if wanted_label:
+        label = str(wanted_label)
+        if label.startswith("smonthly_"):
+            product_types = ["smonthly"]
+        elif label.startswith("scenes_"):
+            product_types = ["scenes"]
+        else:
+            raise ValueError(
+                "static_layers.reference_product_label must name a "
+                "scenes_* or smonthly_* product directory"
+            )
+        product_dirs = [(tile_dir / label, product_types[0])]
+    else:
+        product_types = (
+            [wanted_type] if wanted_type != "auto" else ["smonthly", "scenes"]
+        )
+        product_dirs = [
+            (directory, product_type)
+            for product_type in product_types
+            for directory in sorted(tile_dir.glob(f"{product_type}_{direction_label}*"))
+        ]
+
+    for directory, product_type in product_dirs:
+        prefix = (
+            f"s1grits_{product_type}_{mgrs_tile_id}_{direction_label}_TK{tk}"
+        )
+        for path in sorted((directory / "zarr").glob(f"{prefix}*.zarr")):
+            if re.fullmatch(rf"{re.escape(prefix)}(?:_N\d+)?\.zarr", path.name):
+                candidates.append((path, product_type))
 
     if not candidates:
         if mode == "required":
             raise FileNotFoundError(
-                f"No matching scenes Zarr grid for {mgrs_tile_id} "
+                f"No matching {wanted_type} dynamic Zarr grid for {mgrs_tile_id} "
                 f"{direction_label} TK{tk}. Run workflow_scenes first or set "
                 "static_layers.grid_reference=auto/tile."
             )
         return None
 
     grids: list[dict[str, Any]] = []
-    for path in candidates:
+    for path, product_type in candidates:
         g = zarr.open_group(str(path), mode="r")
         if "x" not in g or "y" not in g or "transform" not in g.attrs or "crs" not in g.attrs:
-            raise ValueError(f"Reference scenes store lacks grid metadata: {path}")
+            raise ValueError(f"Reference dynamic store lacks grid metadata: {path}")
         x = np.asarray(g["x"][:], dtype=np.float64)
         y = np.asarray(g["y"][:], dtype=np.float64)
         if x.ndim != 1 or y.ndim != 1 or x.size == 0 or y.size == 0:
-            raise ValueError(f"Reference scenes store has invalid x/y coordinates: {path}")
+            raise ValueError(f"Reference dynamic store has invalid x/y coordinates: {path}")
         tfm = Affine(*[float(v) for v in list(g.attrs["transform"])[:6]])
         expected_x = tfm.c + (np.arange(x.size) + 0.5) * tfm.a
         expected_y = tfm.f + (np.arange(y.size) + 0.5) * tfm.e
@@ -185,10 +221,11 @@ def _dynamic_grid_for_static_group(
             and np.allclose(y, expected_y, rtol=0, atol=max(abs(tfm.e), 1.0) * 1e-8)
         ):
             raise ValueError(
-                f"Reference scenes x/y coordinates disagree with its affine transform: {path}"
+                f"Reference dynamic x/y coordinates disagree with its affine transform: {path}"
             )
         grids.append({
             "path": path,
+            "product_type": product_type,
             "product_label": path.parent.parent.name,
             "crs": str(g.attrs["crs"]),
             "transform": tfm,
@@ -206,24 +243,108 @@ def _dynamic_grid_for_static_group(
     if len(signatures) > 1:
         labels = ", ".join(v["product_label"] for v in grids)
         raise ValueError(
-            f"Multiple scenes variants have different grids for {mgrs_tile_id} "
+            f"Multiple dynamic variants have different grids for {mgrs_tile_id} "
             f"{direction_label} TK{tk}: {labels}. Set "
             "static_layers.reference_product_label explicitly."
         )
     return grids[0]
 
 
+def _dynamic_reference_tokens(
+    tile_dir: Path,
+    mgrs_tile_id: str,
+    direction_label: str,
+    config: dict | None = None,
+) -> set[str]:
+    """Return exact track tokens represented by dynamic Zarr stores.
+
+    Tokens use the LUT convention (``18_19``).  The complete token is retained
+    because it is the geometry identity; splitting ``TK18-19`` and producing
+    two static stores would make strict resolver pairing impossible.
+    """
+    static_cfg = (config or {}).get("static_layers") or {}
+    wanted_label = static_cfg.get("reference_product_label")
+    wanted_type = str(static_cfg.get("reference_product_type", "auto")).lower()
+    product_types = ("smonthly", "scenes") if wanted_type == "auto" else (wanted_type,)
+    tokens: set[str] = set()
+    for product_type in product_types:
+        pattern = (
+            f"s1grits_{product_type}_{mgrs_tile_id}_{direction_label}_TK*.zarr"
+        )
+        dirs = [tile_dir / str(wanted_label)] if wanted_label else list(
+            tile_dir.glob(f"{product_type}_{direction_label}*")
+        )
+        for directory in dirs:
+            if not directory.name.startswith(f"{product_type}_"):
+                continue
+            for path in directory.glob(f"zarr/{pattern}"):
+                match = re.search(r"_TK([\d-]+)(?:_N\d+)?\.zarr$", path.name)
+                if match:
+                    tokens.add(match.group(1).replace("-", "_"))
+    return tokens
+
+
 def _scene_reference_tracks(
     tile_dir: Path, mgrs_tile_id: str, direction_label: str
 ) -> set[int]:
-    """Return track numbers represented by scenes Zarr stores on disk."""
+    """Compatibility view of individual tracks in dynamic store tokens."""
     tracks: set[int] = set()
-    pattern = f"s1grits_scenes_{mgrs_tile_id}_{direction_label}_TK*.zarr"
-    for path in tile_dir.glob(f"scenes_{direction_label}*/zarr/{pattern}"):
-        match = re.search(r"_TK([\d-]+)\.zarr$", path.name)
-        if match:
-            tracks.update(int(v) for v in match.group(1).split("-") if v.isdigit())
+    for token in _dynamic_reference_tokens(tile_dir, mgrs_tile_id, direction_label):
+        tracks.update(int(v) for v in token.split("_") if v.isdigit())
     return tracks
+
+
+def _filter_lut_to_dynamic_tracks(
+    df_lut: pd.DataFrame,
+    tile_dir: Path,
+    mgrs_tile_id: str,
+    direction_label: str,
+    config: dict,
+) -> pd.DataFrame:
+    """Limit an integrated static run to tracks with dynamic Zarr stores."""
+    if not (config.get('static_layers') or {}).get('run_after_scenes', False):
+        return df_lut
+    reference_tokens = _dynamic_reference_tokens(
+        tile_dir, mgrs_tile_id, direction_label, config
+    )
+    reference_tracks = {
+        int(v) for token in reference_tokens for v in token.split('_') if v.isdigit()
+    }
+    if not reference_tracks:
+        raise ValueError(
+            f"No scenes/smonthly Zarr tracks found for {mgrs_tile_id} "
+            f"{direction_label}."
+        )
+    filtered = df_lut[
+        df_lut['track_number'].isin(reference_tracks)
+    ].reset_index(drop=True)
+    if filtered.empty:
+        raise ValueError(
+            f"Dynamic tracks {sorted(reference_tracks)} do not match LUT "
+            f"tracks for {mgrs_tile_id}."
+        )
+    return filtered
+
+
+def _group_static_by_dynamic_tokens(
+    df_merged: pd.DataFrame,
+    tokens: set[str],
+) -> list[dict]:
+    """Build one static burst union for each authoritative dynamic token."""
+    groups: list[dict] = []
+    for token in sorted(tokens):
+        tracks = {int(v) for v in token.split('_') if v.isdigit()}
+        rows = df_merged[df_merged['track_number'].isin(tracks)].reset_index(drop=True)
+        if rows.empty:
+            raise ValueError(f"No RTC-STATIC bursts match dynamic token TK{token.replace('_', '-')}")
+        groups.append({
+            'key': ('dynamic', token),
+            'rows': rows,
+            'track_token': token,
+            'n_bursts': len(rows),
+            'is_primary': len(groups) == 0,
+        })
+    return groups
 
 
 # ---------------------------------------------------------------------------
@@ -358,6 +479,12 @@ def _init_zarr_static(
     g.attrs['crs'] = str(target_crs)
     g.attrs['transform'] = list(transform)[:6]
     g.attrs['processing_level'] = 'static'
+    g.attrs['static_value_policy'] = 'raw_aligned'
+    g.attrs['raw_values_preserved'] = True
+    g.attrs['spatial_filter'] = 'none'
+    g.attrs['normalization'] = 'none'
+    g.attrs['temporal_composite'] = 'none'
+    g.attrs['derived_features'] = []
     from s1grits.canonical_catalog_schema import make_grid_id, _format_grid_name
     _tile_from_path = zarr_path.parent.parent.parent.name if zarr_path.parent.parent.parent.name else 'UNKNOWN'
     _tfm = list(transform)[:6]
@@ -639,6 +766,16 @@ def _process_one_static_group(
     name_prefix = (
         f"s1grits_static_{mgrs_tile_id}_{direction_label}_TK{track_token_safe}_N{n_bursts:02d}"
     )
+    reference_product_type: str | None = None
+    if reference_grid is not None:
+        reference_product_type = str(
+            reference_grid.get('product_type')
+            or (
+                'smonthly'
+                if str(reference_grid.get('product_label', '')).startswith('smonthly_')
+                else 'scenes'
+            )
+        )
 
     # Temporal range of the contributing bursts. Static layers are
     # time-invariant, but the bursts they derive from span an acquisition
@@ -672,11 +809,12 @@ def _process_one_static_group(
                 _existing_grid = {
                     'grid_source': _eg.attrs.get('grid_source', 'mgrs_tile'),
                     'reference_zarr_path': _eg.attrs.get('reference_zarr_path'),
+                    'reference_product_type': _eg.attrs.get('reference_product_type'),
                     'reference_product_label': _eg.attrs.get('reference_product_label'),
                     'grid_id': _eg.attrs.get('grid_id'),
                     'transform': list(_eg.attrs.get('transform', list(master_transform)[:6]))[:6],
-                    'width': int(_eg.attrs.get('width', len(_eg['x']))),
-                    'height': int(_eg.attrs.get('height', len(_eg['y']))),
+                    'width': int(_eg.attrs.get('width', _eg['x'].shape[0])),
+                    'height': int(_eg.attrs.get('height', _eg['y'].shape[0])),
                     'crs': str(_eg.attrs.get('crs', target_crs)),
                 }
             logger.info(
@@ -694,33 +832,6 @@ def _process_one_static_group(
                 'end_datetime': _end_iso,
                 **_existing_grid,
             }
-
-        # An integrated scenes->static run must download only the acquisition
-        # geometries that actually produced dynamic stores in this run/output.
-        # This avoids querying every LUT track touching the MGRS tile and then
-        # failing because no corresponding burst-union grid exists.
-        if (config.get('static_layers') or {}).get('run_after_scenes', False):
-            _reference_tracks = _scene_reference_tracks(
-                tile_dir, mgrs_tile_id, direction_label
-            )
-            if not _reference_tracks:
-                return {
-                    'status': 'failed',
-                    'error': f'No scenes Zarr tracks found for {mgrs_tile_id} {direction_label}.',
-                    'tile_dir': str(tile_dir),
-                    'groups_written': [],
-                }
-            df_lut = df_lut[df_lut['track_number'].isin(_reference_tracks)].reset_index(drop=True)
-            if df_lut.empty:
-                return {
-                    'status': 'failed',
-                    'error': (
-                        f'Scenes tracks {sorted(_reference_tracks)} do not match LUT tracks '
-                        f'for {mgrs_tile_id}.'
-                    ),
-                    'tile_dir': str(tile_dir),
-                    'groups_written': [],
-                }
 
     _console.print(
         f"  [dim]Group TK{track_token_safe}: {n_bursts} burst(s)[/dim]"
@@ -806,15 +917,15 @@ def _process_one_static_group(
         _ggid = f"{mgrs_tile_id}_{direction_label}_TK{track_token_safe}"
         g_zarr.attrs['geometry_group_id'] = _ggid
         if reference_grid is not None:
-            g_zarr.attrs['grid_source'] = 'workflow_scenes'
-            g_zarr.attrs['reference_product_type'] = 'scenes'
+            g_zarr.attrs['grid_source'] = f'workflow_{reference_product_type}'
+            g_zarr.attrs['reference_product_type'] = reference_product_type
             g_zarr.attrs['reference_product_label'] = reference_grid['product_label']
             g_zarr.attrs['reference_zarr_path'] = str(reference_grid['path'].relative_to(static_dir.parent)).replace('\\', '/')
             if reference_grid.get('grid_id'):
                 g_zarr.attrs['reference_grid_id'] = str(reference_grid['grid_id'])
                 if str(g_zarr.attrs.get('grid_id')) != str(reference_grid['grid_id']):
                     raise RuntimeError(
-                        "Static grid_id does not match its workflow_scenes reference; "
+                        "Static grid_id does not match its dynamic reference; "
                         "refusing to write a misregistered product."
                     )
         else:
@@ -880,12 +991,16 @@ def _process_one_static_group(
         'zarr_path': str(zarr_path) if zarr_path else None,
         'start_datetime': _start_iso,
         'end_datetime': _end_iso,
-        'grid_source': 'workflow_scenes' if reference_grid is not None else 'mgrs_tile',
+        'grid_source': (
+            f"workflow_{reference_product_type}"
+            if reference_grid is not None else 'mgrs_tile'
+        ),
         'reference_zarr_path': (
             str(reference_grid['path'].relative_to(static_dir.parent)).replace('\\', '/')
             if reference_grid is not None else None
         ),
         'reference_product_label': reference_grid.get('product_label') if reference_grid else None,
+        'reference_product_type': reference_product_type,
         'grid_id': g_zarr.attrs.get('grid_id') if g_zarr is not None else None,
         'transform': list(master_transform)[:6],
         'width': int(width),
@@ -1105,6 +1220,12 @@ def process_static_for_tile(
                 'groups_written': [],
             }
 
+        # Integrated scenes->static runs process only acquisition geometries
+        # that actually produced a scenes or monthly-only smonthly store.
+        df_lut = _filter_lut_to_dynamic_tracks(
+            df_lut, tile_dir, mgrs_tile_id, direction_label, config
+        )
+
         # 2. RTC-STATIC metadata (burst -> layer URLs)
         #    Use burst IDs from the LUT to avoid a second LUT read.
         if df_static is None:
@@ -1156,7 +1277,14 @@ def process_static_for_tile(
         )
 
         # ---- Group by acquisition group ----
-        groups = _group_static_by_acq(df_merged)
+        _integrated = bool((config.get('static_layers') or {}).get('run_after_scenes', False))
+        if _integrated:
+            _tokens = _dynamic_reference_tokens(
+                tile_dir, mgrs_tile_id, direction_label, config
+            )
+            groups = _group_static_by_dynamic_tokens(df_merged, _tokens)
+        else:
+            groups = _group_static_by_acq(df_merged)
         if not groups:
             return {
                 'status': 'failed',
@@ -1224,7 +1352,8 @@ def process_static_for_tile(
                 group_x = reference_grid['x']
                 group_y = reference_grid['y']
                 logger.info(
-                    "[Static] Adopting scenes grid for %s %s TK%s: %s (%dx%d)",
+                    "[Static] Adopting %s grid for %s %s TK%s: %s (%dx%d)",
+                    reference_grid['product_type'],
                     mgrs_tile_id, direction_label, group['track_token'],
                     reference_grid['product_label'], group_width, group_height,
                 )
@@ -1314,8 +1443,10 @@ def process_static_for_tile(
                 'height': g_height,
                 'grid_id': g.get('grid_id'),
                 'grid_source': g.get('grid_source'),
-                'reference_grid_id': g.get('grid_id') if g.get('grid_source') == 'workflow_scenes' else None,
+                'reference_grid_id': g.get('grid_id') if str(g.get('grid_source', '')).startswith('workflow_') else None,
                 'reference_zarr_path': g.get('reference_zarr_path'),
+                'reference_product_type': g.get('reference_product_type'),
+                'reference_product_label': g.get('reference_product_label'),
                 'datetime': None,
                 'start_datetime': None,
                 'end_datetime': None,
@@ -1330,7 +1461,7 @@ def process_static_for_tile(
                 'cog_path': str(Path(cog_rel).relative_to(tile_dir)).replace('\\', '/') if cog_rel else None,
                 'preview_path': None,
                 'bands': _json.dumps(_actual_bands),
-                'processing_level': None,
+                'processing_level': 'raw_aligned_static',
                 'product_variant': _prod_var,
                 'processing_signature': _proc_sig,
                 'processing_variant_json': _json.dumps(_variant_vals),
@@ -1386,9 +1517,10 @@ def process_static_for_tile(
 # ---------------------------------------------------------------------------
 
 def run_static_layer_workflow(
-    config_path: str | Path,
+    config_path: str | Path | None,
     overrides: dict | None = None,
     tile_ids: list[str] | None = None,
+    config_data: dict | None = None,
 ) -> dict[str, dict]:
     """
     Main static layer workflow: YAML config -> per-acq-group static COG files.
@@ -1409,7 +1541,12 @@ def run_static_layer_workflow(
         apply_runtime_limits,
         runtime_limits_from_config,
     )
-    config = load_config(config_path)
+    if config_data is None:
+        if config_path is None:
+            raise ValueError("config_path or config_data is required")
+        config = load_config(config_path)
+    else:
+        config = dict(config_data)
     config = apply_output_overrides_and_stac(config, overrides)
     runtime_limits = runtime_limits_from_config(config)
     applied_runtime_env = apply_runtime_limits(runtime_limits)
@@ -1518,3 +1655,59 @@ def run_static_layer_workflow(
         release_lock(_lock_info)
 
     return results
+
+
+def ensure_static_from_catalog(
+    output_root: str | Path,
+    product_label: str,
+    tile_ids: list[str] | None = None,
+) -> dict[str, dict]:
+    """Ensure raw static companions for an existing dynamic catalog product.
+
+    This is the only standalone production entry.  Spatial identity is taken
+    from cataloged ``scenes``/``smonthly`` stores; callers cannot provide a
+    second YAML grid, resolution, direction, or layer subset.
+    """
+    root = Path(output_root)
+    catalog_path = root / "catalog.parquet"
+    if not catalog_path.exists():
+        raise FileNotFoundError(
+            f"Catalog not found: {catalog_path}. Run `s1grits catalog resync` first."
+        )
+    catalog = pd.read_parquet(catalog_path)
+    required = {"product_type", "product_label", "tile_id", "flight_direction", "zarr_path"}
+    missing = required.difference(catalog.columns)
+    if missing:
+        raise ValueError(f"Catalog lacks required columns: {sorted(missing)}")
+    selected = catalog[
+        catalog["product_type"].isin(["scenes", "smonthly"])
+        & (catalog["product_label"] == product_label)
+    ].copy()
+    if tile_ids:
+        selected = selected[selected["tile_id"].isin(tile_ids)]
+    selected = selected[selected["zarr_path"].notna()]
+    if selected.empty:
+        raise ValueError(f"No cataloged dynamic stores match product_label={product_label!r}")
+
+    directions = sorted(str(v).upper() for v in selected["flight_direction"].dropna().unique())
+    if len(directions) != 1:
+        raise ValueError(
+            f"Product label {product_label!r} must resolve to one flight direction; got {directions}"
+        )
+    direction = directions[0]
+    tiles = sorted(str(v) for v in selected["tile_id"].unique())
+    config = {
+        "workflow": "scenes",
+        "roi": {"manual_mgrs_tiles": tiles, "flight_direction": direction},
+        "output": {"base_dir": str(root), "overwrite": False},
+        "static_layers": {
+            "enabled": True,
+            "run_after_scenes": True,
+            "_catalog_ensure": True,
+            "grid_reference": "required",
+            "reference_product_label": product_label,
+            "reference_product_type": str(selected.iloc[0]["product_type"]),
+            "on_failure": "fail",
+        },
+    }
+    return run_static_layer_workflow(None, tile_ids=tiles, config_data=config)

@@ -102,7 +102,7 @@ session.trust_env = True  # Allow reading .netrc
 Choose a workflow and edit the corresponding config file:
 
 **Per-Scene Processing:** `config/s1grits_scenes.yaml` (enable `processing.monthly` for composites)
-**Static Layers:** `config/s1grits_static.yaml`
+**Static Layers:** enable `static_layers.run_after_scenes` in the scenes YAML.
 
 **Minimal config example** (scenes workflow):
 
@@ -151,7 +151,7 @@ every long or production run.
 s1grits process_scenes --config config/s1grits_scenes.yaml
 
 # Static layers workflow
-s1grits process_static --config config/s1grits_static.yaml
+s1grits static ensure --output-dir ./output --product-label smonthly_ASCENDING
 ```
 
 **What happens:**

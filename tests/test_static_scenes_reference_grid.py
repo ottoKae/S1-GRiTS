@@ -15,7 +15,9 @@ from rasterio.transform import Affine  # noqa: E402
 from s1grits.workflow_static import (  # noqa: E402
     ALL_STATIC_LAYERS,
     _dynamic_grid_for_static_group,
+    _dynamic_reference_tokens,
     _get_enabled_layers,
+    _group_static_by_dynamic_tokens,
     _scene_reference_tracks,
 )
 
@@ -68,3 +70,28 @@ def test_integrated_mode_discovers_only_written_scene_tracks(tmp_path):
 def test_integrated_mode_defaults_to_all_static_layers():
     cfg = {"static_layers": {"run_after_scenes": True}}
     assert _get_enabled_layers(cfg) == ALL_STATIC_LAYERS
+
+
+def test_multi_track_dynamic_token_remains_one_static_geometry(tmp_path):
+    import pandas as pd
+
+    tile_dir = tmp_path / TILE
+    zdir = tile_dir / f"smonthly_{DIRN}" / "zarr"
+    zdir.mkdir(parents=True)
+    (zdir / f"s1grits_smonthly_{TILE}_{DIRN}_TK18-19.zarr").mkdir()
+    cfg = {"static_layers": {
+        "run_after_scenes": True,
+        "reference_product_label": f"smonthly_{DIRN}",
+        "reference_product_type": "smonthly",
+    }}
+    tokens = _dynamic_reference_tokens(tile_dir, TILE, DIRN, cfg)
+    assert tokens == {"18_19"}
+
+    merged = pd.DataFrame({
+        "track_number": [18, 18, 19],
+        "jpl_burst_id": ["A", "B", "C"],
+    })
+    groups = _group_static_by_dynamic_tokens(merged, tokens)
+    assert len(groups) == 1
+    assert groups[0]["track_token"] == "18_19"
+    assert groups[0]["n_bursts"] == 3

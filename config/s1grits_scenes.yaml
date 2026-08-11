@@ -30,19 +30,13 @@
 workflow: "scenes"
 
 # Optional integrated RTC-STATIC post-stage. Change only run_after_scenes to
-# true to download every static layer for the direction/track grids actually
-# produced by this scenes run. Static is written beside scenes under each tile.
+# true. It always writes all six raw-aligned layers for the exact dynamic
+# geometry groups produced by this run. Static never inherits scene filtering.
 static_layers:
   run_after_scenes: false
   grid_reference: "required"
+  reference_product_type: "auto"  # auto | smonthly | scenes
   on_failure: "fail"              # fail | warn
-  layers:
-    local_inc_angle: true
-    inc_angle: true
-    ls_map: true
-    number_of_looks: true
-    rtc_anf_beta0: true
-    rtc_anf_sigma0: true
 
 # ---------------------------------------------------------------------------
 # Metadata — product registry reference

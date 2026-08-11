@@ -9,7 +9,7 @@ S1-GRiTS provides **10+ commands** covering the full workflow: processing, catal
 | Command | Purpose | Workflow |
 |---------|---------|----------|
 | `s1grits process_scenes` | Per-acquisition scene outputs (+ optional monthly composites) | Scenes |
-| `s1grits process_static` | Time-invariant static layers | Static |
+| `s1grits static ensure` | Catalog-matched time-invariant static layers | Static |
 | `s1grits catalog resync` | Rebuild catalog + STAC from filesystem (no re-processing) | All |
 | `s1grits doctor` | Preflight: environment, config, disk, store-grid consistency, resource plan (`--config`, `--network`) | All |
 | `s1grits catalog doctor` | Check catalog/STAC/Zarr consistency (`--strict` to fail on warnings) | All |
@@ -80,7 +80,7 @@ acquisition filtering before monthly compositing.
 Generate time-invariant reference layers.
 
 ```bash
-s1grits process_static --config config/s1grits_static.yaml
+s1grits static ensure --output-dir ./output --product-label smonthly_ASCENDING
 ```
 
 **What it does:**

@@ -111,23 +111,24 @@ def test_get_aligned_products_includes_static(cube):
 def test_open_stack_merges_and_windows_static(cube):
     r = CubeResolver(cube)
     stack = r.open_stack(TILE, ["scenes", "static"])
+    assert stack.attrs["s1grits:geometry_group_id"] == f"{TILE}_{DIRN}_TK40"
     assert isinstance(stack, xr.Dataset)
-    # All bands present on one (time, y, x) grid.
+    # Dynamic bands retain time; static is stored/opened once as 2-D.
     for v in ("VV_dB", "VH_dB", "local_inc_angle"):
         assert v in stack.data_vars, f"{v} missing from merged stack"
-        assert stack[v].dims == ("time", "y", "x")
+    assert stack["VV_dB"].dims == ("time", "y", "x")
+    assert stack["VH_dB"].dims == ("time", "y", "x")
+    assert stack["local_inc_angle"].dims == ("y", "x")
     # Registered on the scenes (dynamic) grid.
     assert stack.sizes["y"] == DH and stack.sizes["x"] == DW
     assert stack.sizes["time"] == NT
 
     lia = stack["local_inc_angle"]
-    # Static broadcast is time-invariant.
-    assert np.allclose(lia.isel(time=0).values, lia.isel(time=1).values, equal_nan=True)
-    inner = lia.isel(time=0).values[OFF:OFF + SH, OFF:OFF + SW]
+    inner = lia.values[OFF:OFF + SH, OFF:OFF + SW]
     # Exact 1:1 pickup inside the tile window …
     assert np.allclose(inner, 42.0)
     # … and NaN in the beyond-tile margin (windowed, not tiled/extrapolated).
-    margin = lia.isel(time=0).values.copy()
+    margin = lia.values.copy()
     margin[OFF:OFF + SH, OFF:OFF + SW] = np.nan
     assert np.isnan(margin).all()
 
@@ -153,8 +154,22 @@ def test_open_stack_static_pixel_registered_with_scenes(cube):
     # Static and scenes share identical y/x coordinates after windowing.
     assert np.array_equal(stack["x"].values, stack["x"].values)
     # Where static is finite, scenes is defined on the same pixels.
-    lia = stack["local_inc_angle"].isel(time=0).values
+    lia = stack["local_inc_angle"].values
     vv = stack["VV_dB"].isel(time=0).values
     finite = ~np.isnan(lia)
     assert finite.any()
     assert np.isfinite(vv[finite]).all()
+
+
+def test_open_stack_can_broadcast_static_lazily_on_request(cube):
+    r = CubeResolver(cube)
+    stack = r.open_stack(
+        TILE, ["scenes", "static"], broadcast_static=True
+    )
+    lia = stack["local_inc_angle"]
+    assert lia.dims == ("time", "y", "x")
+    assert np.allclose(
+        lia.isel(time=0).values,
+        lia.isel(time=1).values,
+        equal_nan=True,
+    )

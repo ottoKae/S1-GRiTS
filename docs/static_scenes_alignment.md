@@ -1,22 +1,20 @@
 # Static and dynamic scenes: pixel-exact workflow
 
 This workflow writes RTC-STATIC geometry layers directly on the locked grid of
-the matching `workflow_scenes` Zarr store. The join key is
+the matching `scenes` or monthly-only `smonthly` Zarr store. The join key is
 `tile + flight direction + track` (`geometry_group_id`), and no spatial
 resampling is performed by the resolver.
 
 ## Recommended execution order
 
-Use the same `output.base_dir`, tile list, direction, target CRS, and target
-resolution for both workflows:
+Use the scenes YAML integrated post-stage for new data:
 
 ```bash
 s1grits process_scenes --config config/s1grits_scenes.yaml
-s1grits process_static --config config/s1grits_static.yaml
 s1grits catalog resync --output-dir ../outputs
 ```
 
-Alternatively, use a single scenes command by adding this block to its YAML:
+Enable it by adding this block to the scenes YAML:
 
 ```yaml
 static_layers:
@@ -25,23 +23,20 @@ static_layers:
   on_failure: fail
 ```
 
-With no `layers` mapping, all supported RTC-STATIC layers are downloaded. The
+All six raw RTC-STATIC layers are downloaded. The
 post-stage runs after the scenes output lock is released and only for tiles and
 tracks whose scenes Zarr stores were successfully created.
 
-The static configuration should require a dynamic reference:
+For dynamic products that already exist, use the catalog-driven second entry:
 
-```yaml
-output:
-  base_dir: "../outputs"
-
-static_layers:
-  enabled: true
-  grid_reference: "required"
+```bash
+s1grits static ensure --output-dir ../outputs --product-label smonthly_ASCENDING
 ```
 
-For each static acquisition group, the workflow finds the matching
-`scenes_{direction}*/zarr/s1grits_scenes_{tile}_{direction}_TK{track}.zarr`.
+For each static acquisition group, the workflow finds the matching dynamic
+store. Monthly-only archives use
+`smonthly_{direction}*/zarr/s1grits_smonthly_{tile}_{direction}_TK{track}.zarr`;
+per-acquisition archives use the equivalent `scenes_*` path.
 It copies that store's CRS, affine transform, shape, `x`, `y`, and `grid_id`,
 then mosaics downloaded RTC-STATIC rasters directly onto that grid.
 
@@ -81,9 +76,11 @@ ds = r.open_stack(
 )
 ```
 
-Static bands are broadcast virtually across time. New stores take the
-identical-grid fast path. Legacy tile-grid stores are accepted only when their
-resolution and origin prove an integer-pixel lattice match.
+Static bands remain 2-D by default and broadcast only in downstream patch or
+model-batch operations. `open_stack(..., broadcast_static=True)` provides an
+explicit lazy compatibility view. New stores take the identical-grid fast
+path. Legacy tile-grid stores are accepted only when their resolution and
+origin prove an integer-pixel lattice match.
 
 Create a machine-learning store with dynamic arrays in the root and 2-D static
 arrays in the `static/` subgroup:

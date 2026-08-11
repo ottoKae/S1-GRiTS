@@ -130,6 +130,7 @@ KNOWN_KEYS: dict = {
         "on_failure": None,
         "layers": None,
         "grid_reference": None,
+        "reference_product_type": None,
         "reference_product_label": None,
         "target_resolution": None,
         "zarr_chunks": {"y": None, "x": None},

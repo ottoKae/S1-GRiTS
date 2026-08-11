@@ -7,7 +7,7 @@ Scope and Responsibilities:
   - Spatial alignment: query products sharing the same grid_id on a tile
   - Processing consistency: verify same processing_signature within product_type
   - Asset opening: lazy-open Zarr stores as xarray Datasets (dask-backed)
-  - Static broadcast: replicate (y,x) static layers to (time,y,x) on demand
+  - Static handling: preserve (y,x) layers; optional lazy time broadcast
 
 NOT in scope (left to downstream analysis code):
   - Temporal semantics: no resampling, interpolation, or time-axis alignment
@@ -57,7 +57,7 @@ class CubeResolver:
       1. Query catalog by tile, product_type, direction, time range
       2. Verify grid_id and processing_signature consistency
       3. Open Zarr stores as lazy xarray Datasets
-      4. Broadcast static (y,x) layers to (time,y,x)
+      4. Keep static (y,x) layers pixel-registered without time duplication
       5. Merge time-varying + static into a single pixel-registered Dataset
 
     NOT responsible for temporal alignment, resampling, or cross-frequency
@@ -364,14 +364,12 @@ class CubeResolver:
 
         import numpy as np
         ref_time = np.asarray(reference_time)
-        n_time = len(ref_time)
-
         new_vars = {}
         for name, da in ds.data_vars.items():
             if "time" not in da.dims and da.ndim == 2:
-                expanded = da.expand_dims("time", axis=0)
-                tiled = np.tile(expanded.values, (n_time, 1, 1))
-                new_vars[name] = xr.DataArray(tiled, dims=["time", "y", "x"], coords={"time": ref_time})
+                new_vars[name] = da.expand_dims(time=ref_time).transpose(
+                    "time", "y", "x"
+                )
             else:
                 new_vars[name] = da
         for name, da in ds.coords.items():
@@ -389,15 +387,17 @@ class CubeResolver:
         require_same_processing: bool = True,
         geometry_group_id: str | None = None,
         track: int | None = None,
+        broadcast_static: bool = False,
     ) -> xr.Dataset | dict[str, xr.Dataset]:
         """
         Open aligned products and merge into a single pixel-registered Dataset.
 
-        Merges time-varying products with static layers (broadcast) into one
-        Dataset where all bands share the same (time, y, x) dimensions.
+        Merges time-varying products with static layers into one Dataset.
+        Static remains ``(y, x)`` by default; downstream xarray expressions or
+        model batches can broadcast it only where needed.
 
         Merge rules:
-          - time-varying + static → merge (static is broadcast to time axis)
+          - time-varying + static → merge (static remains 2-D by default)
           - multiple time-varying with SAME time axis → merge
           - multiple time-varying with DIFFERENT time axes → return dict
             (scenes has irregular ~6d; smonthly has monthly; they cannot be
@@ -414,6 +414,8 @@ class CubeResolver:
             direction: Optional flight direction filter.
             chunks: Dask chunking dict for lazy loading.
             require_same_processing: If True, raises on mixed signatures.
+            broadcast_static: Compatibility opt-in that exposes static as a
+                lazy ``(time, y, x)`` view. Defaults to False.
 
         Returns:
             xr.Dataset if all products can be merged into one.
@@ -424,7 +426,7 @@ class CubeResolver:
             # Merge scenes + static (most common use case)
             ds = resolver.open_stack("50RKV", ["scenes", "static"],
                                      chunks={"time":1, "y":512, "x":512})
-            # ds has: VV_dB(time,y,x), VH_dB(time,y,x), local_inc_angle(time,y,x)
+            # ds has: VV_dB(time,y,x), VH_dB(time,y,x), local_inc_angle(y,x)
 
             # When time axes differ, get separate Datasets
             result = resolver.open_stack("50RKV", ["scenes", "smonthly"])
@@ -467,6 +469,16 @@ class CubeResolver:
                 f"{sorted(_groups)}. Pass geometry_group_id=... or track=... "
                 "so dynamic scenes and static layers cannot be paired across tracks."
             )
+        _selected_geometry_group = (
+            next(iter(_groups)) if _groups else geometry_group_id
+        )
+
+        def _stamp_geometry(ds: xr.Dataset) -> xr.Dataset:
+            if _selected_geometry_group:
+                ds.attrs["s1grits:geometry_group_id"] = str(
+                    _selected_geometry_group
+                )
+            return ds
 
         # Open all products
         opened: dict[str, xr.Dataset] = {}
@@ -498,25 +510,27 @@ class CubeResolver:
                 _primary_pt = pt
                 break
 
-        # Window static layers onto the dynamic grid and broadcast to its time
-        # axis. Static is co-registered (tile grid = pixel-aligned sub-window of
-        # the dynamic grid), so this is an exact reindex, never a resample.
+        # Window static layers onto the dynamic grid. This is an exact reindex,
+        # never a resample. Keep static 2-D unless compatibility broadcasting
+        # was explicitly requested.
         if static_datasets and reference_ds is not None:
             for static_ds in static_datasets:
-                _bc = self._broadcast_static_ds(
-                    static_ds, reference_time, reference_ds=reference_ds
-                )
-                opened["static"] = _bc
+                _aligned_static = self._align_static_grid(static_ds, reference_ds)
+                if broadcast_static:
+                    _aligned_static = self._broadcast_static_ds(
+                        _aligned_static, reference_time, reference_ds=reference_ds
+                    )
+                opened["static"] = _aligned_static
 
         # Attempt merge
         if len(opened) == 0:
             # Only static, no time-varying
             if static_datasets:
-                return static_datasets[0]
+                return _stamp_geometry(static_datasets[0])
             raise ValueError(f"No datasets could be opened for tile '{tile_id}'")
 
         if len(opened) == 1:
-            return next(iter(opened.values()))
+            return _stamp_geometry(next(iter(opened.values())))
 
         # Check if all time-varying datasets share the same time axis
         _time_axes = {}
@@ -537,7 +551,7 @@ class CubeResolver:
         if _can_merge:
             # All share the same time axis (or static-only) → merge
             merged = xr.merge(list(opened.values()), compat="override")
-            return merged
+            return _stamp_geometry(merged)
         else:
             # Different time axes → return dict, let user decide
             logger.info(
@@ -687,8 +701,6 @@ class CubeResolver:
                 geometry group, is found on the tile.
             FileExistsError: If ``output_path`` exists and ``overwrite`` is False.
         """
-        import numpy as np
-
         out = Path(output_path)
         if out.exists() and not overwrite:
             raise FileExistsError(
