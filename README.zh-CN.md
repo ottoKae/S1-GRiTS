@@ -20,7 +20,7 @@
 ---
 
 <p align="center">
-  S1-GRiTS（Sentinel-1 Gridded RTC Time Series）是一个 Python 软件包，用于从 ASF OPERA RTC-S1 产品构建可直接分析的 Sentinel-1 SAR 时序数据立方体。它将 burst 级观测转换为 MGRS 对齐、时间一致的 Zarr/COG 数据立方体。
+  S1-GRiTS（Sentinel-1 Gridded RTC Time Series）是一个 Python 软件包，用于从 ASF OPERA RTC-S1 产品构建可直接分析的 Sentinel-1 SAR 时序数据立方体。它将 burst 级观测转换为按 MGRS 对齐、时间一致的 Zarr 数据立方体，并可按需导出 COG。
 </p>
 
 ## 供论文审稿人查阅：论文与代码对应关系
@@ -38,18 +38,18 @@
 | 论文技术 | 代码实现 | 执行入口 |
 |---|---|---|
 | 按 `(mgrs_tile_id, acq_group_id_within_mgrs_tile, pass_id)`、`track_token` 进行 burst 优先的确定性成像分组 | `asf_tiles.py`、`dist_enum.py` | `s1grits process_scenes` |
-| 首个有效像素镶嵌（来源控制，而非辐射融合） | `asf_output_writing.py` 的 `_mosaic_align()` | 所有处理命令 |
+| 首个有效像素镶嵌（来源控制，而非辐射融合） | `asf_output_writing.py` 的 `_mosaic_align()` | scenes 工作流及其 static 后处理阶段 |
 | 升降轨分离，每个成像组对应一个 Zarr | `workflow_scenes.py`、`merge_acq_group_zarrs()` | `s1grits process_scenes` |
-| 云原生 S3 流式读取、零落盘、内存虚拟文件转 float32 | `asf_io.py`、`rtc_s1_io.py` | 所有处理命令 |
+| 云原生 S3 流式读取、零落盘、内存虚拟文件转 float32 | `asf_io.py`、`rtc_s1_io.py` | `s1grits process_scenes` 及其 static 后处理阶段 |
 | 自适应时间分批与内存受控并行 | `memory_manager.py` | YAML 的 `parallel`、`memory` 配置 |
 | 月度中值合成及瓦片裁剪前 TV-Bregman 去斑 | `asf_io.py`、`asf_array_processing.py` | `process_scenes` 的 `processing.monthly` |
 | 可增量追加的 Zarr、STAC 1.1.0 与 Parquet 目录 | `stac_builder.py`、`catalog_sync.py` | `s1grits catalog inspect` |
 | 静态成像几何图层：LIA、入射角、叠掩/阴影、视数、ANF β0/σ0 | `workflow_static.py` | scenes YAML 或 `s1grits static ensure` |
 | 升降轨后向散射差异及其与 LIA/ANF 的关系 | `manuscript_analysis_scripts/c05_*` | 对应论文脚本 |
 
-### 月度数据与 static 的同目录存储及配对规则
+### 动态数据与 static 的同目录存储及配对规则
 
-月度后向散射立方体与静态成像几何图层属于同一逻辑数据立方体，共用一个 `output.base_dir` 和根目录下的 `catalog.parquet`。二者在每个 MGRS 瓦片目录中平级存储：
+动态后向散射立方体与静态成像几何图层属于同一逻辑数据立方体，共用一个 `output.base_dir` 和根目录下的 `catalog.parquet`。二者在每个 MGRS 瓦片目录中平级存储，既不分成两个独立数据档案，也不相互嵌套：
 
 ```text
 {base_dir}/
@@ -63,11 +63,11 @@
 
 static 只有两个生产入口：在 `workflow_scenes` YAML 中启用后处理阶段，或对已有动态产品运行 `s1grits static ensure`。系统不支持独立 static YAML，以防静态数据选择错误的网格或成像几何。
 
-RTC-STATIC 永远采用**原始值对齐**策略。六个源变量不进行去斑、空间滤波、归一化、时间合成，也不生成派生特征；只允许为落到权威动态像素网格而进行必要的几何镶嵌与重投影。无论 scenes 是否使用空间滤波，此原则都不改变。
+RTC-STATIC 永远采用**原始值对齐**策略。六个源变量不进行去斑、空间滤波、归一化、时间合成，也不生成派生特征；只进行落到权威动态像素网格所必需的几何镶嵌与重投影。无论动态 scenes 是否使用空间滤波，此原则都不改变。
 
 动态 `smonthly` 与 `static` 仅在共享轨道级键 `geometry_group_id = tile_id + flight_direction + track` 时配对。burst 数量只作为溯源信息，不属于连接键；多轨瓦片的每种成像几何分别对应一个 static 产品，禁止跨轨道混用。
 
-生产时，static 必须以配对的动态 Zarr 为网格权威，继承其 CRS、仿射变换、形状、`x`/`y` 坐标和规范 `grid_id`。六个 static 变量只保存一次，为二维 `(y, x)`；月度后向散射为三维 `(time, y, x)`。`CubeResolver` 从同一个目录按瓦片、方向和轨道选择产品，并保持 static 为二维数组；只有请求具体空间窗口或模型批次时才进行惰性时间广播，不在存储层复制完整时间轴。
+生产时，static 必须以配对的 `scenes` 或 `smonthly` Zarr 为网格权威，继承其 CRS、仿射变换、形状、`x`/`y` 坐标和规范 `grid_id`。六个 static 变量只保存一次，为二维 `(y, x)`；动态后向散射为三维 `(time, y, x)`。`CubeResolver` 从同一个目录按瓦片、方向和轨道选择产品，并保持 static 为二维数组；只有具体空间窗口或模型批次提出请求时才进行惰性时间广播，不在数据档案中沿完整时间轴重复保存 static。
 
 ### 复现论文图表
 
@@ -163,7 +163,7 @@ conda、源码安装、可选依赖、认证和首次运行说明见 **[安装�
 
 ## static 静态图层
 
-static 是 scenes 或月度立方体中不随时间变化的配套数据。S1-GRiTS 按 `瓦片 + 轨道方向 + 轨道` 保存一次六个原始 OPERA RTC-STATIC 变量：局部入射角、入射角、叠掩/阴影掩膜、视数以及 β0/σ0 面积归一化因子。static 与动态产品共用完全一致的像素网格、瓦片目录、根 catalog 和 `geometry_group_id`，不进行去斑、空间滤波、归一化或时间广播。
+static 是 scenes 或月度立方体中不随时间变化的配套数据。S1-GRiTS 按 `瓦片 + 轨道方向 + 轨道` 保存一次六个 OPERA RTC-STATIC 变量：局部入射角、入射角、叠掩/阴影掩膜、视数以及 β0/σ0 面积归一化因子。static 与动态产品共用完全一致的像素网格、瓦片目录、根 catalog 和 `geometry_group_id`。static 数值不进行去斑、空间滤波、归一化或时间合成，也不会沿时间轴重复存储。
 
 新建任务时，在同一个 scenes YAML 中启用后处理：
 
@@ -181,12 +181,13 @@ static_layers:
 s1grits process_scenes --config my_run.yaml
 ```
 
-如果动态立方体已经存在，可在同一个根目录中补齐缺失的 static。该命令支持幂等重跑：完整产品会被跳过，只创建缺失的成像几何组。
+如果动态立方体已经存在，可在同一个根目录中补齐缺失的 static。`--product-label` 必须填写 `catalog.parquet` 中准确的动态产品标签；只有 catalog 缺失或过期时，才需要先执行 `catalog resync`。`static ensure` 支持幂等重跑：完整的配对产品会被跳过，只创建缺失的成像几何组。
 
 ```bash
+# 仅当 catalog.parquet 缺失或过期时执行：
 s1grits catalog resync --output-dir /path/to/output
 s1grits static ensure --output-dir /path/to/output --product-label smonthly_ASCENDING
-# 可选：使用 --tile 17MPU 仅处理一个瓦片
+# 可选：使用 --tile 17MPU 限定瓦片；多个瓦片可重复传入 --tile
 ```
 
 系统有意不支持独立 static YAML，因为 static 必须从权威动态产品取得成像几何和像素网格。详细规则见 **[static/scenes 对齐说明](docs/static_scenes_alignment.md)**。
@@ -239,6 +240,8 @@ for decadal vegetation monitoring in cloud-prone regions. (under review).
 KaeRao. (2026). S1-GRiTS: Sentinel-1 Gridded RTC Time Series Data Cube (Version 3.0.0).
 GitHub: https://github.com/ottoKae/S1-GRiTS
 ```
+
+**BibTeX：**
 
 ```bibtex
 @article{rao2026s1grits,
