@@ -30,3 +30,6 @@ def __getattr__(name):
         from s1grits.mgrs_burst_data import get_mgrs_tiles_overlapping_geometry
         return get_mgrs_tiles_overlapping_geometry
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+from .runtime import configure_gdal_data
+
+configure_gdal_data()
