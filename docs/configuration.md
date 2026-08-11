@@ -9,7 +9,7 @@ S1-GRiTS workflows are configured via YAML files in the `config/` directory.
 | File | Workflow | Description |
 |------|----------|-------------|
 | `s1grits_scenes.yaml` | Per-scene processing (+ monthly composites) | High-temporal-resolution outputs; enable `processing.monthly` for composites |
-| `s1grits_static.yaml` | Static layers | Time-invariant reference layers |
+| `s1grits_scenes.yaml` → `static_layers` | Raw static companions | Time-invariant reference layers |
 
 ### ROI Configuration
 
@@ -184,6 +184,56 @@ runtime:
 ```
 
 ### Processing Configuration
+
+### Static workflow configuration
+
+Run static against the same output root after scenes so every static track can
+adopt its dynamic grid:
+
+```yaml
+roi:
+  track_numbers: [40]             # Optional relative-orbit filter
+
+output:
+  formats:
+    zarr: true                    # Canonical catalogued static asset
+
+static_layers:
+  enabled: true
+  run_after_scenes: false          # true: integrated post-stage in scenes YAML
+  on_failure: fail                # fail | warn for the integrated post-stage
+  grid_reference: required        # required | auto | tile
+  reference_product_type: auto    # auto | smonthly | scenes
+  reference_product_label: null   # Pin a scenes_* variant if grids differ
+  layers:
+    local_inc_angle: true
+    inc_angle: true
+    ls_map: true
+    number_of_looks: true
+    rtc_anf_beta0: true
+    rtc_anf_sigma0: true
+  target_resolution: 30.0
+  zarr_chunks: {y: 512, x: 512}
+  cog_block_size: 256
+
+  # ASF RTC-STATIC query controls
+  query_batch_size: 50
+  query_max_results: 5000
+  query_max_retries: 5
+  query_retry_base_delay: 2.0
+```
+
+`grid_reference: required` is recommended for machine learning: a matching
+dynamic Zarr must exist for every direction/track, and static adopts its CRS,
+affine transform, shape, coordinates, and `grid_id`. Use
+`reference_product_type: smonthly` for monthly-only archives. See
+[the pixel-exact static/scenes workflow](static_scenes_alignment.md).
+
+In a scenes YAML, set only `static_layers.run_after_scenes: true` to enable the
+post-stage. When `layers` is omitted, all six RTC-STATIC layers are downloaded.
+Only tracks that produced scenes Zarr stores are queried. `on_failure: fail`
+makes the combined command unsuccessful if static output is incomplete;
+`warn` preserves successful scenes results and records the static failure.
 
 #### Common Processing Options (All Workflows)
 

@@ -12,15 +12,16 @@
   <br>
   <em>Each pixel knows where it came from. Geometry is not erased.</em>
 </p>
+<p align="center"><strong>English</strong> | <a href="README.zh-CN.md">简体中文</a></p>
 <p align="center">
   <a href="https://www.python.org/downloads/">
     <img src="https://img.shields.io/badge/python-3.12+-blue.svg" />
   </a>
   <a href="LICENSE">
-    <img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" />
+    <img src="https://img.shields.io/badge/license-PolyForm%20NC-green.svg" />
   </a>
   <a href="https://github.com/ottoKae/S1-GRiTS">
-    <img src="https://img.shields.io/badge/version-2.3.0-orange.svg" />
+    <img src="https://img.shields.io/badge/version-3.0.0-orange.svg" />
   </a>
 </p>
 
@@ -55,8 +56,52 @@ Each row links a core methodological claim in the paper to the module/function a
 | **Adaptive temporal batching + memory-bounded parallelism** (Eq. 1–2, §3.3) | `memory_manager.py` (`detect_system_memory` via psutil, `select_batch_strategy`/`chunk_time_by_strategy`: yearly/quarterly/monthly) | `parallel` / `memory` config blocks |
 | **Temporal median compositing + TV-Bregman despeckle before tile-clip** (§3.2) | `asf_io.py` → `load_and_despeckle_rtc_strict` (`tv_bregman`), `asf_array_processing.despeckle_2d` | `s1grits process_scenes` (`processing.monthly`) |
 | **Incremental, appendable Zarr cube + STAC 1.1.0 + Parquet catalogs** (§3.2) | `stac_builder.py` (`STAC_VERSION = "1.1.0"`, datacube ext v2.3.0), `catalog_sync.py`, `canonical_catalog_schema.py` | `s1grits catalog inspect` |
-| **Static acquisition-geometry layers** (LIA, inc. angle, layover/shadow, looks, ANF β0/σ0) (§2.2, §4.1) | `workflow_static.py` (`local_inc_angle`, `inc_angle`, `ls_map`, `number_of_looks`, `rtc_anf_beta0`, `rtc_anf_sigma0`) | `s1grits process_static` |
+| **Static acquisition-geometry layers** (LIA, inc. angle, layover/shadow, looks, ANF β0/σ0) (§2.2, §4.1) | `workflow_static.py` (`local_inc_angle`, `inc_angle`, `ls_map`, `number_of_looks`, `rtc_anf_beta0`, `rtc_anf_sigma0`) | scenes YAML or `s1grits static ensure` |
 | **Cross-orbit (ASC–DESC) backscatter offset quantification vs. LIA/ANF** (§3.4, §4.3, Table 3) | `manuscript_analysis_scripts/c05_t03_*`, `c05_f07_*` | run scripts (see below) |
+
+### Monthly/static co-location and pairing contract
+
+Monthly backscatter cubes and their acquisition-geometry layers belong to one
+logical data cube and therefore share a single `output.base_dir` and a single
+root `catalog.parquet`. They are sibling products under each MGRS tile, not
+independent archives and not nested inside one another:
+
+```text
+{base_dir}/
+  catalog.parquet
+  17MNV/
+    smonthly_ASCENDING/
+      zarr/s1grits_smonthly_17MNV_ASCENDING_TK18.zarr
+    static_ASCENDING/
+      zarr/s1grits_static_17MNV_ASCENDING_TK18_Nxx.zarr
+```
+
+Static data has exactly two production entry points: enable the static
+post-stage in a `workflow_scenes` YAML, or run `s1grits static ensure` against
+an already cataloged dynamic product. A standalone static YAML is deliberately
+unsupported because it could silently select a different grid or geometry.
+
+RTC-STATIC values are always **raw-aligned**: all six source variables are
+stored without speckle filtering, spatial filtering, normalization, temporal
+compositing, or derived features. Reprojection/mosaicking is performed only to
+place those source values on the authoritative dynamic pixel grid. This policy
+does not change when scenes use despeckling or other spatial processing.
+
+Pairing is geometry-strict. A dynamic `smonthly` store and a `static` store
+may be combined only when they share the track-level key
+`geometry_group_id = tile_id + flight_direction + track`. Burst count remains
+provenance and is not part of this join key. A tile with more than one track
+has one static product per matching acquisition geometry; static layers from
+one track must never be attached to another track.
+
+For production, `workflow_static` must use the matching `smonthly` store as its
+grid authority and copy its CRS, affine transform, shape, `x`/`y` coordinates,
+and canonical `grid_id`. The six OPERA RTC-STATIC variables remain 2-D
+`(y, x)` arrays stored once, while monthly backscatter remains
+`(time, y, x)`. `CubeResolver` selects both products from the same catalog by
+tile, direction, and track and preserves static variables as 2-D arrays.
+Broadcasting is deferred to a requested spatial patch or model batch; a full
+time-axis copy of static data is not part of the storage or resolver contract.
 
 ### Reproducing the paper's figures & tables
 
@@ -83,7 +128,7 @@ The `manuscript_analysis_scripts/` directory contains the exact scripts used to 
 s1grits process_scenes --config config/s1grits_scenes.yaml      # edit: manual_mgrs_tiles: ["17MPU"]
 
 # 2. Generate the static acquisition-geometry layers (LIA, ANF β0) used in the offset analysis
-s1grits process_static  --config config/s1grits_static.yaml     # edit: manual_mgrs_tiles: ["17MPU"]
+s1grits static ensure --output-dir ./output --product-label smonthly_ASCENDING
 
 # 3. Quantify cross-orbit ASC–DESC offsets (paper Table 3 / Fig. 7)
 python manuscript_analysis_scripts/c01_f5a_gridded_composites_17MPU.py
@@ -156,6 +201,36 @@ s1grits serve --root /path/to/output
 Full installation options (conda, from-source, extras), authentication setup
 and first-run guidance: **[docs/installation.md](docs/installation.md)**.
 
+## Static layers
+
+Static layers are time-invariant companions to a scenes or monthly cube. S1-GRiTS stores the six raw OPERA RTC-STATIC variables—local incidence angle, incidence angle, layover/shadow mask, number of looks, and β0/σ0 area-normalization factors—once per `tile + direction + track`. They share the dynamic product's exact pixel grid, tile directory, root catalog, and `geometry_group_id`; no despeckling, spatial filtering, normalization, or temporal broadcasting is applied.
+
+For a new run, enable the post-stage in the same scenes YAML:
+
+```yaml
+static_layers:
+  run_after_scenes: true
+  grid_reference: required
+  reference_product_type: smonthly   # use scenes for a per-scene cube
+  on_failure: fail
+```
+
+Then run the normal command:
+
+```bash
+s1grits process_scenes --config my_run.yaml
+```
+
+To add missing static layers to an existing, cataloged cube, use the same root directory. The command is idempotent: matching stores are skipped and only missing geometry groups are created.
+
+```bash
+s1grits catalog resync --output-dir /path/to/output
+s1grits static ensure --output-dir /path/to/output --product-label smonthly_ASCENDING
+# Optional scope: --tile 17MPU
+```
+
+Standalone static YAML downloads are intentionally unsupported because static geometry must always be derived from an authoritative dynamic product. See **[Static/scenes alignment](docs/static_scenes_alignment.md)** for the detailed contract.
+
 ## Documentation
 
 | Page | Contents |
@@ -212,7 +287,7 @@ for decadal vegetation monitoring in cloud-prone regions. (under review).
 **Software:**
 
 ```text
-KaeRao. (2026). S1-GRiTS: Sentinel-1 Gridded RTC Time Series Data Cube (Version 2.3.0).
+KaeRao. (2026). S1-GRiTS: Sentinel-1 Gridded RTC Time Series Data Cube (Version 3.0.0).
 GitHub: https://github.com/ottoKae/S1-GRiTS
 ```
 
@@ -231,7 +306,7 @@ GitHub: https://github.com/ottoKae/S1-GRiTS
   author       = {KaeRao},
   title        = {S1-GRiTS: Sentinel-1 Gridded RTC Time Series Data Cube},
   year         = {2026},
-  version      = {2.3.0},
+  version      = {3.0.0},
   url          = {https://github.com/ottoKae/S1-GRiTS},
   note         = {A companion paper is under review}
 }
@@ -276,4 +351,4 @@ Open an issue on GitHub: https://github.com/ottoKae/S1-GRiTS/issues
 
 ---
 
-*README last updated: 2026-06-17 | Version 2.1.0*
+*README last updated: 2026-08-11 | Version 3.0.0*

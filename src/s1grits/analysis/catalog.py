@@ -648,6 +648,25 @@ def _resync_locked(output_root, _skip_dirs, write_stac, stac_format) -> Dict[str
                        if d.is_dir() and not d.name.startswith('.')
                        and d.name not in _skip_dirs)
 
+    # Preserve record creation time across authoritative rebuilds. The Zarr
+    # path is the stable physical identity; stamping every scan with "now"
+    # makes an unchanged catalog logically non-idempotent.
+    _created_at_by_asset: dict[tuple[str, str, str], object] = {}
+    _existing_root_catalog = output_root / 'catalog.parquet'
+    if _existing_root_catalog.exists():
+        try:
+            _existing = pd.read_parquet(_existing_root_catalog)
+            _needed = {'tile_id', 'product_type', 'zarr_path', 'created_at'}
+            if _needed.issubset(_existing.columns):
+                for _, _row in _existing.iterrows():
+                    _zp = str(_row.get('zarr_path') or '').replace('\\', '/')
+                    if _zp:
+                        _created_at_by_asset[
+                            (str(_row.get('tile_id')), str(_row.get('product_type')), _zp)
+                        ] = _row.get('created_at')
+        except Exception as _e:
+            logger.warning("Could not preserve existing catalog timestamps: %s", _e)
+
     all_catalogs = []
 
     for tile_dir in tile_dirs:
@@ -724,6 +743,7 @@ def _resync_locked(output_root, _skip_dirs, write_stac, stac_format) -> Dict[str
                     _tk_str = _tk_match.group(1)
                     track_val = int(_tk_str.split('-')[0]) if '-' in _tk_str else int(_tk_str)
                 else:
+                    _tk_str = None
                     track_val = None
                 # n_bursts appears in static store names (_N{nn}) and in legacy
                 # scenes/smonthly stores; current scenes/smonthly stores key on
@@ -738,7 +758,7 @@ def _resync_locked(output_root, _skip_dirs, write_stac, stac_format) -> Dict[str
                     n_bursts_val = int(_attr_nb) if _attr_nb else None
                 _nn_suffix = f"_N{int(_nn_match.group(1)):02d}" if _nn_match else ""
 
-                item_id = f"{tile_id}_{flight_direction or 'UNK'}_TK{track_val}{_nn_suffix}_{product_type}" if track_val else f"{tile_id}_{flight_direction or 'UNK'}_{product_type}"
+                item_id = f"{tile_id}_{flight_direction or 'UNK'}_TK{_tk_str}{_nn_suffix}_{product_type}" if _tk_str else f"{tile_id}_{flight_direction or 'UNK'}_{product_type}"
 
                 # Check for COG files
                 cog_dir = prod_dir / 'cog'
@@ -747,6 +767,7 @@ def _resync_locked(output_root, _skip_dirs, write_stac, stac_format) -> Dict[str
 
                 # Build catalog record
                 _grid_size = int(g['x'].shape[0]) if 'x' in g else None
+                _zarr_rel = str(zarr_p.relative_to(tile_dir)).replace('\\', '/')
                 record = normalize_catalog_record({
                     'item_id': item_id,
                     'collection_id': f's1grits-{product_type}',
@@ -759,6 +780,11 @@ def _resync_locked(output_root, _skip_dirs, write_stac, stac_format) -> Dict[str
                     'width': _grid_size,
                     'height': int(g['y'].shape[0]) if 'y' in g else None,
                     'grid_id': f"{tile_id}_native_{int(abs(float(g.attrs['transform'][0]))) if 'transform' in g.attrs else 30}m",
+                    'grid_source': g.attrs.get('grid_source', None),
+                    'reference_grid_id': g.attrs.get('reference_grid_id', None),
+                    'reference_zarr_path': g.attrs.get('reference_zarr_path', None),
+                    'reference_product_type': g.attrs.get('reference_product_type', None),
+                    'reference_product_label': g.attrs.get('reference_product_label', None),
                     'datetime': dt_val,
                     'start_datetime': start_dt,
                     'end_datetime': end_dt,
@@ -768,11 +794,14 @@ def _resync_locked(output_root, _skip_dirs, write_stac, stac_format) -> Dict[str
                     # per-scene burst count (_N{nn}, present in static store
                     # names) stays in item_id/n_bursts as provenance, NOT here,
                     # so `static ⋈ scenes ON (tile_id, geometry_group_id)` works.
-                    'geometry_group_id': f"{tile_id}_{flight_direction or 'UNK'}_TK{track_val}" if track_val else None,
+                    'geometry_group_id': (
+                        f"{tile_id}_{flight_direction or 'UNK'}_TK{_tk_str}"
+                        if _tk_str else g.attrs.get('geometry_group_id')
+                    ),
                     'track': track_val,
                     'n_bursts': n_bursts_val,
                     'n_scenes': len(time_steps) if time_steps else None,
-                    'zarr_path': str(zarr_p.relative_to(tile_dir)).replace('\\', '/'),
+                    'zarr_path': _zarr_rel,
                     'cog_path': cog_path,
                     'preview_path': None,
                     'bands': _json.dumps(bands) if bands else None,
@@ -780,7 +809,20 @@ def _resync_locked(output_root, _skip_dirs, write_stac, stac_format) -> Dict[str
                     'product_variant': _product_variant,
                     'processing_signature': _processing_sig,
                     'processing_variant_json': _processing_variant_json,
+                    'created_at': _created_at_by_asset.get(
+                        (str(tile_id), str(product_type), _zarr_rel)
+                    ),
                 })
+                # Catalog grid IDs are canonicalized from the scanned grid.
+                # A raw attr copied from an older dynamic writer may use a
+                # historical ID algorithm even though the lattices are exact.
+                # For workflow-aligned static, the canonical reference ID is
+                # therefore the canonical ID of this identical scanned grid.
+                if (
+                    product_type == 'static'
+                    and str(record.get('grid_source') or '').startswith('workflow_')
+                ):
+                    record['reference_grid_id'] = record.get('grid_id')
                 # Set output_type so write_stac_item uses correct path logic
                 record['output_type'] = product_type
                 catalog_records.append(record)

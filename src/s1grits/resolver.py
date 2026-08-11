@@ -7,7 +7,7 @@ Scope and Responsibilities:
   - Spatial alignment: query products sharing the same grid_id on a tile
   - Processing consistency: verify same processing_signature within product_type
   - Asset opening: lazy-open Zarr stores as xarray Datasets (dask-backed)
-  - Static broadcast: replicate (y,x) static layers to (time,y,x) on demand
+  - Static handling: preserve (y,x) layers; optional lazy time broadcast
 
 NOT in scope (left to downstream analysis code):
   - Temporal semantics: no resampling, interpolation, or time-axis alignment
@@ -57,7 +57,7 @@ class CubeResolver:
       1. Query catalog by tile, product_type, direction, time range
       2. Verify grid_id and processing_signature consistency
       3. Open Zarr stores as lazy xarray Datasets
-      4. Broadcast static (y,x) layers to (time,y,x)
+      4. Keep static (y,x) layers pixel-registered without time duplication
       5. Merge time-varying + static into a single pixel-registered Dataset
 
     NOT responsible for temporal alignment, resampling, or cross-frequency
@@ -100,6 +100,8 @@ class CubeResolver:
         direction: str | None = None,
         time_start: str | None = None,
         time_end: str | None = None,
+        geometry_group_id: str | None = None,
+        track: int | None = None,
     ) -> pd.DataFrame:
         """
         Query catalog for matching products.
@@ -125,6 +127,10 @@ class CubeResolver:
             df = df[df["datetime"] >= pd.Timestamp(time_start)]
         if time_end:
             df = df[df["datetime"] <= pd.Timestamp(time_end)]
+        if geometry_group_id:
+            df = df[df["geometry_group_id"] == geometry_group_id]
+        if track is not None:
+            df = df[df["track"] == int(track)]
         return df.reset_index(drop=True)
 
     def get_aligned_products(
@@ -133,6 +139,8 @@ class CubeResolver:
         product_types: list[str] | None = None,
         require_same_grid: bool = False,
         require_same_processing: bool = True,
+        geometry_group_id: str | None = None,
+        track: int | None = None,
     ) -> dict[str, pd.DataFrame]:
         """
         Return products aligned for stacking on a tile.
@@ -165,7 +173,11 @@ class CubeResolver:
             ValueError: If require_same_grid=True and multiple grid_ids found.
             ValueError: If require_same_processing=True and multiple signatures found.
         """
-        df = self.query(tile_id=tile_id)
+        df = self.query(
+            tile_id=tile_id,
+            geometry_group_id=geometry_group_id,
+            track=track,
+        )
         if product_types:
             df = df[df["product_type"].isin(product_types)]
         if df.empty or "grid_id" not in df.columns:
@@ -352,14 +364,12 @@ class CubeResolver:
 
         import numpy as np
         ref_time = np.asarray(reference_time)
-        n_time = len(ref_time)
-
         new_vars = {}
         for name, da in ds.data_vars.items():
             if "time" not in da.dims and da.ndim == 2:
-                expanded = da.expand_dims("time", axis=0)
-                tiled = np.tile(expanded.values, (n_time, 1, 1))
-                new_vars[name] = xr.DataArray(tiled, dims=["time", "y", "x"], coords={"time": ref_time})
+                new_vars[name] = da.expand_dims(time=ref_time).transpose(
+                    "time", "y", "x"
+                )
             else:
                 new_vars[name] = da
         for name, da in ds.coords.items():
@@ -375,15 +385,19 @@ class CubeResolver:
         direction: str | None = None,
         chunks: dict | None = None,
         require_same_processing: bool = True,
+        geometry_group_id: str | None = None,
+        track: int | None = None,
+        broadcast_static: bool = False,
     ) -> xr.Dataset | dict[str, xr.Dataset]:
         """
         Open aligned products and merge into a single pixel-registered Dataset.
 
-        Merges time-varying products with static layers (broadcast) into one
-        Dataset where all bands share the same (time, y, x) dimensions.
+        Merges time-varying products with static layers into one Dataset.
+        Static remains ``(y, x)`` by default; downstream xarray expressions or
+        model batches can broadcast it only where needed.
 
         Merge rules:
-          - time-varying + static → merge (static is broadcast to time axis)
+          - time-varying + static → merge (static remains 2-D by default)
           - multiple time-varying with SAME time axis → merge
           - multiple time-varying with DIFFERENT time axes → return dict
             (scenes has irregular ~6d; smonthly has monthly; they cannot be
@@ -400,6 +414,8 @@ class CubeResolver:
             direction: Optional flight direction filter.
             chunks: Dask chunking dict for lazy loading.
             require_same_processing: If True, raises on mixed signatures.
+            broadcast_static: Compatibility opt-in that exposes static as a
+                lazy ``(time, y, x)`` view. Defaults to False.
 
         Returns:
             xr.Dataset if all products can be merged into one.
@@ -410,7 +426,7 @@ class CubeResolver:
             # Merge scenes + static (most common use case)
             ds = resolver.open_stack("50RKV", ["scenes", "static"],
                                      chunks={"time":1, "y":512, "x":512})
-            # ds has: VV_dB(time,y,x), VH_dB(time,y,x), local_inc_angle(time,y,x)
+            # ds has: VV_dB(time,y,x), VH_dB(time,y,x), local_inc_angle(y,x)
 
             # When time axes differ, get separate Datasets
             result = resolver.open_stack("50RKV", ["scenes", "smonthly"])
@@ -420,6 +436,8 @@ class CubeResolver:
             tile_id=tile_id,
             product_types=product_types,
             require_same_processing=require_same_processing,
+            geometry_group_id=geometry_group_id,
+            track=track,
         )
         if not aligned:
             raise ValueError(f"No aligned products found for tile '{tile_id}'")
@@ -437,6 +455,30 @@ class CubeResolver:
                     f"No products found for tile '{tile_id}' "
                     f"with direction '{direction}'"
                 )
+
+        # Never pair the first scenes row with the first static row across
+        # different tracks. A geometry group is the physical acquisition
+        # geometry contract (tile + direction + track).
+        _groups: set[str] = set()
+        for _df in aligned.values():
+            if "geometry_group_id" in _df.columns:
+                _groups.update(str(v) for v in _df["geometry_group_id"].dropna().unique())
+        if len(_groups) > 1:
+            raise ValueError(
+                f"Multiple geometry groups match tile '{tile_id}': "
+                f"{sorted(_groups)}. Pass geometry_group_id=... or track=... "
+                "so dynamic scenes and static layers cannot be paired across tracks."
+            )
+        _selected_geometry_group = (
+            next(iter(_groups)) if _groups else geometry_group_id
+        )
+
+        def _stamp_geometry(ds: xr.Dataset) -> xr.Dataset:
+            if _selected_geometry_group:
+                ds.attrs["s1grits:geometry_group_id"] = str(
+                    _selected_geometry_group
+                )
+            return ds
 
         # Open all products
         opened: dict[str, xr.Dataset] = {}
@@ -468,25 +510,27 @@ class CubeResolver:
                 _primary_pt = pt
                 break
 
-        # Window static layers onto the dynamic grid and broadcast to its time
-        # axis. Static is co-registered (tile grid = pixel-aligned sub-window of
-        # the dynamic grid), so this is an exact reindex, never a resample.
+        # Window static layers onto the dynamic grid. This is an exact reindex,
+        # never a resample. Keep static 2-D unless compatibility broadcasting
+        # was explicitly requested.
         if static_datasets and reference_ds is not None:
             for static_ds in static_datasets:
-                _bc = self._broadcast_static_ds(
-                    static_ds, reference_time, reference_ds=reference_ds
-                )
-                opened["static"] = _bc
+                _aligned_static = self._align_static_grid(static_ds, reference_ds)
+                if broadcast_static:
+                    _aligned_static = self._broadcast_static_ds(
+                        _aligned_static, reference_time, reference_ds=reference_ds
+                    )
+                opened["static"] = _aligned_static
 
         # Attempt merge
         if len(opened) == 0:
             # Only static, no time-varying
             if static_datasets:
-                return static_datasets[0]
+                return _stamp_geometry(static_datasets[0])
             raise ValueError(f"No datasets could be opened for tile '{tile_id}'")
 
         if len(opened) == 1:
-            return next(iter(opened.values()))
+            return _stamp_geometry(next(iter(opened.values())))
 
         # Check if all time-varying datasets share the same time axis
         _time_axes = {}
@@ -507,7 +551,7 @@ class CubeResolver:
         if _can_merge:
             # All share the same time axis (or static-only) → merge
             merged = xr.merge(list(opened.values()), compat="override")
-            return merged
+            return _stamp_geometry(merged)
         else:
             # Different time axes → return dict, let user decide
             logger.info(
@@ -539,11 +583,7 @@ class CubeResolver:
             and {"x", "y"} <= set(ds.coords)
             and {"x", "y"} <= set(reference_ds.coords)
         ):
-            _rx = np.asarray(reference_ds["x"].values)
-            _ry = np.asarray(reference_ds["y"].values)
-            _res = abs(float(_rx[1] - _rx[0])) if _rx.size > 1 else None
-            _tol = _res * 0.49 if _res else None
-            ds = ds.reindex(x=_rx, y=_ry, method="nearest", tolerance=_tol)
+            ds = self._align_static_grid(ds, reference_ds)
 
         ref_time = np.asarray(reference_time)
         n_time = len(ref_time)
@@ -565,6 +605,44 @@ class CubeResolver:
         new_vars["time"] = xr.DataArray(ref_time, dims=["time"])
         return xr.Dataset(new_vars)
 
+    @staticmethod
+    def _align_static_grid(ds: xr.Dataset, reference_ds: xr.Dataset) -> xr.Dataset:
+        """Align static to a dynamic grid without resampling.
+
+        New static stores normally have byte-identical x/y coordinates because
+        they adopt the scenes grid during production. Legacy tile-grid stores
+        are accepted only when their resolution and origin offset prove they
+        occupy the same integer pixel lattice.
+        """
+        sx = np.asarray(ds["x"].values, dtype=np.float64)
+        sy = np.asarray(ds["y"].values, dtype=np.float64)
+        rx = np.asarray(reference_ds["x"].values, dtype=np.float64)
+        ry = np.asarray(reference_ds["y"].values, dtype=np.float64)
+        if np.array_equal(sx, rx) and np.array_equal(sy, ry):
+            return ds
+        if min(sx.size, sy.size, rx.size, ry.size) < 2:
+            raise ValueError("Cannot verify pixel alignment for a degenerate x/y grid")
+        sdx, sdy = float(sx[1] - sx[0]), float(sy[1] - sy[0])
+        rdx, rdy = float(rx[1] - rx[0]), float(ry[1] - ry[0])
+        atol = max(abs(rdx), abs(rdy)) * 1e-7
+        if not (np.isclose(sdx, rdx, atol=atol, rtol=0) and np.isclose(sdy, rdy, atol=atol, rtol=0)):
+            raise ValueError(
+                "Static and dynamic grids have different pixel resolutions; "
+                "resampling is forbidden for pixel-exact resolver alignment."
+            )
+        xoff = (sx[0] - rx[0]) / rdx
+        yoff = (sy[0] - ry[0]) / rdy
+        if not (
+            np.isclose(xoff, round(xoff), atol=1e-6, rtol=0)
+            and np.isclose(yoff, round(yoff), atol=1e-6, rtol=0)
+        ):
+            raise ValueError(
+                "Static and dynamic grids are not on the same integer-pixel lattice; "
+                "rerun workflow_static with static_layers.grid_reference=required."
+            )
+        tol = min(abs(rdx), abs(rdy)) * 0.49
+        return ds.reindex(x=rx, y=ry, method="nearest", tolerance=tol)
+
     # ------------------------------------------------------------------
     # Analysis-ready training cube (materialized view)
     # ------------------------------------------------------------------
@@ -578,6 +656,8 @@ class CubeResolver:
         static_bands: list[str] | None = None,
         chunks: dict | None = None,
         overwrite: bool = False,
+        geometry_group_id: str | None = None,
+        track: int | None = None,
     ) -> Path:
         """Write an analysis-ready training cube for one geometry group.
 
@@ -621,8 +701,6 @@ class CubeResolver:
                 geometry group, is found on the tile.
             FileExistsError: If ``output_path`` exists and ``overwrite`` is False.
         """
-        import numpy as np
-
         out = Path(output_path)
         if out.exists() and not overwrite:
             raise FileExistsError(
@@ -630,19 +708,30 @@ class CubeResolver:
             )
 
         dyn_df = self.query(
-            tile_id=tile_id, product_type=dynamic_product_type, direction=direction
+            tile_id=tile_id, product_type=dynamic_product_type, direction=direction,
+            geometry_group_id=geometry_group_id, track=track,
         )
         if dyn_df.empty:
             raise ValueError(
                 f"No '{dynamic_product_type}' product for tile '{tile_id}'"
                 + (f" direction '{direction}'" if direction else "")
             )
+        _dyn_groups = dyn_df["geometry_group_id"].dropna().unique()
+        if len(_dyn_groups) > 1:
+            raise ValueError(
+                f"Multiple geometry groups match tile '{tile_id}': {list(_dyn_groups)}. "
+                "Pass geometry_group_id=... or track=...."
+            )
         dyn_rec = dyn_df.iloc[0]
         ggid = dyn_rec.get("geometry_group_id")
 
         # Geometry-correct static: match the dynamic product's geometry group
         # (same track+direction) so LIA/incidence belong to the same geometry.
-        stat_df = self.query(tile_id=tile_id, product_type="static", direction=direction)
+        stat_df = self.query(
+            tile_id=tile_id, product_type="static", direction=direction,
+            geometry_group_id=str(ggid) if ggid else geometry_group_id,
+            track=track,
+        )
         if ggid and "geometry_group_id" in stat_df.columns:
             _matched = stat_df[stat_df["geometry_group_id"] == ggid]
             if not _matched.empty:
@@ -659,13 +748,7 @@ class CubeResolver:
 
         # Window static onto the dynamic grid (exact; co-registered).
         if {"x", "y"} <= set(dyn.coords) and {"x", "y"} <= set(stat.coords):
-            _rx = np.asarray(dyn["x"].values)
-            _ry = np.asarray(dyn["y"].values)
-            _res = abs(float(_rx[1] - _rx[0])) if _rx.size > 1 else None
-            stat = stat.reindex(
-                x=_rx, y=_ry, method="nearest",
-                tolerance=(_res * 0.49 if _res else None),
-            )
+            stat = self._align_static_grid(stat, dyn)
         if static_bands:
             _keep = [b for b in static_bands if b in stat.data_vars]
             if _keep:

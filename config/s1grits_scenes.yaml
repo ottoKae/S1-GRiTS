@@ -29,6 +29,15 @@
 # Workflow type (validated by CLI)
 workflow: "scenes"
 
+# Optional integrated RTC-STATIC post-stage. Change only run_after_scenes to
+# true. It always writes all six raw-aligned layers for the exact dynamic
+# geometry groups produced by this run. Static never inherits scene filtering.
+static_layers:
+  run_after_scenes: false
+  grid_reference: "required"
+  reference_product_type: "auto"  # auto | smonthly | scenes
+  on_failure: "fail"              # fail | warn
+
 # ---------------------------------------------------------------------------
 # Metadata — product registry reference
 # ---------------------------------------------------------------------------

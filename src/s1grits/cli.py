@@ -3,7 +3,7 @@ CLI with subcommands structure
 
 Provides a professional CLI interface with subcommands:
 - s1grits process_scenes   --config config.yaml   (per-pass scenes + smonthly)
-- s1grits process_static   --config config.yaml   (static geometry layers)
+- s1grits static ensure    --output-dir ROOT --product-label LABEL
 - s1grits catalog  resync   --output-dir ./output
 - s1grits catalog  validate --output-dir ./output
 - s1grits catalog  inspect  --output-dir ./output
@@ -230,64 +230,25 @@ def _workflow_overrides(args) -> dict | None:
     return overrides or None
 
 
-def cmd_process_static(args):
-    """Run the static layer workflow (DEM, incidence angle map, layover/shadow mask)."""
-    from s1grits.workflow_static import run_static_layer_workflow
-    from s1grits.logger_config import setup_logging
-    import pandas as pd
-    import yaml
+def cmd_static_ensure(args):
+    """Create missing raw static companions from cataloged dynamic stores."""
+    from s1grits.workflow_static import ensure_static_from_catalog
 
-    config_path = Path(args.config)
-    if not config_path.exists():
-        console.print(f"[red]ERROR: Config file does not exist: {config_path}[/red]")
+    results = ensure_static_from_catalog(
+        args.output_dir,
+        product_label=args.product_label,
+        tile_ids=args.tile or None,
+    )
+    failures = {
+        tile: result for tile, result in results.items()
+        if result.get("status") not in ("success", "skipped")
+    }
+    for tile, result in sorted(results.items()):
+        status = "OK" if tile not in failures else "FAIL"
+        console.print(f"  {status:4s} {tile}: {result.get('error') or result.get('status')}")
+    if failures:
         sys.exit(1)
 
-    with open(config_path, 'r', encoding='utf-8') as f:
-        config = yaml.safe_load(f)
-
-    expected = config.get("workflow")
-    if expected and expected != "static":
-        console.print(
-            f"[red]ERROR: Config workflow='{expected}' but CLI is 'process_static'. "
-            f"Expected workflow='static'.[/red]"
-        )
-        sys.exit(1)
-
-    console.rule("[bold cyan]S1-GRiTS: Static Layer Workflow[/bold cyan]", style="cyan")
-    console.print(f"[dim]Config: {config_path}[/dim]\n")
-
-    log_file, logger_inst = setup_logging(config)
-    console.print(f"[dim]Log: {log_file}[/dim]\n")
-
-    from s1grits.product_registry import load_product_registry
-    _products = load_product_registry(workflow_config=config)
-    logger_inst.info("Product registry: %s", _products.config_path or "built-in defaults")
-    start_time = pd.Timestamp.now()
-    results = run_static_layer_workflow(config_path, overrides=_workflow_overrides(args))
-    duration = pd.Timestamp.now() - start_time
-
-    console.print(f"\nTotal time: [bold]{duration}[/bold]")
-
-    for tile_id, r in sorted(results.items()):
-        if r['status'] in ('success', 'skipped'):
-            groups = r.get('groups_written', [])
-            for g in groups:
-                layers_ok = [k for k, v in g.get('layers_written', {}).items() if v]
-                tag = "[dim]SKIP[/dim]" if g['status'] == 'skipped' else "[green]OK  [/green]"
-                console.print(
-                    f"  {tag} {tile_id} {g['name_prefix']}: "
-                    f"{layers_ok}"
-                )
-        else:
-            console.print(f"  [red]FAIL[/red] {tile_id}: {r['error']}")
-
-    n_ok = sum(1 for r in results.values() if r['status'] in ('success', 'skipped'))
-    if n_ok == len(results):
-        console.print("\n[bold green]Success![/bold green]\n")
-        sys.exit(0)
-    else:
-        console.print("\n[bold yellow]WARNING: Some tasks failed[/bold yellow]\n")
-        sys.exit(1)
 
 def cmd_catalog_validate(args):
     """Validate catalog schema integrity and STAC Item alignment"""
@@ -931,7 +892,7 @@ def main():
 Examples:
   # Run processing workflows
   s1grits process_scenes   --config config/s1grits_scenes.yaml    # per-pass scenes + smonthly
-  s1grits process_static   --config config/s1grits_static.yaml    # static geometry layers
+  s1grits static ensure --output-dir ./output --product-label smonthly_ASCENDING
 
   # Catalog management (resync rebuilds catalog.parquet + STAC from disk)
   s1grits catalog resync   --output-dir ./output
@@ -966,14 +927,24 @@ Examples:
         dest='command', metavar='<command>', help='Available commands'
     )
 
-    # ── process_static ───────────────────────────────────────────────────────
+    # ── static ensure ────────────────────────────────────────────────────────
     parser_static = subparsers.add_parser(
-        'process_static',
-        help='Generate static layers (DEM, incidence angle, layover/shadow mask) per MGRS tile'
+        'static', help='Manage raw static companions of dynamic products'
     )
-    parser_static.add_argument('--config', required=True, help='Path to YAML config file')
-    _add_output_flags(parser_static)
-    parser_static.set_defaults(func=cmd_process_static)
+    static_sub = parser_static.add_subparsers(dest='static_cmd', required=True)
+    p_static_ensure = static_sub.add_parser(
+        'ensure', help='Create static stores for cataloged scenes/smonthly stores'
+    )
+    p_static_ensure.add_argument('--output-dir', required=True, help='Shared DataCube root')
+    p_static_ensure.add_argument(
+        '--product-label', required=True,
+        help='Exact scenes_* or smonthly_* label from catalog.parquet',
+    )
+    p_static_ensure.add_argument(
+        '--tile', action='append', default=[],
+        help='Optional MGRS tile filter; repeat for multiple tiles',
+    )
+    p_static_ensure.set_defaults(func=cmd_static_ensure)
 
     # ── catalog ───────────────────────────────────────────────────────────────
     parser_catalog = subparsers.add_parser('catalog', help='Catalog management')

@@ -458,9 +458,12 @@ def process_scenes(config_path: str, **kwargs) -> subprocess.CompletedProcess:
     return s1grits('process_scenes', '--config', config_path, **kwargs)
 
 
-def process_static(config_path: str, **kwargs) -> subprocess.CompletedProcess:
-    """Run the static-layer workflow ('s1grits process_static')."""
-    return s1grits('process_static', '--config', config_path, **kwargs)
+def ensure_static(output_dir: str, product_label: str, **kwargs) -> subprocess.CompletedProcess:
+    """Ensure catalog-matched raw static companions for a dynamic product."""
+    return s1grits(
+        'static', 'ensure', '--output-dir', output_dir,
+        '--product-label', product_label, **kwargs,
+    )
 
 
 def catalog_resync(output_dir: str = './output', **kwargs) -> subprocess.CompletedProcess:

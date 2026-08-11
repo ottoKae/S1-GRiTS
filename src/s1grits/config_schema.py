@@ -33,6 +33,7 @@ KNOWN_KEYS: dict = {
         "flight_direction": None,
         "polarization": None,
         "min_tile_coverage_frac": None,
+        "track_numbers": None,
     },
     "time": {
         "full": None,
@@ -54,7 +55,7 @@ KNOWN_KEYS: dict = {
         "overwrite": None,
         "on_time_conflict": None,
         "disk_warn_gb": None,     # deprecated in favor of preflight.disk
-        "formats": {"cog": None, "preview": None},
+        "formats": {"cog": None, "preview": None, "zarr": None},
         "layout_mode": None,  # legacy monthly workflow only
     },
     "preflight": {
@@ -122,6 +123,22 @@ KNOWN_KEYS: dict = {
             "blockwise_threads": None,
             "trim_fraction": None,
         },
+    },
+    "static_layers": {
+        "enabled": None,
+        "run_after_scenes": None,
+        "on_failure": None,
+        "layers": None,
+        "grid_reference": None,
+        "reference_product_type": None,
+        "reference_product_label": None,
+        "target_resolution": None,
+        "zarr_chunks": {"y": None, "x": None},
+        "cog_block_size": None,
+        "query_batch_size": None,
+        "query_max_results": None,
+        "query_max_retries": None,
+        "query_retry_base_delay": None,
     },
     "logging": {
         "file_level": None,

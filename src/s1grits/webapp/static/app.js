@@ -738,7 +738,6 @@ function drawNobs(ts, x) {
 const TYPE_FORM = {
   process_scenes: { workflow: "scenes",  time: true,  outputs: true,  gaps: true },
   process:        { workflow: "monthly", time: true,  outputs: true,  gaps: false },
-  process_static: { workflow: "static",  time: false, outputs: false, gaps: false },
   doctor:         { workflow: "scenes",  time: true,  outputs: true,  gaps: false },
 };
 let jobTypes = {};          // /api/job-types payload: {type: {title, needs_config}}

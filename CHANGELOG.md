@@ -5,6 +5,31 @@ versions follow the tags on this repository. Entries before this file was
 introduced are summarised from the merged pull requests; see `git log` for
 the full history.
 
+## Unreleased
+
+### Added
+- Scenes YAML can set `static_layers.run_after_scenes: true` to create the six
+  matching raw RTC-STATIC layers as a lock-safe post-stage.
+- `s1grits static ensure` fills missing static products for an existing cube;
+  reruns skip complete geometry groups.
+- A Chinese README (`README.zh-CN.md`) mirrors the English project overview.
+
+### Changed
+- Static and dynamic products now share one base directory, root catalog, exact
+  pixel grid, and track-level `geometry_group_id`, including multi-track tokens
+  such as `TK18-19`.
+- Static production is restricted to the scenes YAML post-stage and the
+  catalog-backed `static ensure` command. The error-prone standalone static
+  YAML workflow has been removed.
+- Resolver access preserves static arrays as 2-D data and broadcasts them only
+  for requested model windows.
+
+### Fixed
+- Catalog resync and static discovery preserve exact grid identity per tile,
+  direction, and track.
+- Resolver stacking and training-cube materialization reject ambiguous tracks
+  and non-integer pixel-grid offsets instead of silently pairing or resampling.
+
 ## [3.0.0] - 2026-07
 
 The **development → stable** release: the deprecated legacy paths are retired

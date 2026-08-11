@@ -22,7 +22,7 @@ from s1grits import cli  # noqa: E402
 
 # Commands that must remain visible in the production help.
 RETAINED_VISIBLE = [
-    "process_scenes", "process_static",
+    "process_scenes", "static",
     "catalog", "tile", "mosaic", "mosaic_scenes", "doctor",
 ]
 # Dead references that must never reappear. `process`/`process_monthly` were the

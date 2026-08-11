@@ -666,6 +666,9 @@ def _write_scenes_output(
             _g_group.attrs['product_variant'] = _scenes_variant
             _g_group.attrs['processing_variant_json'] = json.dumps(_scenes_variant_vals)
             _g_group.attrs['product_label'] = product_label
+            _g_group.attrs['geometry_group_id'] = (
+                f"{mgrs_tile_id}_{direction_label}_TK{_track_tok}"
+            )
             _time_keys = (
                 np.asarray(pd.to_datetime(_g_group['time'][:]).strftime('%Y%m%dT%H%M%S'))
                 if _g_group['time'].shape[0] > 0 else np.asarray([], dtype=object)
@@ -703,6 +706,9 @@ def _write_scenes_output(
                 _g_group.attrs['product_variant'] = _scenes_variant
                 _g_group.attrs['processing_variant_json'] = json.dumps(_scenes_variant_vals)
                 _g_group.attrs['product_label'] = product_label
+                _g_group.attrs['geometry_group_id'] = (
+                    f"{mgrs_tile_id}_{direction_label}_TK{_track_tok}"
+                )
 
             _dt_ns = np.datetime64(acq_ts.to_datetime64(), 'ns')
             _time_index = _write_scene_timestep_blockwise(
