@@ -25,7 +25,8 @@ from s1grits.config_schema import (  # noqa: E402
 
 
 def _load(name: str) -> dict:
-    return yaml.safe_load((_ROOT / "config" / name).read_text())
+    # Shipped YAML is UTF-8; Windows' locale codec may be GBK.
+    return yaml.safe_load((_ROOT / "config" / name).read_text(encoding="utf-8"))
 
 
 # ---------------------------------------------------------------------------

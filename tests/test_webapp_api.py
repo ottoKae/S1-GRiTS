@@ -552,9 +552,11 @@ def test_resync_job_uses_the_real_cli_flag():
 
 def test_job_types_cover_datacube_lifecycle(client):
     types = client.get("/api/job-types").json()
-    for expected in ("process_scenes", "process",
-                     "catalog_resync", "doctor"):
+    for expected in ("process_scenes", "catalog_resync", "doctor"):
         assert expected in types, f"missing job type {expected}"
+    # v3 removed the standalone monthly ``process`` command. Monthly-only
+    # runs are process_scenes with processing.monthly.enabled/only=true.
+    assert "process" not in types
     assert types["catalog_resync"]["needs_config"] is False
 
 

@@ -55,11 +55,6 @@ JOB_TYPES: dict[str, dict] = {
         "needs_config": True,
         "title": "Scenes / monthly processing",
     },
-    "process": {
-        "args": ["process", "--config", "{config}"],
-        "needs_config": True,
-        "title": "Monthly workflow",
-    },
     "catalog_resync": {
         # NOTE: the CLI flag is --output-dir (a --dir job fails at argparse
         # before doing anything).
@@ -98,6 +93,11 @@ class Job:
     error: str | None = None
     # {tile: [batch, total]} plus derived pct
     progress: dict = field(default_factory=dict)
+    metadata: dict = field(default_factory=dict)
+    commands: list[list[str]] = field(default_factory=list, repr=False)
+    command_stages: list[str] = field(default_factory=list, repr=False)
+    current_command: int = 0
+    stage: str = "queued"
     job_dir: Path | None = None
     _proc: subprocess.Popen | None = field(default=None, repr=False)
     _cancel: bool = field(default=False, repr=False)
@@ -109,7 +109,7 @@ class Job:
             per_tile = {t: list(v) for t, v in self.progress.items()}
         done = sum(v[0] for v in per_tile.values())
         total = sum(v[1] for v in per_tile.values())
-        return {
+        result = {
             "id": self.id,
             "type": self.type,
             "title": self.title,
@@ -124,7 +124,12 @@ class Job:
                 "per_tile": per_tile,
                 "pct": round(100.0 * done / total, 1) if total else None,
             },
+            "current_command": self.current_command,
+            "command_total": len(self.commands) or 1,
+            "stage": self.stage,
         }
+        result.update(self.metadata)
+        return result
 
 
 class JobManager:
@@ -181,6 +186,66 @@ class JobManager:
         self._queue.put(job_id)
         return job
 
+    def submit_batch(
+        self,
+        configs: list[dict],
+        *,
+        output_dir: Path | str,
+        title: str,
+        metadata: dict | None = None,
+        catalog_gates: bool = True,
+    ) -> Job:
+        """Queue a server-built v3 workflow followed by Catalog gates.
+
+        This is intentionally separate from :meth:`submit`: callers provide
+        parsed configuration mappings, never arbitrary command lines.  Every
+        config is confined to ``output_dir``, which itself must remain inside
+        the served workspace.
+        """
+        target = Path(output_dir).resolve()
+        if target != self.root and not target.is_relative_to(self.root):
+            raise ValueError("Workflow output directory escapes the served workspace")
+        if not configs:
+            raise ValueError("At least one process_scenes config is required")
+
+        job_id = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
+        job_dir = self.jobs_dir / job_id
+        job_dir.mkdir(parents=True)
+        commands: list[list[str]] = []
+        stages: list[str] = []
+        for index, raw in enumerate(configs, 1):
+            cfg = self._sanitize_config_dict(raw, target)
+            cfg_path = job_dir / f"config_{index:02d}.yaml"
+            cfg_path.write_text(
+                yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False),
+                encoding="utf-8",
+            )
+            commands.append(self._cmd_prefix + ["process_scenes", "--config", str(cfg_path)])
+            stages.append("processing")
+        if catalog_gates:
+            commands.extend([
+                self._cmd_prefix + ["catalog", "resync", "--output-dir", str(target)],
+                self._cmd_prefix + ["catalog", "validate", "--output-dir", str(target)],
+                self._cmd_prefix + ["catalog", "doctor", "--strict", "--output-dir", str(target)],
+            ])
+            stages.extend(["validating", "validating", "validating"])
+
+        job = Job(
+            id=job_id,
+            type="workflow",
+            title=title,
+            job_dir=job_dir,
+            metadata=dict(metadata or {}),
+            commands=commands,
+            command_stages=stages,
+        )
+        with self._lock:
+            self._jobs[job_id] = job
+            self._order.append(job_id)
+        self._persist(job)
+        self._queue.put(job_id)
+        return job
+
     def list(self) -> list[dict]:
         with self._lock:
             ids = list(self._order)
@@ -214,6 +279,7 @@ class JobManager:
             proc = job._proc
             if job.status == "queued":
                 job.status = "cancelled"
+                job.stage = "cancelled"
                 job.ended_at = time.time()
         if proc is not None and proc.poll() is None:
             try:
@@ -242,15 +308,20 @@ class JobManager:
             raise ValueError(f"Config is not valid YAML: {exc}") from exc
         if not isinstance(cfg, dict):
             raise ValueError("Config must be a YAML mapping")
+        return self._sanitize_config_dict(cfg, self.root)
+
+    def _sanitize_config_dict(self, cfg: dict, output_dir: Path) -> dict:
+        """Copy and confine one parsed config to an approved output root."""
+        cfg = json.loads(json.dumps(cfg))
         out = cfg.setdefault("output", {})
         if not isinstance(out, dict):
             raise ValueError("output section must be a mapping")
         requested = out.get("base_dir")
-        out["base_dir"] = str(self.root)
-        if requested and Path(str(requested)).resolve() != self.root:
+        out["base_dir"] = str(output_dir)
+        if requested and Path(str(requested)).resolve() != output_dir:
             logger.info(
                 "Job config output.base_dir %r overridden to workspace %s",
-                requested, self.root,
+                requested, output_dir,
             )
         return cfg
 
@@ -278,33 +349,47 @@ class JobManager:
         return self._cmd_prefix + args
 
     def _run(self, job: Job) -> None:
-        args = self._build_args(job)
         log_path = job.job_dir / "log.txt"
         job.status = "running"
+        job.stage = "processing"
         job.started_at = time.time()
         self._persist(job)
 
         env = os.environ.copy()
         env.update(PYTHONIOENCODING="utf-8", PYTHONUTF8="1", PYTHONUNBUFFERED="1")
         try:
+            commands = job.commands or [self._build_args(job)]
+            stages = job.command_stages or ["processing"]
             with open(log_path, "w", encoding="utf-8") as log_fp:
-                proc = subprocess.Popen(
-                    args,
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, encoding="utf-8", errors="replace",
-                    bufsize=1, shell=False, env=env, cwd=str(self.root),
-                )
-                with job._lock:
-                    job._proc = proc
-                assert proc.stdout is not None
-                for raw in proc.stdout:
-                    line = _SENSITIVE.sub(r"\1: [REDACTED]", raw.rstrip("\r\n"))
-                    log_fp.write(line + "\n")
+                for index, args in enumerate(commands, 1):
+                    if job._cancel:
+                        break
+                    job.current_command = index
+                    job.stage = stages[index - 1]
+                    log_fp.write(
+                        f"[WEB] command {index}/{len(commands)} stage={job.stage}\n"
+                    )
                     log_fp.flush()
-                    job._log_lines += 1
-                    self._update_progress(job, line)
-                proc.wait()
-                job.returncode = proc.returncode
+                    self._persist(job)
+                    proc = subprocess.Popen(
+                        args,
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        text=True, encoding="utf-8", errors="replace",
+                        bufsize=1, shell=False, env=env, cwd=str(self.root),
+                    )
+                    with job._lock:
+                        job._proc = proc
+                    assert proc.stdout is not None
+                    for raw in proc.stdout:
+                        line = _SENSITIVE.sub(r"\1: [REDACTED]", raw.rstrip("\r\n"))
+                        log_fp.write(line + "\n")
+                        log_fp.flush()
+                        job._log_lines += 1
+                        self._update_progress(job, line)
+                    proc.wait()
+                    job.returncode = proc.returncode
+                    if proc.returncode != 0:
+                        break
         except FileNotFoundError as exc:
             job.error = f"CLI executable not found: {exc}"
             job.returncode = -1
@@ -315,10 +400,13 @@ class JobManager:
             job.ended_at = time.time()
             if job._cancel:
                 job.status = "cancelled"
+                job.stage = "cancelled"
             elif job.returncode == 0:
                 job.status = "success"
+                job.stage = "done"
             else:
                 job.status = "failed"
+                job.stage = "failed"
             with job._lock:
                 job._proc = None
             self._persist(job)
@@ -377,6 +465,17 @@ class JobManager:
                 t: list(v)
                 for t, v in (data.get("progress", {}).get("per_tile", {})).items()
             }
+            job.metadata = data.get("metadata") or {
+                key: data[key]
+                for key in (
+                    "workflow", "directions", "tiles", "years", "months",
+                    "output_subdir", "output_dir", "include_static",
+                    "static_layers", "plan_summary",
+                )
+                if key in data
+            }
+            job.current_command = int(data.get("current_command") or 0)
+            job.stage = data.get("stage") or "failed"
             status = data.get("status", "failed")
             # A job that was 'running' when the server died is orphaned.
             job.status = "failed" if status in ("running", "queued") else status

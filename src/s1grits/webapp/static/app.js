@@ -1,1123 +1,355 @@
-/* S1-GRiTS web UI v2.3 — framework-free ES module client of the /api surface.
- *
- * Sections: api · state · workspace · tiles/map · burst layer · filters ·
- * items table · coverage matrix · timeline strip · tabs/detail panel ·
- * time-series probe · job composer · jobs drawer.
- * Every capability used here is a plain HTTP endpoint (see /docs), so any
- * behaviour in this file can be reproduced headlessly with curl.
- */
+const state={workflow:'scenes',selectionMode:'tiles',aoi:null,plan:null,tasks:[],directory:'',directoryPurpose:'output',catalog:null,capabilities:null,mgrsVisible:true,mgrsCoverage:null};
+const queryToken=new URLSearchParams(location.search).get('token');
+if(queryToken)localStorage.setItem('s1grits_web_token',queryToken);
+const apiToken=queryToken||localStorage.getItem('s1grits_web_token')||'';
+let map=null,aoiLayer=null,resolvedGridLayer=null,mgrsGridLayer=null,mgrsRenderer=null,roadLayer=null,satelliteLayer=null,baseMode='road',tileErrorCount=0;
+let mgrsRequest=null,mgrsRequestSerial=0,mgrsLoadTimer=null,mgrsPermanentLabels=false,mapNoticeTimer=null;
+let activeLog=null,logPollTimer=null;
+const MGRS_VIEW_PADDING=.2;
+const $=id=>document.getElementById(id);
+const escapeHtml=value=>String(value??'').replace(/[&<>'"]/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
 
-"use strict";
+async function api(path,options={}){
+  const auth=apiToken?{'Authorization':`Bearer ${apiToken}`}:{},response=await fetch(path,{headers:{'Content-Type':'application/json',...auth,...(options.headers||{})},...options});
+  let body={}; try{body=await response.json()}catch{body={error:await response.text()}}
+  if(!response.ok) throw new Error(body.error||body.detail||`请求失败 (${response.status})`);
+  return body;
+}
 
-/* ================================ api ================================ */
+function buildTags(){
+  const current=state.capabilities?.current_year||new Date().getFullYear();
+  $('years').innerHTML=Array.from({length:current-2013},(_,i)=>2014+i).map(year=>`<label><input type="checkbox" value="${year}" ${year>=current-1?'checked':''}><span>${year}</span></label>`).join('');
+  $('months').innerHTML=Array.from({length:12},(_,i)=>`<label><input type="checkbox" value="${i+1}" checked><span>${i+1}</span></label>`).join('');
+}
 
-const TOKEN = new URLSearchParams(location.search).get("token")
-  || localStorage.getItem("s1grits_token") || "";
-if (TOKEN) localStorage.setItem("s1grits_token", TOKEN);
+function setWorkflow(workflow){
+  state.workflow=workflow;
+  document.querySelectorAll('[data-workflow]').forEach(el=>el.classList.toggle('active',el.dataset.workflow===workflow));
+  $('time-pane').hidden=false;
+  $('static-options').hidden=!$('include-static').checked;
+  $('smonthly').parentElement.style.display=workflow==='scenes'?'flex':'none';
+  if(workflow!=='scenes') $('smonthly').checked=false;
+}
 
-async function api(path, opts = {}) {
-  const headers = Object.assign(
-    { "Content-Type": "application/json" },
-    TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {},
-    opts.headers || {},
-  );
-  const resp = await fetch(path, Object.assign({}, opts, { headers }));
-  if (!resp.ok) {
-    let detail = resp.statusText;
-    try { detail = (await resp.json()).detail || detail; } catch { /* noop */ }
-    throw new Error(`${resp.status}: ${detail}`);
+function setSelection(mode){
+  state.selectionMode=mode;
+  document.querySelectorAll('[data-mode]').forEach(el=>el.classList.toggle('active',el.dataset.mode===mode));
+  $('tile-pane').hidden=mode!=='tiles'; $('aoi-pane').hidden=mode!=='aoi';
+}
+
+function polygonGeometry(value){
+  if(!value) return null;
+  if(value.type==='Feature') return polygonGeometry(value.geometry);
+  if(value.type==='FeatureCollection'){
+    const polygons=value.features.map(polygonGeometry).filter(Boolean);
+    const coordinates=[];
+    polygons.forEach(g=>{if(g.type==='Polygon') coordinates.push(g.coordinates); else coordinates.push(...g.coordinates)});
+    return {type:'MultiPolygon',coordinates};
   }
-  return resp.json();
+  if(value.type==='Polygon'||value.type==='MultiPolygon') return value;
+  throw new Error('仅支持 Polygon 或 MultiPolygon AOI');
 }
 
-function assetUrl(tile, relpath) {
-  const t = TOKEN ? `?token=${encodeURIComponent(TOKEN)}` : "";
-  return `/api/asset/${encodeURIComponent(tile)}/${relpath}${t}`;
+function polygons(geometry){
+  if(!geometry) return [];
+  return geometry.type==='Polygon'?[geometry.coordinates]:geometry.coordinates;
 }
 
-const $ = (id) => document.getElementById(id);
-const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
-  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-
-const BASE_TITLE = document.title;
-const DEFAULT_HINT = "Click a tile to filter · select a dataset, then click inside its footprint to probe";
-
-/* =============================== state =============================== */
-
-const state = {
-  tiles: [],
-  coverage: null,            // /api/coverage payload
-  gaps: [],                  // [{tile_id, month}] — 0-count months inside a tile's span
-  filters: { tile: "", product_type: "", direction: "", track: "", from: "", to: "" },
-  page: { offset: 0, limit: 100, total: 0 },
-  items: [],
-  months: {},                // YYYY-MM -> count (of the filtered set)
-  selected: null,            // selected item record
-  probeMarker: null,
-  jobs: [],
-  logView: { jobId: null, after: 0, timer: null },
-};
-
-/* ============================ workspace ============================= */
-
-async function loadWorkspace() {
-  const [health, ws] = await Promise.all([api("/api/health"), api("/api/workspace")]);
-  $("version-badge").textContent = `v${health.version}`;
-  $("workspace-chips").innerHTML = `
-    <span class="chip" title="${esc(ws.root)}">workspace <b>${esc(ws.root.split(/[\\/]/).pop())}</b></span>
-    <span class="chip">tiles <b>${ws.n_tiles}</b></span>
-    <span class="chip">items <b>${ws.n_items}</b></span>
-    <span class="chip">disk free <b>${ws.disk_free_gb} GB</b></span>`;
+function svgPath(geometry){
+  return polygons(geometry).map(poly=>poly.map(ring=>`M${ring.map(p=>`${Number(p[0]).toFixed(4)},${Number(p[1]).toFixed(4)}`).join(' L')} Z`).join(' ')).join(' ');
 }
 
-/* ============================ tiles / map ============================ */
-
-let map, tileLayerGroup, previewOverlay, burstLayer;
-
-function initMap() {
-  map = L.map("map", { zoomControl: true, attributionControl: true });
-  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-    maxZoom: 18,
-    attribution: "&copy; OpenStreetMap · CARTO",
-  }).addTo(map);
-  map.setView([0, 0], 3);
-  tileLayerGroup = L.layerGroup().addTo(map);
-  map.on("click", onMapClick);
+function showMapError(message,autoHideMs=0){
+  const box=$('map-error');clearTimeout(mapNoticeTimer);box.textContent=message;box.hidden=false;
+  if(autoHideMs>0)mapNoticeTimer=setTimeout(()=>{box.hidden=true},autoHideMs);
 }
 
-function renderTiles() {
-  tileLayerGroup.clearLayers();
-  const list = $("tile-list");
-  list.innerHTML = "";
-  const boundsAll = [];
-  for (const t of state.tiles) {
-    // Sidebar entry
-    const li = document.createElement("li");
-    li.className = state.filters.tile === t.tile_id ? "active" : "";
-    const warn = t.report && (t.report.n_incomplete || t.report.dropped_tracks?.length)
-      ? `<span class="t-warn" title="${t.report.n_incomplete} incomplete acquisition(s)">⚠</span>` : "";
-    li.innerHTML = `<span class="t-name">${esc(t.tile_id)} ${warn}</span>
-      <span class="t-meta">${t.n_items} items<br>${esc(t.month_min || "")}→${esc(t.month_max || "")}</span>`;
-    li.onclick = () => { setFilter("tile", state.filters.tile === t.tile_id ? "" : t.tile_id); };
-    list.appendChild(li);
+function setMgrsWarning(message=''){
+  const button=$('toggle-mgrs');button.classList.toggle('warning',Boolean(message));
+  button.title=message||'缩放至4级后显示MGRS格网';
+}
 
-    // Map footprint. Preference order:
-    //  1. mgrs_geojson — the DEFINITIVE tile boundary from the packaged MGRS
-    //     reference table (never derived from the Zarr/catalog grid, which is
-    //     the burst-union master grid and overshoots the tile);
-    //  2. outline4326 — the reprojected processing-grid perimeter (fallback);
-    //  3. bounds4326 — axis-aligned bbox (last resort).
-    if (t.mgrs_geojson || t.bounds4326 || t.outline4326) {
-      const active = state.filters.tile === t.tile_id;
-      const style = {
-        color: active ? "#6fe3b4" : "#4da3ff",
-        weight: active ? 2.5 : 1.2,
-        fillOpacity: active ? 0.12 : 0.05,
-      };
-      const shape = t.mgrs_geojson
-        ? L.geoJSON({ type: "Feature", geometry: t.mgrs_geojson, properties: {} },
-                    { style })
-        : (t.outline4326 ? L.polygon(t.outline4326, style)
-                         : L.rectangle(t.bounds4326, style));
-      shape.addTo(tileLayerGroup);
-      boundsAll.push(shape.getBounds());
-      shape.bindTooltip(`${t.tile_id} · ${t.n_items} items`, { sticky: true });
-      shape.on("click", (e) => {
-        L.DomEvent.stop(e);
-        setFilter("tile", state.filters.tile === t.tile_id ? "" : t.tile_id);
-      });
-    }
-  }
-  if (boundsAll.length && !map._fittedOnce) {
-    map.fitBounds(boundsAll.reduce((a, b) => a.extend(b)), { padding: [24, 24] });
-    map._fittedOnce = true;
+function setMgrsStatus(message,isError=false){if(isError){setMgrsWarning(message);showMapError(message,4500)}}
+
+function expandedViewport(){
+  const bounds=map.getBounds(),west=Math.max(-180,bounds.getWest()),east=Math.min(180,bounds.getEast()),south=Math.max(-85.051129,bounds.getSouth()),north=Math.min(85.051129,bounds.getNorth());
+  const dx=(east-west)*MGRS_VIEW_PADDING,dy=(north-south)*MGRS_VIEW_PADDING;
+  return {west:Math.max(-180,west-dx),south:Math.max(-85.051129,south-dy),east:Math.min(180,east+dx),north:Math.min(85.051129,north+dy)};
+}
+
+function viewportCovered(coverage){
+  if(!coverage||coverage.zoom!==map.getZoom())return false;
+  const bounds=map.getBounds();
+  return bounds.getWest()>=coverage.west&&bounds.getEast()<=coverage.east&&bounds.getSouth()>=coverage.south&&bounds.getNorth()<=coverage.north;
+}
+
+function addMgrsTile(tileId){
+  const values=$('tiles').value.split(/[\s,;]+/).map(value=>value.trim().toUpperCase()).filter(Boolean);
+  if(!values.includes(tileId))values.push(tileId);
+  $('tiles').value=values.join('\n');setSelection('tiles');
+  setMgrsStatus(`已将 ${tileId} 加入瓦片输入`);if(map)map.closePopup();
+}
+
+function bindMgrsFeature(feature,layer){
+  const tileId=feature.properties.tile_id,epsg=feature.properties.utm_epsg;
+  layer.bindTooltip(tileId,{sticky:!mgrsPermanentLabels,permanent:mgrsPermanentLabels,direction:'center',className:'mgrs-label'});
+  layer.bindPopup(`<b>${escapeHtml(tileId)}</b><br>生产投影：EPSG:${escapeHtml(epsg)}<br><button type="button" class="mgrs-add" onclick="addMgrsTile('${escapeHtml(tileId)}')">加入瓦片输入</button>`);
+}
+
+async function loadMgrsGrid(force=false){
+  if(!map||!mgrsGridLayer)return;
+  if(!state.mgrsVisible){mgrsGridLayer.clearLayers();state.mgrsCoverage=null;setMgrsWarning();return}
+  const minZoom=state.capabilities?.mgrs_map?.min_zoom??4,zoom=map.getZoom();
+  if(zoom<minZoom){if(mgrsRequest)mgrsRequest.abort();mgrsGridLayer.clearLayers();state.mgrsCoverage=null;setMgrsWarning(`放大至 ${minZoom} 级显示MGRS格网`);return}
+  if(!force&&viewportCovered(state.mgrsCoverage))return;
+  const coverage=expandedViewport(),bbox=[coverage.west,coverage.south,coverage.east,coverage.north].map(value=>value.toFixed(6)).join(',');
+  if(mgrsRequest)mgrsRequest.abort();mgrsRequest=new AbortController();const serial=++mgrsRequestSerial;
+  setMgrsStatus('正在加载MGRS格网…');
+  try{
+    const data=await api(`/api/map/mgrs?bbox=${encodeURIComponent(bbox)}&zoom=${zoom}`,{signal:mgrsRequest.signal});
+    if(serial!==mgrsRequestSerial)return;
+    if(data.truncated){mgrsGridLayer.clearLayers();state.mgrsCoverage=null;setMgrsStatus(`当前视窗包含 ${data.count} 个格网，请继续放大`,true);return}
+    setMgrsWarning();mgrsPermanentLabels=zoom>=7&&data.returned<=300;mgrsGridLayer.clearLayers();mgrsGridLayer.addData(data.features);
+    state.mgrsCoverage={...coverage,zoom};setMgrsStatus(`MGRS参考格网 ${data.returned} 个 · z${zoom}`);
+  }catch(error){
+    if(error.name==='AbortError')return;
+    state.mgrsCoverage=null;setMgrsStatus(`MGRS参考格网加载失败：${error.message}`,true);
   }
 }
 
-async function showPreviewOverlay(item) {
-  if (previewOverlay) { map.removeLayer(previewOverlay); previewOverlay = null; }
-  if (!(item && item.preview_path)) return;
-  // The catalog row's bounds4326 describe the FULL master grid; the preview
-  // PNG covers only the tile-clipped crop. Ask the server for the asset's
-  // TRUE footprint so the image is not stretched over the grid extent.
-  let bounds = item.bounds4326;
-  try {
-    const b = await api(
-      `/api/asset-bounds/${encodeURIComponent(item.tile_id)}/${item.preview_path}`);
-    if (b.bounds4326) bounds = b.bounds4326;
-  } catch { /* fall back to grid bounds */ }
-  if (!bounds) return;
-  if (state.selected !== item) return;  // stale response after re-selection
-  previewOverlay = L.imageOverlay(
-    assetUrl(item.tile_id, item.preview_path), bounds,
-    { opacity: 0.85, interactive: false },
-  ).addTo(map);
-  map.fitBounds(bounds, { padding: [30, 30] });
+function scheduleMgrsLoad(force=false){
+  clearTimeout(mgrsLoadTimer);mgrsLoadTimer=setTimeout(()=>loadMgrsGrid(force),180);
 }
 
-async function onMapClick(e) {
-  const it = state.selected;
-  if (!it || !it.zarr_path) return;
-  const b = it.bounds4326;
-  if (b && (e.latlng.lat < b[0][0] || e.latlng.lat > b[1][0]
-         || e.latlng.lng < b[0][1] || e.latlng.lng > b[1][1])) return;
-  if (state.probeMarker) map.removeLayer(state.probeMarker);
-  state.probeMarker = L.circleMarker(e.latlng, {
-    radius: 6, color: "#ffb454", weight: 2, fillOpacity: 0.6,
-  }).addTo(map);
-  await loadProbe(it, e.latlng.lng, e.latlng.lat);
+function initMap(){
+  if(typeof L==='undefined'){showMapError('项目内置 Leaflet 资源未加载，请重新安装 S1-GRiTS Web 组件并重启服务。');return}
+  map=L.map('map',{center:[34.5,105],zoom:4,zoomControl:true,worldCopyJump:false,preferCanvas:true,maxBounds:[[-85.051129,-180],[85.051129,180]],maxBoundsViscosity:1});
+  map.createPane('mgrsReferencePane');map.getPane('mgrsReferencePane').style.zIndex=410;
+  map.createPane('aoiPane');map.getPane('aoiPane').style.zIndex=440;
+  map.createPane('resolvedGridPane');map.getPane('resolvedGridPane').style.zIndex=450;
+  roadLayer=L.tileLayer('https://{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}',{maxZoom:19,subdomains:['mt0','mt1','mt2','mt3'],attribution:'&copy; Google',keepBuffer:2,noWrap:true});
+  satelliteLayer=L.tileLayer('https://{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',{maxZoom:19,subdomains:['mt0','mt1','mt2','mt3'],attribution:'Imagery &copy; Google',keepBuffer:2,noWrap:true});
+  [roadLayer,satelliteLayer].forEach(layer=>layer.on('tileerror',()=>{tileErrorCount+=1;if(tileErrorCount===4)showMapError('在线底图暂时无法访问；MGRS格网、AOI与服务端相交计算仍可正常使用。')}));
+  mgrsRenderer=L.canvas({pane:'mgrsReferencePane',padding:.5});
+  mgrsGridLayer=L.geoJSON(null,{renderer:mgrsRenderer,pane:'mgrsReferencePane',style:{color:'#49675d',weight:.7,opacity:.62,fill:false,interactive:true},onEachFeature:bindMgrsFeature}).addTo(map);
+  roadLayer.addTo(map);aoiLayer=L.layerGroup().addTo(map);resolvedGridLayer=L.layerGroup().addTo(map);
+  map.on('moveend zoomend',()=>scheduleMgrsLoad());scheduleMgrsLoad(true);
+  window.addEventListener('resize',()=>map.invalidateSize());setTimeout(()=>map.invalidateSize(),100);
 }
 
-/* ---------- burst footprint reference layer (toggleable) ---------- */
+function setBaseMap(mode){
+  baseMode=mode;if(!map)return;
+  [roadLayer,satelliteLayer].forEach(layer=>{if(layer&&map.hasLayer(layer))map.removeLayer(layer)});
+  if(mode==='road')roadLayer.addTo(map);else if(mode==='satellite')satelliteLayer.addTo(map);
+  document.querySelectorAll('[data-basemap]').forEach(el=>el.classList.toggle('active',el.dataset.basemap===mode));
+}
 
-let burstCache = null;   // { key, geojson } — one fetch per tile set
+function toggleMgrs(){
+  state.mgrsVisible=!state.mgrsVisible;const button=$('toggle-mgrs');button.classList.toggle('active',state.mgrsVisible);button.setAttribute('aria-pressed',String(state.mgrsVisible));
+  if(state.mgrsVisible){if(!map.hasLayer(mgrsGridLayer))mgrsGridLayer.addTo(map);scheduleMgrsLoad(true)}else{if(mgrsRequest)mgrsRequest.abort();mgrsGridLayer.clearLayers();state.mgrsCoverage=null;setMgrsWarning()}
+}
 
-async function updateBurstLayer() {
-  if (burstLayer) { map.removeLayer(burstLayer); burstLayer = null; }
-  if (!$("layer-bursts").checked) { $("map-hint").textContent = DEFAULT_HINT; return; }
-  if (!state.tiles.length) {
-    $("map-hint").textContent = "No tiles in the workspace yet — burst footprints need at least one tile";
-    return;
+function drawAOI(){
+  if(!map||!aoiLayer)return;aoiLayer.clearLayers();
+  if(state.aoi){const layer=L.geoJSON(state.aoi,{pane:'aoiPane',style:{color:'#c8781b',weight:2,dashArray:'7 5',fillColor:'#e49b33',fillOpacity:.16}}).addTo(aoiLayer);map.fitBounds(layer.getBounds(),{padding:[25,25],maxZoom:9})}
+}
+
+function drawPlan(plan){
+  if(map&&resolvedGridLayer){resolvedGridLayer.clearLayers();const collection={type:'FeatureCollection',features:plan.tile_features||[]};const layer=L.geoJSON(collection,{pane:'resolvedGridPane',style:{color:'#176b51',weight:1.5,fillColor:'#23926e',fillOpacity:.23},onEachFeature:(feature,item)=>item.bindPopup(`<b>${escapeHtml(feature.properties.tile_id)}</b><br>EPSG:${feature.properties.utm_epsg}`)}).addTo(resolvedGridLayer);if(layer.getLayers().length)map.fitBounds(layer.getBounds(),{padding:[28,28],maxZoom:9})}
+}
+
+function applyBBox(){
+  const w=Number($('west').value),e=Number($('east').value),s=Number($('south').value),n=Number($('north').value);
+  if(![w,e,s,n].every(Number.isFinite)||w>=e||s>=n||w<70||e>140||s<10||n>55){
+    $('aoi-status').textContent='请输入中国区域内有效的西、东、南、北边界。'; return;
   }
-  const key = state.tiles.map((t) => t.tile_id).sort().join(",");
-  try {
-    if (!burstCache || burstCache.key !== key) {
-      $("map-hint").textContent = "Loading burst footprints…";
-      // Fetch BOTH passes once; the direction dropdown filters client-side
-      // (features carry orbit_pass from the LUT), so toggling is instant.
-      const geojson = await api(`/api/bursts?tiles=${encodeURIComponent(key)}`);
-      burstCache = { key, geojson };
-    }
-    if (!$("layer-bursts").checked) return;   // toggled off while loading
-    const dir = $("burst-direction").value;
-    const PASS_COLORS = { ASCENDING: "#ffb454", DESCENDING: "#c792ea" };
-    let n = 0;
-    burstLayer = L.geoJSON(burstCache.geojson, {
-      filter: (f) => !dir || f.properties.orbit_pass === dir,
-      style: (f) => ({
-        color: PASS_COLORS[f.properties.orbit_pass] || "#ffb454",
-        weight: 1, dashArray: "4 3", fill: false, opacity: 0.75,
-      }),
-      onEachFeature: (f, layer) => {
-        n++;
-        layer.bindTooltip(
-          `${f.properties.jpl_burst_id} · TK${f.properties.track} · ${f.properties.orbit_pass}`,
-          { sticky: true });
-        layer.on("click", (e) => onMapClick(e));   // keep probing usable through the overlay
-      },
-    }).addTo(map);
-    const dirLabel = dir ? dir.toLowerCase() : "asc+desc";
-    $("map-hint").textContent = `${n} burst footprint(s) (${dirLabel}) · ${DEFAULT_HINT}`;
-  } catch (err) {
-    $("map-hint").textContent = `Burst layer: ${err.message}`;
-  }
+  state.aoi={type:'Polygon',coordinates:[[[w,s],[e,s],[e,n],[w,n],[w,s]]]};
+  $('aoi-status').textContent=`矩形 AOI：${w}, ${s} — ${e}, ${n}（EPSG:4326）`; drawAOI();
 }
 
-/* ============================== filters ============================== */
-
-function setFilter(key, value) {
-  state.filters[key] = value;
-  state.page.offset = 0;
-  syncFilterControls();
-  refresh();
-}
-
-function syncFilterControls() {
-  $("f-tile").value = state.filters.tile;
-  $("f-product").value = state.filters.product_type;
-  $("f-direction").value = state.filters.direction;
-  $("f-track").value = state.filters.track;
-  $("f-from").value = state.filters.from;
-  $("f-to").value = state.filters.to;
-}
-
-function populateFilterOptions() {
-  const opt = (v, label) => `<option value="${esc(v)}">${esc(label ?? v)}</option>`;
-  $("f-tile").innerHTML = opt("", "All tiles")
-    + state.tiles.map((t) => opt(t.tile_id)).join("");
-  const products = new Set(), dirs = new Set(), tracks = new Set();
-  for (const t of state.tiles) {
-    (t.product_types || []).forEach((p) => products.add(p));
-    (t.directions || []).forEach((d) => dirs.add(d));
-    (t.tracks || []).forEach((k) => tracks.add(k));
-  }
-  $("f-product").innerHTML = opt("", "All products") + [...products].sort().map((p) => opt(p)).join("");
-  $("f-direction").innerHTML = opt("", "All directions") + [...dirs].sort().map((d) => opt(d)).join("");
-  $("f-track").innerHTML = opt("", "All tracks") + [...tracks].sort((a, b) => a - b).map((k) => opt(k, `TK${k}`)).join("");
-}
-
-function bindFilterEvents() {
-  $("f-tile").onchange = (e) => setFilter("tile", e.target.value);
-  $("f-product").onchange = (e) => setFilter("product_type", e.target.value);
-  $("f-direction").onchange = (e) => setFilter("direction", e.target.value);
-  $("f-track").onchange = (e) => setFilter("track", e.target.value);
-  $("f-from").onchange = (e) => setFilter("from", e.target.value);
-  $("f-to").onchange = (e) => setFilter("to", e.target.value);
-  $("btn-clear-filters").onclick = () => {
-    state.filters = { tile: "", product_type: "", direction: "", track: "", from: "", to: "" };
-    state.page.offset = 0;
-    syncFilterControls();
-    refresh();
+function selected(selector){return [...document.querySelectorAll(selector+':checked')].map(el=>Number(el.value))}
+function payload(){
+  return {
+    workflow:state.workflow,selection_mode:state.selectionMode,
+    tiles:$('tiles').value,aoi:state.aoi,direction:$('direction').value,
+    years:selected('#years input'),months:selected('#months input'),output_subdir:$('output').value,
+    zarr_only:$('zarr-only').checked,include_static:$('include-static').checked,smonthly:$('smonthly').checked,
+    target_resolution:Number($('resolution').value),max_workers:Number($('workers').value),
+    spatial_despeckle:$('despeckle').checked,features_ratio:$('ratio').checked,features_rvi:$('rvi').checked,
+    static_layers:[...document.querySelectorAll('[name=static-layer]:checked')].map(el=>el.value)
   };
 }
 
-/* ============================ items table ============================ */
-
-async function loadItems() {
-  const f = state.filters;
-  const q = new URLSearchParams();
-  if (f.tile) q.set("tile", f.tile);
-  if (f.product_type) q.set("product_type", f.product_type);
-  if (f.direction) q.set("direction", f.direction);
-  if (f.track) q.set("track", f.track);
-  if (f.from) q.set("month_from", f.from);
-  if (f.to) q.set("month_to", f.to);
-  q.set("limit", state.page.limit);
-  q.set("offset", state.page.offset);
-  const data = await api(`/api/items?${q}`);
-  state.items = data.items;
-  state.months = data.months;
-  state.page.total = data.total;
-  renderItems();
-  drawTimeline();
+async function preflight(){
+  const button=$('submit'); button.disabled=true; $('form-message').textContent='正在执行空间、容量与配置预检…';
+  try{
+    const plan=await api('/api/plan',{method:'POST',body:JSON.stringify(payload())}); state.plan=plan; drawPlan(plan);
+    const temporal=`${plan.years.join('、')} 年 · ${plan.months.length} 个月份`,products=plan.include_static?`${plan.workflow} + static`:plan.workflow;
+    $('plan-summary').innerHTML=`<dl><dt>产品</dt><dd>${escapeHtml(products)}</dd><dt>瓦片</dt><dd>${plan.tiles.length} 个：${escapeHtml(plan.tiles.slice(0,18).join(', '))}${plan.tiles.length>18?' …':''}</dd><dt>轨道</dt><dd>${escapeHtml(plan.directions.join(' → '))}</dd><dt>时间</dt><dd>${escapeHtml(temporal)}</dd><dt>输出</dt><dd><code>${escapeHtml(plan.output_dir)}</code></dd><dt>规划估算</dt><dd>${plan.raw_gib.toFixed(3)} GiB</dd></dl><p class="hint">${escapeHtml(plan.estimate_note)}</p>`;
+    const needs=Boolean(plan.confirmation_phrase); $('phrase-wrap').hidden=!needs; $('phrase').value=''; $('phrase').placeholder=needs?plan.confirmation_phrase:'';
+    $('confirm-dialog').showModal(); $('form-message').textContent='预检通过，请核对规划。';
+  }catch(error){$('form-message').textContent=error.message}
+  finally{button.disabled=false}
 }
 
-function renderItems() {
-  const body = $("items-body");
-  body.innerHTML = "";
-  for (const it of state.items) {
-    const tr = document.createElement("tr");
-    if (state.selected && state.selected.item_id === it.item_id) tr.className = "active";
-    const assets = [];
-    if (it.preview_path) assets.push(`<a href="${assetUrl(it.tile_id, it.preview_path)}" target="_blank">png</a>`);
-    if (it.cog_path) assets.push(`<a href="${assetUrl(it.tile_id, it.cog_path)}" target="_blank">cog</a>`);
-    if (it.zarr_path) assets.push(`<span class="muted" title="${esc(it.zarr_path)}">zarr</span>`);
-    tr.innerHTML = `
-      <td title="${esc(it.item_id)}">${esc((it.item_id || "").slice(0, 44))}</td>
-      <td>${esc(it.tile_id)}</td>
-      <td>${esc(it.product_type)}</td>
-      <td>${it.track != null ? "TK" + esc(it.track) : "—"}</td>
-      <td>${esc(it.month || (it.datetime || "").slice(0, 10))}</td>
-      <td>${it.n_scenes ?? "—"}</td>
-      <td class="asset-links">${assets.join(" ")}</td>`;
-    tr.onclick = (e) => { if (e.target.tagName !== "A") selectItem(it); };
-    body.appendChild(tr);
-  }
-  $("items-count").textContent = `(${state.page.total})`;
-  const { offset, limit, total } = state.page;
-  $("pg-label").textContent = total
-    ? `${offset + 1}–${Math.min(offset + limit, total)} of ${total}` : "no items";
-  $("pg-prev").disabled = offset <= 0;
-  $("pg-next").disabled = offset + limit >= total;
+async function confirmTask(event){
+  event.preventDefault(); if(!state.plan)return;
+  const button=$('confirm-run'); button.disabled=true;
+  try{
+    const task=await api('/api/tasks',{method:'POST',body:JSON.stringify({plan_id:state.plan.plan_id,confirmation:$('phrase').value})});
+    $('confirm-dialog').close(); state.plan=null; $('form-message').textContent=`任务 ${task.run_id} 已进入队列。`; await loadTasks();
+  }catch(error){$('form-message').textContent=error.message}
+  finally{button.disabled=false}
 }
 
-function bindPager() {
-  $("pg-prev").onclick = () => { state.page.offset = Math.max(0, state.page.offset - state.page.limit); loadItems(); };
-  $("pg-next").onclick = () => { state.page.offset += state.page.limit; loadItems(); };
+const statusNames={queued:'排队中',running:'处理中',processing:'影像处理',static:'静态图层',validating:'目录复验',associating:'关联复验',done:'已完成',failed:'失败',cancelled:'已取消',cancelling:'取消中',interrupted:'已中断'};
+function taskCard(task){
+  const progress=Math.max(0,Math.min(1,Number(task.progress)||0));
+  const temporal=`${(task.years||[]).join(',')} · ${(task.months||[]).length}月`;
+  const productLabel=task.include_static?`${task.workflow} + static`:task.workflow;
+  const action=!['done','failed','cancelled','interrupted'].includes(task.status)?`<button class="secondary" onclick="cancelTask('${task.run_id}')">取消</button>`:'';
+  const association=task.validation?.static_association?` · Static关联 ${task.validation.static_association.pairs_checked}`:'';
+  const validation=task.validation?`<div class="task-meta ok">Catalog ${task.validation.records} 条 · ${task.validation.tiles} 瓦片${association}</div>`:'';
+  const error=task.error?`<div class="task-meta error" title="${escapeHtml(task.error)}">${escapeHtml(task.error)}</div>`:'';
+  const catalogArgument=escapeHtml(JSON.stringify(task.output_subdir||''));
+  return `<article class="task-card"><div class="task-title"><b>${escapeHtml(productLabel)} · ${(task.tiles||[]).length} 瓦片</b><span class="badge ${escapeHtml(task.status)}">${statusNames[task.stage]||statusNames[task.status]||escapeHtml(task.status)}</span></div><div class="task-meta">${escapeHtml((task.directions||[]).join(' + '))} · ${escapeHtml(temporal)}</div><div class="task-meta" title="${escapeHtml(task.output_dir)}">${escapeHtml(task.output_subdir)}</div><div class="progress"><i style="width:${progress*100}%"></i></div>${validation}${error}<div class="task-actions"><button class="secondary" onclick="openLog('${task.run_id}')">日志</button>${action}<button class="secondary" onclick="catalogFor(${catalogArgument})">检索结果</button></div></article>`;
 }
 
-/* ========================= coverage matrix ========================== */
+async function loadTasks(){
+  try{state.tasks=await api('/api/tasks'); $('tasks').innerHTML=state.tasks.length?state.tasks.map(taskCard).join(''):''}catch(error){$('tasks').innerHTML=`<div class="empty error">${escapeHtml(error.message)}</div>`}
+}
+async function cancelTask(id){if(!confirm('确认取消该任务及其子进程？'))return; try{await api(`/api/tasks/${id}`,{method:'DELETE'});await loadTasks()}catch(error){alert(error.message)}}
+function formatBytes(value){const bytes=Number(value)||0;if(bytes<1024)return `${bytes} B`;if(bytes<1024**2)return `${(bytes/1024).toFixed(1)} KiB`;return `${(bytes/1024**2).toFixed(1)} MiB`}
 
-/* Tiles × months heat-strip: the spatial↔temporal bridge. Each row is a
- * tile, each column a month on a CONTINUOUS axis; red cells are months with
- * zero composites inside that tile's own [first, last] span — the gaps the
- * "Patch coverage gaps" button turns into a download config. */
-
-function monthAxis(first, last) {
-  const axis = [];
-  let [y, m] = first.split("-").map(Number);
-  const [ey, em] = last.split("-").map(Number);
-  while (y < ey || (y === ey && m <= em)) {
-    axis.push(`${y}-${String(m).padStart(2, "0")}`);
-    m++; if (m > 12) { m = 1; y++; }
-  }
-  return axis;
+function renderTaskStages(task){
+  const stages=[['queued','排队'],['processing','影像']];
+  if(task.include_static)stages.push(['static','静态层']);
+  stages.push(['validating','Catalog']);if(task.include_static)stages.push(['associating','关联']);stages.push(['done','完成']);
+  const current=stages.findIndex(([key])=>key===task.stage),terminal=['failed','cancelled','interrupted'].includes(task.status);
+  $('task-stage-track').innerHTML=stages.map(([key,label],index)=>{
+    let cls='';if(task.status==='done'||index<current)cls='done';else if(index===current)cls=terminal?'failed':'active';
+    return `<span class="stage-pill ${cls}">${escapeHtml(label)}</span>`;
+  }).join('')+(terminal?`<span class="stage-pill failed">${escapeHtml(statusNames[task.status]||task.status)}</span>`:'');
 }
 
-async function loadCoverage() {
-  try { state.coverage = await api("/api/coverage"); }
-  catch { state.coverage = null; }
-  drawCoverage();
+function appendTaskEvents(events,reset=false){
+  const box=$('task-events');if(reset)box.innerHTML='';
+  if(events.length)box.insertAdjacentHTML('beforeend',events.map(event=>`<div class="task-event ${escapeHtml(event.level||'info')}"><time>${escapeHtml(event.timestamp||'')}</time><b>${escapeHtml(statusNames[event.stage]||event.event||'事件')}</b>${event.message?`<div>${escapeHtml(event.message)}</div>`:''}</div>`).join(''));
+  while(box.children.length>200)box.firstElementChild.remove();
+  if($('log-follow').checked)box.scrollTop=box.scrollHeight;
 }
 
-/* Layout: a fixed tile-label column (HTML, outside the scroll) + a
- * horizontally scrollable canvas with a MINIMUM cell width, so a decade of
- * months (2016–2026 ≈ 132 columns) scrolls instead of being squeezed into
- * sub-pixel cells with overlapping labels. Header = alternating year bands
- * with centred year labels + month ticks whose density adapts to zoom. */
-
-const COV = { rowH: 18, headH: 30, minCellW: 14 };
-
-function drawCoverage() {
-  const canvas = $("coverage-matrix");
-  const scroll = $("coverage-scroll");
-  const labels = $("cov-labels");
-  const ctx = canvas.getContext("2d");
-  const dpr = devicePixelRatio;
-  const tiles = state.coverage ? state.coverage.tiles : [];
-  const monthsAll = state.coverage ? state.coverage.months_all : [];
-  state.gaps = [];
-  labels.innerHTML = "";
-  if (!tiles.length || !monthsAll.length) {
-    canvas.style.width = "100%";
-    canvas.style.height = "24px";
-    canvas.width = (scroll.clientWidth || 300) * dpr;
-    canvas.height = 24 * dpr;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    $("coverage-caption").textContent = "no coverage yet — queue a download to populate the workspace";
-    canvas._grid = null;
-    return;
-  }
-
-  const axis = monthAxis(monthsAll[0], monthsAll[monthsAll.length - 1]);
-  const { rowH, headH } = COV;
-  // Few months: stretch to fill the panel. Many months: fixed width + scroll.
-  const avail = Math.max(scroll.clientWidth - 2, 200);
-  const cellW = Math.max(COV.minCellW, Math.floor(avail / axis.length));
-  const cssW = axis.length * cellW;
-  const cssH = headH + tiles.length * rowH + 2;
-  canvas.style.width = `${cssW}px`;
-  canvas.style.height = `${cssH}px`;
-  canvas.width = cssW * dpr;
-  canvas.height = cssH * dpr;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);   // draw in CSS pixels
-  ctx.clearRect(0, 0, cssW, cssH);
-
-  // ---- header: year bands + month ticks --------------------------------
-  const yearOf = (mo) => mo.slice(0, 4);
-  let i0 = 0;
-  ctx.textBaseline = "middle";
-  while (i0 < axis.length) {
-    const yr = yearOf(axis[i0]);
-    let i1 = i0;
-    while (i1 + 1 < axis.length && yearOf(axis[i1 + 1]) === yr) i1++;
-    const x = i0 * cellW, w = (i1 - i0 + 1) * cellW;
-    // Alternating band over the whole column block, so year boundaries stay
-    // readable even when scrolled to the middle of the range.
-    ctx.fillStyle = (+yr % 2) ? "rgba(77,163,255,.05)" : "rgba(0,0,0,0)";
-    ctx.fillRect(x, 0, w, cssH);
-    ctx.fillStyle = "#c8d3e6";
-    ctx.font = "bold 10px sans-serif";
-    ctx.textAlign = "center";
-    if (w >= 34) ctx.fillText(yr, x + w / 2, 8);
-    else if (i0 === 0 || axis[i0].endsWith("-01")) {
-      ctx.textAlign = "left";
-      ctx.fillText(`’${yr.slice(2)}`, x + 2, 8);
-    }
-    // year separator
-    ctx.strokeStyle = "#2a3549";
-    ctx.beginPath(); ctx.moveTo(x + 0.5, 0); ctx.lineTo(x + 0.5, cssH); ctx.stroke();
-    i0 = i1 + 1;
-  }
-  // Month ticks: every month if roomy, quarters when tight.
-  const labelEvery = cellW >= 22 ? 1 : 3;
-  ctx.font = "9px sans-serif";
-  ctx.textAlign = "center";
-  axis.forEach((mo, i) => {
-    const m = +mo.slice(5);
-    const x = i * cellW;
-    ctx.strokeStyle = "#2a3549";
-    ctx.beginPath();
-    ctx.moveTo(x + 0.5, headH - (m === 1 ? 10 : 5));
-    ctx.lineTo(x + 0.5, headH - 1);
-    ctx.stroke();
-    if ((m - 1) % labelEvery === 0) {
-      ctx.fillStyle = "#93a1b8";
-      ctx.fillText(String(m), x + cellW / 2, headH - 10);
-    }
-  });
-
-  // ---- rows: coverage cells + external label column ---------------------
-  const maxCount = Math.max(1, ...tiles.flatMap((t) => Object.values(t.months)));
-  let nGaps = 0;
-  const head = document.createElement("div");
-  head.className = "cov-label cov-label-head";
-  head.style.height = `${headH}px`;
-  labels.appendChild(head);
-  tiles.forEach((t, r) => {
-    const lab = document.createElement("div");
-    lab.className = "cov-label" + (state.filters.tile === t.tile_id ? " active" : "");
-    lab.style.height = `${rowH}px`;
-    lab.textContent = t.tile_id;
-    lab.title = `${t.tile_id} — click to filter`;
-    lab.onclick = () => setFilter("tile", state.filters.tile === t.tile_id ? "" : t.tile_id);
-    labels.appendChild(lab);
-
-    const y = headH + r * rowH;
-    const have = Object.keys(t.months).filter((m) => t.months[m] > 0).sort();
-    const span = have.length ? [have[0], have[have.length - 1]] : null;
-    axis.forEach((mo, i) => {
-      const count = t.months[mo] || 0;
-      const inSpan = span && mo >= span[0] && mo <= span[1];
-      if (count > 0) {
-        ctx.fillStyle = `rgba(77,163,255,${0.3 + 0.7 * count / maxCount})`;
-      } else if (inSpan) {
-        ctx.fillStyle = "rgba(255,107,107,.55)";   // gap: hole inside the tile's own span
-        state.gaps.push({ tile_id: t.tile_id, month: mo });
-        nGaps++;
-      } else {
-        ctx.fillStyle = "#1d2739";                 // outside span: nothing expected
-      }
-      ctx.fillRect(i * cellW + 1, y + 1, cellW - 2, rowH - 3);
-    });
-  });
-  ctx.textAlign = "left";
-  ctx.textBaseline = "alphabetic";
-  let caption = nGaps
-    ? `${nGaps} gap month(s) detected — use “Patch coverage gaps” to queue a fill run`
-    : `${axis[0]} → ${axis[axis.length - 1]} · no temporal gaps inside any tile's span`;
-  // Months found on the stores' time axes but absent from catalog rows are
-  // rendered (the Zarr is ground truth) — but the catalog should be healed.
-  const stale = tiles.reduce((a, t) => a + (t.n_uncataloged_months || 0), 0);
-  if (stale) {
-    caption += ` · ${stale} month(s) exist in Zarr but not in the catalog — run a “Catalog resync” job to index them`;
-  }
-  $("coverage-caption").textContent = caption;
-  canvas._grid = { axis, tiles, rowH, headH, cellW };
-
-  // First render of a new range: jump to the most recent months.
-  const sig = `${axis[0]}:${axis[axis.length - 1]}:${tiles.length}`;
-  if (canvas._axisSig !== sig) {
-    canvas._axisSig = sig;
-    scroll.scrollLeft = scroll.scrollWidth;
-  }
+async function pollTaskLog(reset=false){
+  if(!activeLog)return;const session=activeLog,id=session.id;
+  if(reset){session.logOffset=0;session.eventOffset=0;$('task-log-output').textContent='';$('task-events').innerHTML=''}
+  try{
+    const tail=reset?'&tail=1':'';
+    const [task,logChunk,eventChunk]=await Promise.all([
+      api(`/api/tasks/${encodeURIComponent(id)}`),
+      api(`/api/tasks/${encodeURIComponent(id)}/log?format=json&offset=${session.logOffset}&limit=65536${tail}`),
+      api(`/api/tasks/${encodeURIComponent(id)}/events?offset=${session.eventOffset}&limit=65536`),
+    ]);
+    if(activeLog!==session)return;
+    session.logOffset=logChunk.next_offset;session.eventOffset=eventChunk.next_offset;
+    const output=$('task-log-output');if(logChunk.text)output.textContent=(output.textContent+logChunk.text).slice(-250000);
+    appendTaskEvents(eventChunk.events,reset);if($('log-follow').checked)output.scrollTop=output.scrollHeight;
+    $('task-log-title').textContent=`任务日志 · ${id}`;
+    $('task-log-meta').textContent=`${statusNames[task.stage]||task.stage} · ${task.command_index||0}/${task.command_total||0} 条命令 · ${task.output_subdir}`;
+    $('log-size').textContent=formatBytes(logChunk.size);renderTaskStages(task);
+    clearTimeout(logPollTimer);if(!['done','failed','cancelled','interrupted'].includes(task.status))logPollTimer=setTimeout(()=>pollTaskLog(false),1500);
+  }catch(error){if(activeLog===session)$('task-log-output').textContent+=`\n[日志读取失败] ${error.message}\n`}
 }
 
-function _covCell(e) {
-  const g = $("coverage-matrix")._grid;
-  if (!g) return null;
-  const col = Math.floor(e.offsetX / g.cellW);
-  const row = Math.floor((e.offsetY - g.headH) / g.rowH);
-  if (col < 0 || col >= g.axis.length || row < 0 || row >= g.tiles.length) return null;
-  return { tile: g.tiles[row], month: g.axis[col] };
+function openLog(id){
+  clearTimeout(logPollTimer);activeLog={id,logOffset:0,eventOffset:0};
+  $('task-log-title').textContent=`任务日志 · ${id}`;$('task-log-meta').textContent='正在读取任务状态…';$('download-log').href=`/api/tasks/${encodeURIComponent(id)}/log`;
+  if(!$('task-log-dialog').open)$('task-log-dialog').showModal();pollTaskLog(true);
 }
 
-function bindCoverage() {
-  const canvas = $("coverage-matrix");
-  canvas.onclick = (e) => {
-    const c = _covCell(e);
-    if (!c) return;
-    // Drill into that tile+month in the datasets table below
-    state.filters.tile = c.tile.tile_id;
-    state.filters.from = state.filters.to = c.month;
-    state.page.offset = 0;
-    syncFilterControls();
-    refresh();
-  };
-  canvas.onmousemove = (e) => {
-    const c = _covCell(e);
-    canvas.title = c
-      ? `${c.tile.tile_id} · ${c.month} · ${c.tile.months[c.month] || 0} item(s)`
-      : "";
-  };
+function closeTaskLog(){clearTimeout(logPollTimer);activeLog=null;$('task-log-dialog').close()}
+function catalogFor(output){openCatalogDialog(output,true)}
+
+async function browseDirectory(path='',purpose=state.directoryPurpose,silent=false){
+  try{
+    const params=new URLSearchParams({path,mode:purpose==='catalog'?'catalog':'output'}),data=await api('/api/output-directories?'+params);state.directory=data.path;state.directoryPurpose=purpose;
+    $('directory-dialog-title').textContent=purpose==='catalog'?'选择数据立方体目录':'选择输出目录';
+    $('directory-dialog-hint').firstChild.textContent=purpose==='catalog'?'仅显示服务器输出根内的目录。绿色标记表示存在根级 catalog.parquet。服务器输出根：':'服务器输出根：';
+    $('output-root').textContent=data.root;$('dir-current').textContent=data.path||'/';$('dir-up').disabled=data.parent===null;$('dir-up').dataset.parent=data.parent??'';
+    $('new-folder-row').hidden=purpose==='catalog';$('select-output').textContent=purpose==='catalog'?'打开此 Catalog':'选择当前目录';$('select-output').disabled=purpose==='catalog'&&(!data.path||!data.catalog_available);
+    const schema=state.capabilities?.catalog_schema_version??8;
+    $('dir-list').innerHTML=data.directories.length?data.directories.map(item=>`<button data-path="${escapeHtml(item.path)}">📁 ${escapeHtml(item.name)}${purpose==='catalog'?(item.catalog_available?`<span class="catalog-ready">Catalog v${schema} 候选</span>`:'<span class="catalog-missing">无根级 Catalog</span>'):''}</button>`).join(''):'<div class="empty">这里还没有子目录</div>';
+    document.querySelectorAll('#dir-list button').forEach(el=>el.onclick=()=>browseDirectory(el.dataset.path,purpose));return true;
+  }catch(error){if(!silent)alert(error.message);return false}
 }
 
-/* ============================= timeline ============================= */
+async function openDirectoryBrowser(purpose,initial=''){
+  state.directoryPurpose=purpose;let opened=await browseDirectory(initial,purpose,true);
+  if(!opened&&initial)opened=await browseDirectory('',purpose);if(opened)$('output-dialog').showModal();
+}
+async function createFolder(){const name=$('new-folder').value.trim();if(!name)return;try{await api('/api/output-directories',{method:'POST',body:JSON.stringify({parent:state.directory,name})});$('new-folder').value='';await browseDirectory(state.directory)}catch(error){alert(error.message)}}
 
-function drawTimeline() {
-  const canvas = $("timeline");
-  const ctx = canvas.getContext("2d");
-  const w = canvas.width = canvas.clientWidth * devicePixelRatio;
-  const h = canvas.height = 56 * devicePixelRatio;
-  ctx.clearRect(0, 0, w, h);
-  const months = Object.keys(state.months).sort();
-  $("timeline-caption").textContent = months.length
-    ? `${months[0]} → ${months[months.length - 1]} · click a month to filter, shift-click to end a range`
-    : "no months in the current filter";
-  if (!months.length) { canvas._months = []; return; }
+function setCatalogStatus(kind,message){const box=$('catalog-status');box.className=`catalog-status ${kind}`;box.textContent=message}
 
-  // Continuous month axis between min and max so gaps are VISIBLE.
-  const axis = monthAxis(months[0], months[months.length - 1]);
-  const max = Math.max(...Object.values(state.months));
-  const bw = w / axis.length;
-  axis.forEach((mo, i) => {
-    const count = state.months[mo] || 0;
-    const inRange = (!state.filters.from || mo >= state.filters.from)
-      && (!state.filters.to || mo <= state.filters.to);
-    const frac = count / max;
-    ctx.fillStyle = count === 0 ? "#26314a"
-      : inRange ? `rgba(77,163,255,${0.25 + 0.75 * frac})`
-      : `rgba(147,161,184,${0.15 + 0.4 * frac})`;
-    ctx.fillRect(i * bw + 1, h * (1 - Math.max(frac, 0.08)) , bw - 2, h * Math.max(frac, 0.08));
-    if (mo.endsWith("-01")) {
-      ctx.fillStyle = "#93a1b8";
-      ctx.font = `${10 * devicePixelRatio}px sans-serif`;
-      ctx.fillText(mo.slice(0, 4), i * bw + 2, 11 * devicePixelRatio);
-    }
-  });
-  canvas._months = axis;
-  canvas._bw = bw;
+async function inspectCatalog(output){
+  const schema=state.capabilities?.catalog_schema_version??8;
+  state.catalog=null;$('query-catalog').disabled=true;$('report-catalog').disabled=true;$('catalog-report').hidden=true;$('catalog-body').innerHTML='';setCatalogStatus('checking',`正在检查 catalog.parquet 与 Schema v${schema} 契约…`);
+  try{
+    const data=await api('/api/catalog/inspect?'+new URLSearchParams({output}));state.catalog=data;
+    if(data.valid){
+      const versions=(data.schema_versions||[]).join(',')||'未知';setCatalogStatus('valid',`已打开 · Schema v${versions} · ${data.record_count} 条记录 · ${data.tile_count||0} 个瓦片 · ${data.catalog}`);
+      $('query-catalog').disabled=false;$('report-catalog').disabled=false;
+    }else setCatalogStatus('invalid',`无法打开：${(data.issues||['Catalog 校验失败']).slice(0,3).join('；')}`);
+    return data.valid;
+  }catch(error){setCatalogStatus('invalid',error.message);return false}
 }
 
-function bindTimeline() {
-  const canvas = $("timeline");
-  canvas.onclick = (e) => {
-    const axis = canvas._months || [];
-    if (!axis.length) return;
-    const x = (e.offsetX * devicePixelRatio);
-    const mo = axis[Math.min(axis.length - 1, Math.floor(x / canvas._bw))];
-    if (e.shiftKey && state.filters.from) {
-      state.filters.to = mo >= state.filters.from ? mo : state.filters.from;
-    } else if (state.filters.from === mo && state.filters.to === mo) {
-      state.filters.from = state.filters.to = "";   // toggle off
-    } else {
-      state.filters.from = state.filters.to = mo;
-    }
-    state.page.offset = 0;
-    syncFilterControls();
-    loadItems();
-  };
+async function openCatalogDialog(output=$('output').value,autoQuery=false){
+  $('cat-output').value=output||'';if(!$('catalog-dialog').open)$('catalog-dialog').showModal();const valid=await inspectCatalog(output);if(valid&&autoQuery)await queryCatalog();
 }
 
-/* ===================== right panel: tabs + detail ==================== */
-
-function switchTab(name) {
-  document.querySelectorAll(".tabs .tab").forEach((t) => {
-    t.classList.toggle("active", t.dataset.tab === name);
-  });
-  $("tabbody-download").classList.toggle("hidden", name !== "download");
-  $("tabbody-item").classList.toggle("hidden", name !== "item");
-}
-document.querySelectorAll(".tabs .tab").forEach((t) => {
-  t.onclick = () => switchTab(t.dataset.tab);
-});
-
-function selectItem(item) {
-  state.selected = item;
-  renderItems();
-  switchTab("item");
-  $("detail-empty-hint").hidden = true;
-  $("detail-title").textContent = item.item_id || "Item";
-  const img = $("detail-preview");
-  if (item.preview_path) {
-    img.src = assetUrl(item.tile_id, item.preview_path);
-    img.hidden = false;
-  } else { img.hidden = true; }
-
-  const rows = [
-    ["Tile", item.tile_id], ["Product", item.product_label || item.product_type],
-    ["Direction", item.flight_direction], ["Track", item.track != null ? `TK${item.track}` : null],
-    ["Month", item.month], ["Scenes", item.n_scenes],
-    ["CRS", item.crs], ["Grid", item.width && `${item.width}×${item.height}`],
-    ["Bands", (() => { try { return JSON.parse(item.bands || "[]").join(", "); } catch { return item.bands; } })()],
-  ];
-  $("detail-meta").innerHTML = rows
-    .filter(([, v]) => v != null && v !== "")
-    .map(([k, v]) => `<dt>${esc(k)}</dt><dd title="${esc(v)}">${esc(v)}</dd>`).join("");
-
-  const actions = [];
-  if (item.cog_path) actions.push(`<a class="btn small" href="${assetUrl(item.tile_id, item.cog_path)}" download>⬇ COG</a>`);
-  if (item.preview_path) actions.push(`<a class="btn small ghost" href="${assetUrl(item.tile_id, item.preview_path)}" target="_blank">Preview ↗</a>`);
-  $("detail-actions").innerHTML = actions.join(" ");
-  $("probe-panel").hidden = true;
-  $("map-hint").textContent = item.zarr_path
-    ? `Probing ${item.item_id} — click inside the highlighted footprint`
-    : "This item has no Zarr store to probe";
-  showPreviewOverlay(item);
+async function queryCatalog(){
+  if(!state.catalog?.valid){$('catalog-message').textContent='请先选择并打开通过校验的数据立方体目录。';return}
+  const params=new URLSearchParams({output:$('cat-output').value,tile:$('cat-tile').value,product:$('cat-product').value,direction:$('cat-direction').value,month:$('cat-month').value});
+  $('catalog-message').textContent='查询中…';
+  try{
+    const data=await api('/api/catalog?'+params);$('catalog-message').textContent=`共 ${data.total} 条，当前显示 ${data.returned} 条 · ${data.catalog}`;
+    $('catalog-body').innerHTML=data.records.map(row=>`<tr><td>${escapeHtml(row.item_id)}</td><td>${escapeHtml(row.tile_id)}</td><td>${escapeHtml(row.product_type)}</td><td>${escapeHtml(row.flight_direction||'—')}</td><td>${escapeHtml(row.datetime||row.month||'—')}</td><td><code>${escapeHtml(row.grid_id)}</code></td><td class="path" title="${escapeHtml(row.zarr_path)}">${escapeHtml(row.zarr_path||'—')}</td><td>${escapeHtml(row.status)}</td></tr>`).join('');
+  }catch(error){$('catalog-message').textContent=error.message;$('catalog-body').innerHTML=''}
 }
 
-function clearSelection() {
-  state.selected = null;
-  $("detail-empty-hint").hidden = false;
-  $("detail-title").textContent = "No dataset selected";
-  $("detail-preview").hidden = true;
-  $("detail-meta").innerHTML = "";
-  $("detail-actions").innerHTML = "";
-  $("probe-panel").hidden = true;
-  $("map-hint").textContent = DEFAULT_HINT;
-  showPreviewOverlay(null);
-  if (state.probeMarker) { map.removeLayer(state.probeMarker); state.probeMarker = null; }
-  renderItems();
-}
-$("detail-close").onclick = clearSelection;
+function renderCountList(title,values){const entries=Object.entries(values||{});return `<div class="report-list"><b>${escapeHtml(title)}</b>${entries.length?entries.map(([key,value])=>`<div>${escapeHtml(key)}：${value}</div>`).join(''):'<div>无</div>'}</div>`}
 
-/* ======================== time-series probe ========================= */
-
-const BAND_COLORS = { VV_dB: "#4da3ff", VH_dB: "#6fe3b4", Ratio: "#ffb454", RVI: "#c792ea" };
-
-async function loadProbe(item, lon, lat) {
-  $("probe-caption").textContent = "loading…";
-  $("probe-panel").hidden = false;
-  try {
-    const q = new URLSearchParams({
-      tile: item.tile_id, zarr_path: item.zarr_path,
-      lon: lon.toFixed(6), lat: lat.toFixed(6),
-    });
-    const ts = await api(`/api/timeseries?${q}`);
-    drawProbe(ts);
-    $("probe-caption").textContent =
-      `${lat.toFixed(4)}, ${lon.toFixed(4)} · px(${ts.pixel.row},${ts.pixel.col}) · ${ts.time.length} steps`;
-  } catch (err) {
-    $("probe-caption").textContent = err.message;
-  }
+async function generateCatalogReport(){
+  if(!state.catalog?.valid)return;$('catalog-message').textContent='正在生成覆盖与完整性报告…';$('report-catalog').disabled=true;
+  try{
+    const data=await api('/api/catalog/report?'+new URLSearchParams({output:$('cat-output').value})),overall=data.overall||{},gaps=data.gaps||{},range=overall.date_range||[null,null];
+    $('report-summary').innerHTML=[['记录',overall.total_records||0],['瓦片',overall.tile_count||0],['有效月份',overall.total_months||0],['存在缺月',gaps.tiles_with_gaps||0]].map(([label,value])=>`<div class="report-stat"><b>${escapeHtml(value)}</b><span>${escapeHtml(label)}</span></div>`).join('');
+    $('report-counts').innerHTML=renderCountList('产品',data.counts?.products)+renderCountList('状态',data.counts?.statuses)+renderCountList('轨道',data.counts?.directions);
+    $('report-gaps').innerHTML=`<div class="report-list"><div>时间范围：${escapeHtml(range[0]||'—')} 至 ${escapeHtml(range[1]||'—')}</div><div>完整组合：${gaps.tiles_complete||0}</div><div>缺月组合：${gaps.tiles_with_gaps||0}</div><div>报告瓦片行：${data.tile_rows_total||0}${data.truncated?'（页面摘要已截断）':''}</div></div>`;
+    $('catalog-report').hidden=false;$('catalog-message').textContent=`报告已生成 · ${data.catalog.catalog}`;
+  }catch(error){$('catalog-message').textContent=error.message}
+  finally{$('report-catalog').disabled=!state.catalog?.valid}
 }
 
-function drawProbe(ts) {
-  const canvas = $("probe-chart");
-  const ctx = canvas.getContext("2d");
-  const W = canvas.width = canvas.clientWidth * devicePixelRatio;
-  const H = canvas.height = 220 * devicePixelRatio;
-  ctx.clearRect(0, 0, W, H);
-  const padL = 42 * devicePixelRatio, padB = 16 * devicePixelRatio, padT = 14 * devicePixelRatio;
-
-  const bands = Object.entries(ts.bands).filter(([k]) => k !== "n_obs");
-  const values = bands.flatMap(([, v]) => v).filter((v) => v != null);
-  if (!values.length) return;
-  let lo = Math.min(...values), hi = Math.max(...values);
-  if (hi - lo < 1e-6) { hi += 1; lo -= 1; }
-  const n = ts.time.length;
-  const x = (i) => padL + (W - padL - 6) * (n === 1 ? 0.5 : i / (n - 1));
-  const y = (v) => padT + (H - padT - padB) * (1 - (v - lo) / (hi - lo));
-
-  // axes + gridlines
-  ctx.strokeStyle = "#2a3549"; ctx.fillStyle = "#93a1b8";
-  ctx.font = `${10 * devicePixelRatio}px sans-serif`;
-  for (let g = 0; g <= 4; g++) {
-    const v = lo + (hi - lo) * g / 4;
-    ctx.beginPath(); ctx.moveTo(padL, y(v)); ctx.lineTo(W, y(v)); ctx.stroke();
-    ctx.fillText(v.toFixed(1), 4, y(v) + 3 * devicePixelRatio);
-  }
-  // series
-  let legendX = padL;
-  for (const [name, vals] of bands) {
-    const color = BAND_COLORS[name] || "#e8edf6";
-    ctx.strokeStyle = color; ctx.lineWidth = 1.6 * devicePixelRatio;
-    ctx.beginPath();
-    let pen = false;
-    vals.forEach((v, i) => {
-      if (v == null) { pen = false; return; }
-      if (!pen) { ctx.moveTo(x(i), y(v)); pen = true; } else { ctx.lineTo(x(i), y(v)); }
-    });
-    ctx.stroke();
-    ctx.fillStyle = color;
-    ctx.fillText(name, legendX, 10 * devicePixelRatio);
-    legendX += ctx.measureText(name).width + 14 * devicePixelRatio;
-  }
-  // x labels: first / mid / last
-  ctx.fillStyle = "#93a1b8";
-  [[0, "left"], [Math.floor(n / 2), "center"], [n - 1, "right"]].forEach(([i, align]) => {
-    ctx.textAlign = align;
-    ctx.fillText((ts.time[i] || "").slice(0, 7), x(i), H - 4);
-  });
-  ctx.textAlign = "left";
-
-  drawNobs(ts, x);
+async function bootstrap(){
+  try{state.capabilities=await api('/api/capabilities');$('health').textContent=`已连接 · S1-GRiTS ${state.capabilities.version} · Schema v${state.capabilities.catalog_schema_version} · ${state.capabilities.stac_format==='geoparquet'?'GeoParquet':state.capabilities.stac_format}`;$('health').classList.add('ok')}catch(error){$('health').textContent='服务连接失败';$('health').classList.add('error')}
+  initMap();buildTags();setWorkflow('scenes');setSelection('tiles');await loadTasks();setInterval(loadTasks,3000);
+  if(location.hash==='#catalog')openCatalogDialog($('output').value);
 }
 
-function drawNobs(ts, x) {
-  const canvas = $("probe-nobs");
-  const ctx = canvas.getContext("2d");
-  const W = canvas.width = canvas.clientWidth * devicePixelRatio;
-  const H = canvas.height = 46 * devicePixelRatio;
-  ctx.clearRect(0, 0, W, H);
-  const nobs = ts.bands.n_obs;
-  ctx.fillStyle = "#93a1b8";
-  ctx.font = `${9 * devicePixelRatio}px sans-serif`;
-  if (!nobs) { ctx.fillText("n_obs not present in this store", 6, 12 * devicePixelRatio); return; }
-  ctx.fillText("n_obs", 4, 10 * devicePixelRatio);
-  const max = Math.max(1, ...nobs.filter((v) => v != null));
-  const bw = Math.max(2, (W - 48) / nobs.length - 1);
-  nobs.forEach((v, i) => {
-    const val = v || 0;
-    ctx.fillStyle = val === 0 ? "#33415c" : `rgba(111,227,180,${0.3 + 0.7 * val / max})`;
-    const bh = (H - 14 * devicePixelRatio) * (val / max || 0.06);
-    ctx.fillRect(x(i) - bw / 2, H - bh, bw, bh);
-  });
-}
-
-/* ==================== job composer (Download tab) ==================== */
-
-/* Pure-form composer: the user never sees or edits YAML. Each job type maps
- * to a workflow config shape; composeConfigYaml() builds it from the form at
- * Execute time and sends it to the server, which pins output.base_dir to the
- * workspace. NOTHING here reads or writes files on the user's machine —
- * "Save as YAML" is an explicit, separate download for headless CLI use.
- *
- * Per-type form spec: which field groups apply, and the `workflow:` value
- * the CLI enforces for that subcommand (see cli.py's workflow checks). */
-const TYPE_FORM = {
-  process_scenes: { workflow: "scenes",  time: true,  outputs: true,  gaps: true },
-  process:        { workflow: "monthly", time: true,  outputs: true,  gaps: false },
-  doctor:         { workflow: "scenes",  time: true,  outputs: true,  gaps: false },
-};
-let jobTypes = {};          // /api/job-types payload: {type: {title, needs_config}}
-
-async function initComposer() {
-  jobTypes = await api("/api/job-types");
-  $("job-type").innerHTML = Object.entries(jobTypes)
-    .map(([k, v]) => `<option value="${esc(k)}">${esc(v.title)} (${esc(k)})</option>`)
-    .join("");
-  syncJobForm();
-}
-
-function syncJobForm() {
-  const type = $("job-type").value;
-  const needs = !!(jobTypes[type] && jobTypes[type].needs_config);
-  const spec = TYPE_FORM[type] || TYPE_FORM.process_scenes;
-  $("job-quickfill").style.display = needs ? "" : "none";
-  $("btn-save-yaml").style.display = needs ? "" : "none";
-  $("job-noparams").classList.toggle("hidden", needs);
-  if (!needs) return;
-  const show = (id, on) => {
-    const el = $(id);
-    (el.closest("label") || el).style.display = on ? "" : "none";
-  };
-  show("qf-time-mode", spec.time);
-  show("qf-years", spec.time);
-  show("qf-months", spec.time);
-  $("qf-outputs-row").style.display = spec.outputs ? "" : "none";
-  $("btn-patch-gaps").style.display = spec.gaps ? "" : "none";
-}
-$("job-type").onchange = syncJobForm;
-$("qf-time-mode").onchange = () => {
-  $("qf-months").disabled = $("qf-time-mode").value === "full";
-};
-
-/* --- form -> YAML (generated at Execute time; the CLI contract) --- */
-function composeConfigYaml(type) {
-  const spec = TYPE_FORM[type] || TYPE_FORM.process_scenes;
-  const tiles = $("qf-tiles").value.split(",").map((t) => t.trim().toUpperCase())
-    .filter(Boolean);
-  const dir = $("qf-direction").value;
-  const mode = $("qf-time-mode").value;
-  const years = $("qf-years").value.split(",").map((y) => parseInt(y, 10))
-    .filter((y) => y >= 2014 && y <= 2100);
-  const months = $("qf-months").value.split(",").map((m) => parseInt(m, 10))
-    .filter((m) => m >= 1 && m <= 12);
-  const res = Math.min(500, Math.max(10, parseFloat($("qf-resolution").value) || 30));
-  const cog = $("qf-cog").checked, png = $("qf-preview").checked;
-  if (!tiles.length) throw new Error("Enter at least one MGRS tile");
-  if (spec.time && mode === "years" && !years.length) throw new Error("Enter year(s)");
-
-  const roi = `roi:
-  manual_mgrs_tiles:
-${tiles.map((t) => `    - "${t}"`).join("\n")}
-  flight_direction: "${dir}"
-  polarization: "VV+VH"`;
-
-  if (spec.workflow === "static") {
-    return `workflow: "static"
-
-${roi}
-
-output:
-  base_dir: "."          # forced to the server workspace on submit
-
-processing:
-  target_resolution: ${res.toFixed(1)}
-`;
-  }
-
-  const time = mode === "full"
-    ? `  full: ${years[0] || new Date().getFullYear()}`
-    : `  years: [${years.join(", ")}]`
-      + (months.length ? `\n  months: [${months.join(", ")}]` : "");
-  // The scenes workflow takes the v3 policy keys; the legacy monthly
-  // workflow natively reads the v2 `overwrite` key instead.
-  const policy = spec.workflow === "scenes"
-    ? `  existing_store: "resume"\n  existing_month: "skip"`
-    : `  overwrite: false`;
-  return `workflow: "${spec.workflow}"
-
-${roi}
-
-time:
-${time}
-
-output:
-  base_dir: "."          # forced to the server workspace on submit
-${policy}
-  formats: {cog: ${cog}, preview: ${png}}
-
-processing:
-  target_resolution: ${res.toFixed(1)}
-  tile_clip: true
-  monthly:
-    enabled: true
-    only: true
-    composite_method: "nanmedian"
-    generate_cog: ${cog}
-    generate_preview: ${png}
-    blockwise_threads: 2
-
-memory:
-  max_memory_gb: 'auto'
-  batch_strategy: 'auto'
-  max_download_workers: 8
-
-parallel:
-  enabled: true
-  max_workers: 2
-`;
-}
-
-/* --- gap fill: coverage matrix red cells -> prefilled download run ---
- * Requests the UNION of gap years × gap months, a superset of the exact
- * (tile, month) holes — harmless because existing_month: "skip" makes the
- * run a no-op for months that are already on disk. */
-$("btn-patch-gaps").onclick = () => {
-  const box = $("job-error");
-  const tileFilter = state.filters.tile;
-  const gaps = state.gaps.filter((g) => !tileFilter || g.tile_id === tileFilter);
-  if (!gaps.length) {
-    box.textContent = tileFilter
-      ? `No coverage gaps detected for ${tileFilter}.`
-      : "No coverage gaps detected — the matrix has no red cells.";
-    box.classList.remove("hidden");
-    return;
-  }
-  const tiles = [...new Set(gaps.map((g) => g.tile_id))];
-  const years = [...new Set(gaps.map((g) => g.month.slice(0, 4)))].sort();
-  const months = [...new Set(gaps.map((g) => +g.month.slice(5)))].sort((a, b) => a - b);
-  $("job-type").value = "process_scenes";
-  syncJobForm();
-  $("qf-tiles").value = tiles.join(", ");
-  $("qf-time-mode").value = "years";
-  $("qf-months").disabled = false;
-  $("qf-years").value = years.join(", ");
-  $("qf-months").value = months.join(", ");
-  if (!$("job-title").value) {
-    $("job-title").value = `Gap fill · ${tiles.join("+")} · ${gaps.length} month(s)`;
-  }
-  box.classList.add("hidden");
-  switchTab("download");
-};
-
-/* --- Save as YAML: explicit export for headless `s1grits --config` use --- */
-$("btn-save-yaml").onclick = () => {
-  const box = $("job-error");
-  try {
-    const type = $("job-type").value;
-    const blob = new Blob([composeConfigYaml(type)], { type: "text/yaml" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `s1grits_${type}.yaml`;
-    a.click();
-    URL.revokeObjectURL(a.href);
-    box.classList.add("hidden");
-  } catch (err) {
-    box.textContent = err.message;
-    box.classList.remove("hidden");
-  }
-};
-
-/* --- Execute: form -> job -> live CLI log in the panel terminal --- */
-$("job-submit").onclick = async () => {
-  const type = $("job-type").value;
-  const box = $("job-error");
-  try {
-    const body = { type, title: $("job-title").value || undefined };
-    if (jobTypes[type] && jobTypes[type].needs_config) {
-      body.config_yaml = composeConfigYaml(type);
-    }
-    const job = await api("/api/jobs", {
-      method: "POST", body: JSON.stringify(body),
-    });
-    box.classList.add("hidden");
-    $("job-title").value = "";
-    startPanelLog(job);
-    pollJobs();
-  } catch (err) {
-    box.textContent = err.message;
-    box.classList.remove("hidden");
-  }
-};
-
-/* --- terminal-style live log of the job launched from this panel --- */
-const panelLog = { jobId: null, after: 0, timer: null };
-
-function startPanelLog(job) {
-  if (panelLog.timer) clearTimeout(panelLog.timer);
-  panelLog.jobId = job.id;
-  panelLog.after = 0;
-  const pre = $("panel-log");
-  pre.textContent = `$ s1grits ${job.type}    # job ${job.id}\n`;
-  $("panel-log-status").textContent = "queued…";
-  const tick = async () => {
-    if (panelLog.jobId !== job.id) return;      // superseded by a newer run
-    try {
-      const data = await api(`/api/jobs/${job.id}/log?after=${panelLog.after}`);
-      if (data.lines.length) {
-        pre.textContent += data.lines.join("\n") + "\n";
-        pre.scrollTop = pre.scrollHeight;
-        panelLog.after = data.next;
-      }
-      const j = state.jobs.find((x) => x.id === job.id);
-      const pct = j && j.progress ? j.progress.pct : null;
-      if (data.status === "running" || data.status === "queued") {
-        $("panel-log-status").textContent =
-          `${data.status}${pct != null ? ` · ${pct}%` : ""}${j ? ` · ${fmtDuration(j)}` : ""}`;
-        panelLog.timer = setTimeout(tick, 1500);
-      } else {
-        pre.textContent += `\n— job ${data.status} —\n`;
-        pre.scrollTop = pre.scrollHeight;
-        $("panel-log-status").textContent = data.status;
-      }
-    } catch { /* job gone or auth lost; stop polling */ }
-  };
-  tick();
-}
-
-/* ============================ jobs drawer ============================ */
-
-const drawer = $("jobs-drawer"), scrim = $("drawer-scrim");
-function openDrawer() {
-  drawer.classList.remove("hidden");
-  scrim.classList.remove("hidden");
-  pollJobs();
-}
-$("btn-jobs").onclick = openDrawer;
-$("job-status-chip").onclick = openDrawer;
-const closeDrawer = () => { drawer.classList.add("hidden"); scrim.classList.add("hidden"); stopLogView(); };
-$("drawer-close").onclick = closeDrawer;
-scrim.onclick = closeDrawer;
-
-let hadActiveJobs = false;
-
-async function pollJobs() {
-  try { state.jobs = await api("/api/jobs"); } catch { return; }
-  renderJobs();
-  const active = state.jobs.filter((j) => j.status === "running" || j.status === "queued").length;
-  const badge = $("jobs-active-badge");
-  badge.textContent = active;
-  badge.classList.toggle("hidden", active === 0);
-  updateJobChip();
-  // A run just finished: new composites may exist — refresh the workspace view.
-  if (hadActiveJobs && active === 0) { loadWorkspace(); refresh(); }
-  hadActiveJobs = active > 0;
-}
-setInterval(pollJobs, 2500);
-
-/* Always-visible topbar chip: the current job's title/progress/duration
- * without opening the drawer; the browser tab title mirrors it. */
-function updateJobChip() {
-  const chip = $("job-status-chip");
-  const running = state.jobs.find((j) => j.status === "running");
-  const queued = state.jobs.filter((j) => j.status === "queued").length;
-  if (!running && !queued) {
-    chip.classList.add("hidden");
-    document.title = BASE_TITLE;
-    return;
-  }
-  if (running) {
-    const pct = running.progress?.pct;
-    chip.textContent = `▶ ${running.title}${pct != null ? ` · ${pct}%` : ""} · ${fmtDuration(running)}`
-      + (queued ? ` · +${queued} queued` : "");
-    document.title = `${pct != null ? `${pct}%` : "▶"} ${running.title} — ${BASE_TITLE}`;
-  } else {
-    chip.textContent = `${queued} job(s) queued`;
-    document.title = `${queued} queued — ${BASE_TITLE}`;
-  }
-  chip.classList.remove("hidden");
-}
-
-function fmtDuration(j) {
-  if (!j.started_at) return "";
-  const end = j.ended_at || Date.now() / 1000;
-  const s = Math.max(0, Math.round(end - j.started_at));
-  return `${String(Math.floor(s / 3600)).padStart(2, "0")}:${String(Math.floor(s / 60) % 60).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
-}
-
-function renderJobs() {
-  const ul = $("job-list");
-  ul.innerHTML = "";
-  if (!state.jobs.length) {
-    ul.innerHTML = `<li class="muted">No jobs yet — queue one from the <b>Process &amp; download</b> panel.</li>`;
-  }
-  for (const j of state.jobs) {
-    const li = document.createElement("li");
-    li.className = "job-card";
-    const pct = j.progress?.pct;
-    const tiles = Object.entries(j.progress?.per_tile || {})
-      .filter(([t]) => t !== "_run")
-      .map(([t, [c, n]]) => `${t} ${c}/${n}`).join(" · ");
-    li.innerHTML = `
-      <div class="j-head">
-        <span class="j-title">${esc(j.title)}</span>
-        <span class="status-pill status-${esc(j.status)}">${esc(j.status)}</span>
-      </div>
-      <div class="j-sub">${esc(j.type)} · ${fmtDuration(j)} ${tiles ? "· " + esc(tiles) : ""}
-        ${j.error ? `<br><span style="color:var(--error)">${esc(j.error)}</span>` : ""}</div>
-      ${pct != null ? `<div class="progress"><div style="width:${pct}%"></div></div>` : ""}
-      <div class="j-actions">
-        <button class="btn ghost small" data-log="${esc(j.id)}">Log</button>
-        ${(j.status === "running" || j.status === "queued")
-          ? `<button class="btn danger small" data-cancel="${esc(j.id)}">Cancel</button>` : ""}
-      </div>`;
-    li.querySelector("[data-log]").onclick = () => openLogView(j);
-    const cancelBtn = li.querySelector("[data-cancel]");
-    if (cancelBtn) cancelBtn.onclick = async () => {
-      await api(`/api/jobs/${j.id}/cancel`, { method: "POST" });
-      pollJobs();
-    };
-    ul.appendChild(li);
-  }
-}
-
-/* --- incremental log viewer --- */
-function openLogView(job) {
-  stopLogView();
-  state.logView = { jobId: job.id, after: 0, timer: null };
-  $("job-log-title").textContent = `Log — ${job.title}`;
-  $("job-log").textContent = "";
-  $("job-log-wrap").classList.remove("hidden");
-  const tick = async () => {
-    try {
-      const data = await api(`/api/jobs/${state.logView.jobId}/log?after=${state.logView.after}`);
-      if (data.lines.length) {
-        $("job-log").textContent += data.lines.join("\n") + "\n";
-        $("job-log").scrollTop = $("job-log").scrollHeight;
-        state.logView.after = data.next;
-      }
-      if (data.status === "running" || data.status === "queued") {
-        state.logView.timer = setTimeout(tick, 1500);
-      }
-    } catch { /* viewer closed or job gone */ }
-  };
-  tick();
-}
-function stopLogView() {
-  if (state.logView.timer) clearTimeout(state.logView.timer);
-  state.logView = { jobId: null, after: 0, timer: null };
-  $("job-log-wrap").classList.add("hidden");
-}
-$("job-log-close").onclick = stopLogView;
-
-/* =============================== boot =============================== */
-
-async function refresh() {
-  state.tiles = await api("/api/tiles");
-  // Brand-new/empty workspace: point the user at the download panel — the
-  // path to a first dataset starts there, not in an empty map.
-  const empty = !state.tiles.length;
-  $("empty-cta").classList.toggle("hidden", !empty);
-  if (empty) switchTab("download");
-  populateFilterOptions();
-  syncFilterControls();
-  renderTiles();
-  await Promise.all([loadItems(), loadCoverage()]);
-  await updateBurstLayer();
-}
-
-$("btn-refresh").onclick = () => { loadWorkspace(); refresh(); };
-$("layer-bursts").onchange = () => updateBurstLayer();
-$("burst-direction").onchange = () => updateBurstLayer();
-window.addEventListener("resize", () => { drawTimeline(); drawCoverage(); });
-
-initMap();
-bindFilterEvents();
-bindPager();
-bindTimeline();
-bindCoverage();
-loadWorkspace().catch((e) => {
-  $("workspace-chips").innerHTML = `<span class="chip" style="color:var(--error)">${esc(e.message)}</span>`;
-});
-refresh().catch((e) => {
-  $("items-count").textContent = e.message;
-});
-initComposer().catch((e) => {
-  const box = $("job-error");
-  box.textContent = `Job composer unavailable: ${e.message}`;
-  box.classList.remove("hidden");
-});
-pollJobs();
+document.querySelectorAll('[data-workflow]').forEach(el=>el.onclick=()=>setWorkflow(el.dataset.workflow));
+document.querySelectorAll('[data-mode]').forEach(el=>el.onclick=()=>setSelection(el.dataset.mode));
+$('apply-bbox').onclick=applyBBox;$('submit').onclick=preflight;$('confirm-run').onclick=confirmTask;$('refresh-tasks').onclick=loadTasks;
+$('include-static').onchange=()=>{$('static-options').hidden=!$('include-static').checked};
+$('aoi-file').onchange=async event=>{try{const file=event.target.files[0];if(!file)return;state.aoi=polygonGeometry(JSON.parse(await file.text()));$('aoi-status').textContent=`已载入 ${file.name}（EPSG:4326）`;drawAOI()}catch(error){$('aoi-status').textContent=error.message}};
+$('browse-output').onclick=()=>openDirectoryBrowser('output',$('output').value);
+$('close-output').onclick=()=>$('output-dialog').close();$('dir-up').onclick=()=>browseDirectory($('dir-up').dataset.parent);$('create-folder').onclick=createFolder;
+$('select-output').onclick=()=>{if(state.directoryPurpose==='catalog'){$('cat-output').value=state.directory;$('output-dialog').close();inspectCatalog(state.directory)}else{$('output').value=state.directory||'s1_cube';$('output-dialog').close()}};
+$('open-catalog').onclick=()=>openCatalogDialog($('output').value);$('browse-catalog').onclick=()=>openDirectoryBrowser('catalog',$('cat-output').value);
+$('close-catalog').onclick=()=>$('catalog-dialog').close();$('close-catalog-bottom').onclick=()=>$('catalog-dialog').close();
+$('catalog-dialog').onclick=event=>{if(event.target===$('catalog-dialog'))$('catalog-dialog').close()};
+document.querySelectorAll('[data-basemap]').forEach(el=>el.onclick=()=>setBaseMap(el.dataset.basemap));$('query-catalog').onclick=queryCatalog;$('report-catalog').onclick=generateCatalogReport;
+$('close-task-log').onclick=closeTaskLog;$('refresh-log').onclick=()=>pollTaskLog(false);$('task-log-dialog').onclick=event=>{if(event.target===$('task-log-dialog'))closeTaskLog()};
+$('toggle-mgrs').onclick=toggleMgrs;
+$('map-error').onclick=()=>{$('map-error').hidden=true};
+bootstrap();

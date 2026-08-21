@@ -197,8 +197,8 @@ cp config/s1grits_scenes.yaml my_run.yaml
 s1grits doctor --config my_run.yaml
 s1grits process_scenes --config my_run.yaml
 
-# 5. Browse results in the web interface
-s1grits serve --root /path/to/output
+# 5. 启动中文下载与目录检索控制台（workspace 是安全输出根）
+s1grits serve /path/to/output --port 5556
 ```
 
 Full installation options (conda, from-source, extras), authentication setup
@@ -244,10 +244,11 @@ Standalone static YAML downloads are intentionally unsupported because static ge
 | [Workflows](docs/workflows.md) | Monthly composites, per-scene processing, static layers |
 | [Output Structure](docs/outputs.md) | Zarr/COG/preview specs, bands, STAC metadata, parquet catalogs |
 | [Configuration Reference](docs/configuration.md) | Every YAML key the workflows read, with defaults |
-| [CLI Reference](docs/cli.md) | All commands: process, catalog, tile, mosaic, doctor, cache, serve |
+| [CLI Reference](docs/cli.md) | All commands: process_scenes, static, catalog, tile, mosaic, doctor, cache, serve |
 | [Python API](docs/python_api.md) | `s1grits.analysis` — loading, time series, plotting, validation |
 | [Examples](docs/examples.md) | End-to-end usage examples and the tutorial notebooks |
-| [Web Interface](docs/webapp.md) | The v2.3 web UI (`s1grits serve`) |
+| [Web Interface](docs/webapp.md) | v3 中文下载、MGRS、Catalog 与任务日志控制台 |
+| [Phase 0 Web Contract](docs/phase0-v3-web-contract.md) | v3 CLI、Schema v8、路径、任务与验收门禁 |
 | [Bounded-Memory Architecture](docs/scenes_blockwise_architecture.md) | The blockwise scenes pipeline design |
 | [FAQ](docs/faq.md) | Common questions and troubleshooting |
 | [Changelog](CHANGELOG.md) | Release history |

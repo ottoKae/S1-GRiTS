@@ -19,6 +19,7 @@ from pathlib import Path
 
 from s1grits.__version__ import __version__
 from s1grits.webapp.catalog_api import Workspace
+from s1grits.webapp.cn_api import ChineseConsole
 from s1grits.webapp.jobs import JOB_TYPES, JobManager
 
 logger = logging.getLogger(__name__)
@@ -92,6 +93,7 @@ def create_app(root: Path | str, token: str | None = None,
     workspace = Workspace(root)
     jobs = JobManager(workspace.root, max_concurrent=max_concurrent_jobs,
                       cmd_prefix=job_cmd_prefix)
+    console = ChineseConsole(workspace.root, jobs)
 
     app = FastAPI(
         title="S1-GRiTS Web API",
@@ -103,6 +105,7 @@ def create_app(root: Path | str, token: str | None = None,
     )
     app.state.workspace = workspace
     app.state.jobs = jobs
+    app.state.console = console
 
     # -- auth ----------------------------------------------------------
     @app.middleware("http")
@@ -124,11 +127,43 @@ def create_app(root: Path | str, token: str | None = None,
         title: str | None = None
         config_yaml: str | None = None
 
+    class DirectoryRequest(BaseModel):
+        parent: str = ""
+        name: str
+
+    class TaskRequest(BaseModel):
+        plan_id: str
+        confirmation: str = ""
+
     # -- workspace / datasets ------------------------------------------
     @app.get("/api/health", tags=["workspace"])
     def health():
         return {"status": "ok", "version": __version__,
                 "workspace": str(workspace.root)}
+
+    @app.get("/api/capabilities", tags=["workspace"])
+    def capabilities():
+        from datetime import datetime
+        from s1grits.canonical_catalog_schema import SCHEMA_VERSION
+
+        return {
+            "service": "S1-GRiTS 中文控制台",
+            "version": __version__,
+            "catalog_schema_version": SCHEMA_VERSION,
+            "stac_format": "geoparquet",
+            "current_year": datetime.now().year,
+            "workspace": str(workspace.root),
+            "output_root": str(workspace.root),
+            "workflows": ["scenes", "monthly"],
+            "workflow_options": {"include_static": True},
+            "mgrs_map": {
+                "endpoint": "/api/map/mgrs",
+                "min_zoom": console.mgrs_min_zoom,
+                "max_features": console.mgrs_max_features,
+                "source_crs": "EPSG:4326",
+                "display_crs": "EPSG:3857",
+            },
+        }
 
     @app.get("/api/workspace", tags=["workspace"])
     def workspace_summary():
@@ -221,6 +256,130 @@ def create_app(root: Path | str, token: str | None = None,
         except FileNotFoundError as exc:
             raise HTTPException(404, str(exc))
 
+    @app.get("/api/map/mgrs", tags=["visualisation"])
+    def mgrs_map(bbox: str, zoom: int):
+        try:
+            return console.mgrs_map(bbox, zoom)
+        except (ValueError, OSError) as exc:
+            raise HTTPException(400, str(exc))
+
+    # -- Chinese planner / catalog -------------------------------------
+    @app.get("/api/output-directories", tags=["console"])
+    def output_directories(path: str = "", mode: str = "output"):
+        if mode not in ("output", "catalog"):
+            raise HTTPException(400, "mode 必须为 output 或 catalog")
+        try:
+            return console.browse(path, catalog_mode=mode == "catalog")
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
+    @app.post("/api/output-directories", tags=["console"], status_code=201)
+    def create_output_directory(req: DirectoryRequest):
+        try:
+            return console.mkdir(req.parent, req.name)
+        except FileExistsError:
+            raise HTTPException(409, "目录已经存在")
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
+    @app.post("/api/plan", tags=["console"])
+    def create_plan(payload: dict):
+        try:
+            return console.create_plan(payload)
+        except (ValueError, FileNotFoundError) as exc:
+            raise HTTPException(400, str(exc))
+
+    @app.get("/api/tasks", tags=["console"])
+    def list_tasks():
+        return console.tasks()
+
+    @app.post("/api/tasks", tags=["console"], status_code=201)
+    def create_task(req: TaskRequest):
+        try:
+            return console.create_task(req.plan_id, req.confirmation)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
+    @app.get("/api/tasks/{job_id}", tags=["console"])
+    def task_detail(job_id: str):
+        try:
+            return console.task(jobs.get(job_id).to_dict())
+        except KeyError:
+            raise HTTPException(404, f"未知任务：{job_id}")
+
+    @app.delete("/api/tasks/{job_id}", tags=["console"])
+    def task_cancel(job_id: str):
+        try:
+            return console.task(jobs.cancel(job_id))
+        except KeyError:
+            raise HTTPException(404, f"未知任务：{job_id}")
+
+    @app.get("/api/tasks/{job_id}/log", tags=["console"])
+    def task_log(
+        job_id: str,
+        format: str | None = None,
+        offset: int = Query(0, ge=0),
+        limit: int = Query(65536, ge=1, le=262144),
+        tail: bool = False,
+    ):
+        try:
+            job = jobs.get(job_id)
+        except KeyError:
+            raise HTTPException(404, f"未知任务：{job_id}")
+        path = job.job_dir / "log.txt"
+        if format != "json":
+            if not path.is_file():
+                from fastapi.responses import Response
+                return Response("", media_type="text/plain; charset=utf-8")
+            return FileResponse(path, media_type="text/plain", filename=f"{job_id}.log")
+        data = path.read_bytes() if path.is_file() else b""
+        start = max(0, len(data) - limit) if tail and offset == 0 else min(offset, len(data))
+        chunk = data[start:start + limit]
+        return {
+            "offset": start,
+            "next_offset": start + len(chunk),
+            "size": len(data),
+            "text": chunk.decode("utf-8", errors="replace"),
+            "status": job.status,
+        }
+
+    @app.get("/api/tasks/{job_id}/events", tags=["console"])
+    def task_events(job_id: str, offset: int = Query(0, ge=0),
+                    limit: int = Query(65536, ge=1, le=262144)):
+        try:
+            events = console.task_events(job_id)
+        except KeyError:
+            raise HTTPException(404, f"未知任务：{job_id}")
+        start = min(offset, len(events))
+        return {"events": events[start:], "next_offset": len(events), "size": len(events)}
+
+    @app.get("/api/catalog/inspect", tags=["console"])
+    def catalog_inspect(output: str = ""):
+        try:
+            return console.catalog_inspect(output)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
+    @app.get("/api/catalog/report", tags=["console"])
+    def catalog_report(output: str = ""):
+        try:
+            return console.catalog_report(output)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
+    @app.get("/api/catalog", tags=["console"])
+    def catalog_query(output: str = "", tile: str = "", product: str = "",
+                      direction: str = "", month: str = ""):
+        try:
+            return console.catalog_query(
+                output, tile=tile, product=product,
+                direction=direction, month=month,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
     # -- jobs ------------------------------------------------------------
     @app.get("/api/job-types", tags=["jobs"])
     def job_types():
@@ -270,8 +429,10 @@ def create_app(root: Path | str, token: str | None = None,
 
     # -- static frontend (mounted last so /api wins) ---------------------
     if STATIC_DIR.is_dir():
+        app.mount("/static", StaticFiles(directory=str(STATIC_DIR)),
+                  name="static-assets")
         app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True),
-                  name="static")
+                  name="frontend")
 
     return app
 

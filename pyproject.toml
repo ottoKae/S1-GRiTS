@@ -157,6 +157,9 @@ where = ["src"]
     "static/*.html",
     "static/*.css",
     "static/*.js",
+    "static/*.png",
+    "static/leaflet/*.css",
+    "static/leaflet/*.js",
 ]
 "s1grits.analysis" = ["*.py"]
 
