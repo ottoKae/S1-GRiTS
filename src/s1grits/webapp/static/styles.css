@@ -3,8 +3,8 @@
 @media(max-width:900px){.workspace{grid-template-columns:1fr;height:auto}.planner{border-right:0}.stage{height:760px}.topbar{padding:0 14px}.top-actions .health{display:none}.catalog-filters{grid-template-columns:1fr 1fr}.dialog-card{min-width:88vw}}@media(max-width:560px){.stage{padding:7px}.options-row{display:block}.bbox-grid{grid-template-columns:1fr}.topbar p{display:none}}
 
 /* Leaflet map and accessible Catalog dialog overrides. */
-.brand-mark{width:46px;height:46px;flex:0 0 46px;border:0;overflow:hidden;background:white;font-size:0}
-.brand-logo{display:block;width:100%;height:100%;object-fit:cover}
+.brand-mark{width:46px;height:46px;flex:0 0 46px;padding:3px;border:0;border-radius:0;overflow:visible;background:transparent;font-size:0}
+.brand-logo{display:block;width:100%;height:100%;object-fit:contain}
 .options-row{flex-wrap:wrap;gap:8px 16px}
 #map{width:100%;height:100%;min-height:300px;background:#dfe8e4;transform:none}
 .map-shell{position:relative;flex:1;min-height:0}

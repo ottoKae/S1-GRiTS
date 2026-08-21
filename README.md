@@ -248,6 +248,7 @@ Standalone static YAML downloads are intentionally unsupported because static ge
 | [Python API](docs/python_api.md) | `s1grits.analysis` — loading, time series, plotting, validation |
 | [Examples](docs/examples.md) | End-to-end usage examples and the tutorial notebooks |
 | [Web Interface](docs/webapp.md) | v3 中文下载、MGRS、Catalog 与任务日志控制台 |
+| [Web Smoke Test Plan](docs/webapp-smoke-test-plan.md) | 中文页面最小真实下载、Zarr/Catalog 验收与停止条件 |
 | [Phase 0 Web Contract](docs/phase0-v3-web-contract.md) | v3 CLI、Schema v8、路径、任务与验收门禁 |
 | [Bounded-Memory Architecture](docs/scenes_blockwise_architecture.md) | The blockwise scenes pipeline design |
 | [FAQ](docs/faq.md) | Common questions and troubleshooting |
