@@ -201,6 +201,7 @@ s1grits static ensure --output-dir /path/to/output --product-label smonthly_ASCE
 | [工作流](docs/workflows.md) | 月度合成、逐景处理和 static 图层 |
 | [输出结构](docs/outputs.md) | Zarr/COG/预览图、波段、STAC 和 Parquet 目录 |
 | [配置参考](docs/configuration.md) | YAML 配置项及默认值 |
+| [目标格网与插值 v1](docs/target-grid-resampling-v1.md) | 固定 30/10 米格网与 10 米优化插值规范 |
 | [命令行参考](docs/cli.md) | 处理、目录、瓦片、镶嵌、检查、缓存与服务命令 |
 | [Python API](docs/python_api.md) | 数据读取、时间序列、绘图和验证 |
 | [示例](docs/examples.md) | 端到端示例和教程 Notebook |

@@ -244,6 +244,7 @@ Standalone static YAML downloads are intentionally unsupported because static ge
 | [Workflows](docs/workflows.md) | Monthly composites, per-scene processing, static layers |
 | [Output Structure](docs/outputs.md) | Zarr/COG/preview specs, bands, STAC metadata, parquet catalogs |
 | [Configuration Reference](docs/configuration.md) | Every YAML key the workflows read, with defaults |
+| [Target Grid and Resampling v1](docs/target-grid-resampling-v1.md) | Fixed 30/10 m grid contract and optimized 10 m interpolation |
 | [CLI Reference](docs/cli.md) | All commands: process_scenes, static, catalog, tile, mosaic, doctor, cache, serve |
 | [Python API](docs/python_api.md) | `s1grits.analysis` — loading, time series, plotting, validation |
 | [Examples](docs/examples.md) | End-to-end usage examples and the tutorial notebooks |

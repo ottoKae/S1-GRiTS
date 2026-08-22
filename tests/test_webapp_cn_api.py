@@ -117,11 +117,51 @@ def test_monthly_static_plan_maps_only_to_v3_process_scenes(cn_client):
         import yaml
 
         cfg = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert cfg["processing"]["target_resolution"] == 30.0
+        assert cfg["processing"]["resampling_method"] == "nearest"
         assert cfg["processing"]["monthly"]["enabled"] is True
         assert cfg["processing"]["monthly"]["only"] is True
         assert cfg["static_layers"]["run_after_scenes"] is True
         assert cfg["output"]["existing_store"] == "resume"
         assert cfg["output"]["existing_month"] == "skip"
+
+
+def test_10m_plan_uses_optimized_bilinear_and_rejects_other_resolutions(cn_client):
+    year = time.gmtime().tm_year
+    base = {
+        "workflow": "scenes",
+        "selection_mode": "tiles",
+        "tiles": "17MPU",
+        "direction": "ASCENDING",
+        "years": [year],
+        "months": [1],
+        "output_subdir": "ten_m_cube",
+        "zarr_only": True,
+        "target_resolution": 10,
+        "max_workers": 1,
+    }
+    planned = cn_client.post("/api/plan", json=base)
+    assert planned.status_code == 200, planned.text
+    assert planned.json()["target_resolution"] == 10.0
+    assert planned.json()["resampling_method"] == "bilinear"
+    created = cn_client.post("/api/tasks", json={
+        "plan_id": planned.json()["plan_id"],
+        "confirmation": planned.json()["confirmation_phrase"],
+    })
+    assert created.status_code == 201, created.text
+    job = cn_client.app.state.jobs.get(created.json()["run_id"])
+    import yaml
+
+    config_path = next(job.job_dir.glob("config_*.yaml"))
+    cfg = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert cfg["processing"]["target_resolution"] == 10.0
+    assert cfg["processing"]["resampling_method"] == "bilinear"
+
+    invalid = cn_client.post(
+        "/api/plan", json={**base, "target_resolution": 20}
+    )
+    assert invalid.status_code == 400
+    assert "30 or 10" in invalid.json()["detail"]
 
 
 def test_mgrs_bbox_endpoint_uses_packaged_geoparquet(cn_client):

@@ -22,6 +22,10 @@ from s1grits.canonical_catalog_schema import (
     CANONICAL_CATALOG_COLUMNS,
     SCHEMA_VERSION,
 )
+from s1grits.resampling import (
+    resolve_resampling_method,
+    validate_target_resolution,
+)
 
 
 TILE_RE = re.compile(r"^\d{2}[C-HJ-NP-X][A-HJ-NP-Z]{2}$")
@@ -440,9 +444,10 @@ class ChineseConsole:
             raise ValueError(f"年份范围必须为 2014—{current_year}")
         if any(v < 1 or v > 12 for v in months):
             raise ValueError("月份必须为 1—12")
-        resolution = float(body.get("target_resolution") or 30)
-        if not 10 <= resolution <= 100:
-            raise ValueError("目标分辨率必须在 10—100 米之间")
+        resolution = validate_target_resolution(body.get("target_resolution") or 30)
+        resampling_method = resolve_resampling_method(
+            resolution, body.get("resampling_method", "auto")
+        )
         output_subdir = str(body.get("output_subdir") or "s1_cube").strip()
         output_dir = self.resolve_relative(output_subdir, allow_root=False)
         include_static = bool(body.get("include_static"))
@@ -466,6 +471,7 @@ class ChineseConsole:
             "output_subdir": output_subdir,
             "output_dir": str(output_dir),
             "target_resolution": resolution,
+            "resampling_method": resampling_method,
             "zarr_only": bool(body.get("zarr_only", True)),
             "include_static": include_static,
             "static_layers": static_layers,
@@ -508,6 +514,7 @@ class ChineseConsole:
             },
             "processing": {
                 "target_resolution": plan["target_resolution"],
+                "resampling_method": plan["resampling_method"],
                 "tile_clip": True,
                 "spatial_despeckle": plan["spatial_despeckle"],
                 "features_ratio": plan["features_ratio"],

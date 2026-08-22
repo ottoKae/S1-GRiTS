@@ -78,7 +78,13 @@
       <details>
         <summary>高级处理选项</summary>
         <div class="advanced">
-          <label>目标分辨率（米）<input id="resolution" type="number" min="10" max="100" value="30"></label>
+          <label>目标分辨率
+            <select id="resolution">
+              <option value="30" selected>30 米（原生兼容）</option>
+              <option value="10">10 米（优化双线性）</option>
+            </select>
+          </label>
+          <p id="resampling-note" class="hint">30 米采用最近邻重投影，保持现有产品兼容。</p>
           <label>并行瓦片数<input id="workers" type="number" min="1" max="8" value="2"></label>
           <label><input id="despeckle" type="checkbox"> TV 去斑</label>
           <label><input id="ratio" type="checkbox"> Ratio 波段</label>

@@ -40,6 +40,7 @@ from s1grits.product_instance import (
     make_processing_signature,
     make_product_variant,
 )
+from s1grits.resampling import rasterio_resampling
 from s1grits.scenes.blocks import (
     GLCM_BLOCK_HALO,
     N_OBS_BAND,
@@ -1046,6 +1047,7 @@ def _write_smonthly_one_track(
     valid_clean_indices: set[int] | None = None,
     spatial_filter_legacy: bool = False,
     rebuild_on_mismatch: bool = False,
+    resampling_method: str = "nearest",
 ) -> list[dict]:
     """
     Compute monthly composites for ONE acquisition-group track and write
@@ -1120,6 +1122,8 @@ def _write_smonthly_one_track(
         "processing.features_rvi": features_rvi,
         "processing.features_glcm": features_glcm,
         "processing.monthly.composite_method": _composite_method,
+        "processing.target_resolution": float(target_res),
+        "processing.resampling_method": str(resampling_method),
     }
     _smonthly_sig = make_processing_signature(_smonthly_variant_vals)
     _smonthly_variant = make_product_variant('smonthly', _smonthly_variant_vals, _smonthly_bands)
@@ -1139,6 +1143,8 @@ def _write_smonthly_one_track(
     g.attrs['processing_signature'] = _smonthly_sig
     g.attrs['product_variant'] = _smonthly_variant
     g.attrs['processing_variant_json'] = json.dumps(_smonthly_variant_vals)
+    g.attrs['target_resolution_m'] = float(target_res)
+    g.attrs['resampling_method'] = str(resampling_method)
     g.attrs['product_label'] = product_label
     g.attrs['geometry_group_id'] = (
         f"{mgrs_tile_id}_{direction_label}{_tk_suffix}"
@@ -1177,6 +1183,7 @@ def _write_smonthly_one_track(
     # full arrays to avoid block-edge artifacts, so they use the legacy path.
     use_blockwise = not spatial_filter_legacy
 
+    _resampling = rasterio_resampling(resampling_method)
     if not use_blockwise:
         logger.info(
             "smonthly blockwise Zarr path disabled for %s: spatial_filter_legacy=%s "
@@ -1194,10 +1201,12 @@ def _write_smonthly_one_track(
         # Local rebinding only: the caller's lists stay untouched for the
         # per-scene writers.
         final_vv, prof_vv = _prealign_scenes_to_master_grid(
-            final_vv, prof_vv, transform, target_crs, height, width
+            final_vv, prof_vv, transform, target_crs, height, width,
+            resampling=_resampling,
         )
         final_vh, prof_vh = _prealign_scenes_to_master_grid(
-            final_vh, prof_vh, transform, target_crs, height, width
+            final_vh, prof_vh, transform, target_crs, height, width,
+            resampling=_resampling,
         )
     # Helper: unified monthly compositing
     def _monthly_composite(stack, method):
@@ -1490,7 +1499,7 @@ def _write_smonthly_one_track(
             for _i in idxs:
                 _arr = _ws_mosaic_align(
                     [_i], final_arr, prof_arr, height, width,
-                    transform, target_crs,
+                    transform, target_crs, resampling=_resampling,
                 )
                 if _arr is not None:
                     _stack.append(_arr)
@@ -1822,6 +1831,7 @@ def _write_monthly_output_scenes(
     valid_clean_indices: set[int] | None = None,
     spatial_filter_legacy: bool = False,
     rebuild_on_mismatch: bool = False,
+    resampling_method: str = "nearest",
 ) -> list[dict]:
     """
     Write per-track smonthly composites for one tile/direction batch.
@@ -1865,6 +1875,7 @@ def _write_monthly_output_scenes(
             valid_clean_indices=valid_clean_indices,
             spatial_filter_legacy=spatial_filter_legacy,
             rebuild_on_mismatch=rebuild_on_mismatch,
+            resampling_method=resampling_method,
         )
 
     # No track metadata -> single untracked product (df_track=None so the inner

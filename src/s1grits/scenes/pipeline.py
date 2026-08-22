@@ -31,6 +31,11 @@ from shapely.geometry import mapping
 from shapely.ops import transform as shp_transform
 
 from s1grits.logger_config import get_logger
+from s1grits.resampling import (
+    rasterio_resampling,
+    resolve_resampling_method,
+    validate_target_resolution,
+)
 from s1grits.workflow import (
     query_rtc_metadata_for_tile,
 )
@@ -343,6 +348,7 @@ def _prepare_valid_clean_indices_for_monthly(
     incomplete_sink: list | None = None,
     interior_hole_max_frac: float = 0.005,
     console_obj: Console | None = None,
+    resampling_method: str = "nearest",
 ) -> set[int]:
     """
     Run acquisition-level QC without writing scenes.
@@ -373,6 +379,14 @@ def _prepare_valid_clean_indices_for_monthly(
             fill=0, dtype="uint8", all_touched=False,
         ).astype(bool)
 
+    _resampling = rasterio_resampling(resampling_method)
+    # QC evaluates the same target pixels that will be written.  Pre-aligning
+    # here makes 10 m validity decisions use the same bilinear kernel as the
+    # product writer and retains the one-warp-per-source performance bound.
+    final_vv, prof_vv = _prealign_scenes_to_master_grid(
+        final_vv, prof_vv, transform, target_crs, height, width,
+        resampling=_resampling,
+    )
     valid_indices: set[int] = set()
     # Per-scene master-grid footprints for windowed hole QC; the denominator
     # stays the full tile so windowed fractions match the full-tile measure.
@@ -488,7 +502,8 @@ def _prepare_valid_clean_indices_for_monthly(
         else:
             # Unknown footprint(s): fall back to the full-tile mosaic
             arr_vv_lin = _ws_mosaic_align(
-                indices, final_vv, prof_vv, height, width, transform, target_crs
+                indices, final_vv, prof_vv, height, width, transform, target_crs,
+                resampling=_resampling,
             )
             if arr_vv_lin is None:
                 logger.warning("Scene %s VV mosaic returned None, skipping", dt_str)
@@ -735,7 +750,17 @@ def process_single_scenes_tile(
 
         # Processing config
         processing_config = config.get('processing') or {}
-        target_res = processing_config.get('target_resolution', 30.0)
+        target_res = validate_target_resolution(
+            processing_config.get('target_resolution', 30.0)
+        )
+        resampling_method = resolve_resampling_method(
+            target_res, processing_config.get('resampling_method', 'auto')
+        )
+        logger.info(
+            "Target grid: %.0f m; continuous-field resampling: %s "
+            "(linear-power domain)",
+            target_res, resampling_method,
+        )
         chunk_y = processing_config.get('zarr_chunks', {}).get('y', 512)
         chunk_x = processing_config.get('zarr_chunks', {}).get('x', 512)
         cog_block = processing_config.get('cog_block_size', 256)
@@ -1476,6 +1501,7 @@ def process_single_scenes_tile(
                     interior_hole_max_frac=interior_hole_max_frac,
                     rebuild_on_mismatch=overwrite,
                     blockwise_threads=scenes_blockwise_threads,
+                    resampling_method=resampling_method,
                 )
                 all_scenes_records.extend(scenes_recs)
                 if monthly_enabled:
@@ -1504,6 +1530,7 @@ def process_single_scenes_tile(
                         incomplete_sink=_incomplete_acqs,
                         interior_hole_max_frac=interior_hole_max_frac,
                         console_obj=_console,
+                        resampling_method=resampling_method,
                     )
 
                 if _vv_first_qc:
@@ -1604,6 +1631,7 @@ def process_single_scenes_tile(
                         valid_clean_indices=valid_clean_indices,
                         spatial_filter_legacy=smonthly_spatial_legacy,
                         rebuild_on_mismatch=overwrite,
+                        resampling_method=resampling_method,
                     )
                 all_monthly_records.extend(monthly_recs)
 

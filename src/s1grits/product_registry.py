@@ -99,6 +99,8 @@ DEFAULT_REGISTRY: dict[str, Any] = {
                 "processing.features_ratio",
                 "processing.features_rvi",
                 "processing.features_glcm",
+                "processing.target_resolution",
+                "processing.resampling_method",
             ],
         },
         "smonthly": {
@@ -114,6 +116,8 @@ DEFAULT_REGISTRY: dict[str, Any] = {
                 "processing.features_rvi",
                 "processing.features_glcm",
                 "processing.monthly.composite_method",
+                "processing.target_resolution",
+                "processing.resampling_method",
             ],
         },
         "static": {
@@ -125,6 +129,8 @@ DEFAULT_REGISTRY: dict[str, Any] = {
             ],
             "variant_fields": [
                 "processing.bands",
+                "processing.target_resolution",
+                "processing.resampling_method",
             ],
         },
         # LEGACY: the standalone monthly-composite workflow was removed in

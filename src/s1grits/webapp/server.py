@@ -50,6 +50,7 @@ output:
 
 processing:
   target_resolution: 30.0
+  resampling_method: auto
   tile_clip: true
   monthly:
     enabled: true
@@ -156,6 +157,11 @@ def create_app(root: Path | str, token: str | None = None,
             "output_root": str(workspace.root),
             "workflows": ["scenes", "monthly"],
             "workflow_options": {"include_static": True},
+            "target_grid": {
+                "resolutions_m": [30, 10],
+                "default_m": 30,
+                "auto_resampling": {"30": "nearest", "10": "bilinear"},
+            },
             "mgrs_map": {
                 "endpoint": "/api/map/mgrs",
                 "min_zoom": console.mgrs_min_zoom,

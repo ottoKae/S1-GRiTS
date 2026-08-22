@@ -223,6 +223,7 @@ def _prealign_scenes_to_master_grid(
     target_crs: str,
     height: int,
     width: int,
+    resampling: Resampling = Resampling.nearest,
 ) -> tuple[list, list]:
     """Warp scenes that cannot be direct-copied onto the master grid, once.
 
@@ -269,7 +270,7 @@ def _prealign_scenes_to_master_grid(
                 dst_transform=dst_transform,
                 dst_crs=target_crs,
                 dst_nodata=np.nan,
-                resampling=Resampling.nearest,
+                resampling=resampling,
                 num_threads=1,
             )
         except Exception as exc:
@@ -308,6 +309,7 @@ def _mosaic_align_window(
     y_slice: slice,
     x_slice: slice,
     scene_bounds: list | None = None,
+    resampling: Resampling = Resampling.nearest,
 ) -> np.ndarray | None:
     """Mosaic only one destination block.
 
@@ -332,7 +334,10 @@ def _mosaic_align_window(
             len(prof_arr) if prof_arr else 0,
             len(final_arr) if final_arr else 0,
         )
-        full = _ws_mosaic_align(indices, final_arr, prof_arr, height, width, transform, target_crs)
+        full = _ws_mosaic_align(
+            indices, final_arr, prof_arr, height, width, transform, target_crs,
+            resampling=resampling,
+        )
         if full is None:
             return None
         return full[y_slice, x_slice].astype(np.float32, copy=False)
@@ -369,12 +374,15 @@ def _mosaic_align_window(
                     dst_transform=dst_transform,
                     dst_crs=target_crs,
                     dst_nodata=np.nan,
-                    resampling=Resampling.nearest,
+                    resampling=resampling,
                     num_threads=1,
                 )
             except Exception as exc:
                 logger.debug("Windowed reproject failed; falling back to full mosaic: %s", exc)
-                full = _ws_mosaic_align(indices, final_arr, prof_arr, height, width, transform, target_crs)
+                full = _ws_mosaic_align(
+                    indices, final_arr, prof_arr, height, width, transform,
+                    target_crs, resampling=resampling,
+                )
                 if full is None:
                     return None
                 return full[y_slice, x_slice].astype(np.float32, copy=False)
@@ -403,6 +411,7 @@ def _mosaic_align_scene_window(
     y_slice: slice,
     x_slice: slice,
     scene_bounds: list | None = None,
+    resampling: Resampling = Resampling.nearest,
 ) -> np.ndarray | None:
     """Windowed replica of ``_mosaic_align`` for the blockwise scenes writer.
 
@@ -435,7 +444,8 @@ def _mosaic_align_scene_window(
             "(profiles incomplete)"
         )
         full = _ws_mosaic_align(
-            indices, arr_list, prof_list, height, width, transform, target_crs
+            indices, arr_list, prof_list, height, width, transform, target_crs,
+            resampling=resampling,
         )
         if full is None:
             return None
@@ -479,7 +489,7 @@ def _mosaic_align_scene_window(
                 src_crs=prof["crs"],
                 dst_transform=dst_transform,
                 dst_crs=target_crs,
-                resampling=Resampling.nearest,
+                resampling=resampling,
                 src_nodata=float(src_nd),
                 dst_nodata=NODATA_SENTINEL,
                 init_dest_nodata=True,

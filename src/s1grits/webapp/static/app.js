@@ -174,7 +174,7 @@ function payload(){
     tiles:$('tiles').value,aoi:state.aoi,direction:$('direction').value,
     years:selected('#years input'),months:selected('#months input'),output_subdir:$('output').value,
     zarr_only:$('zarr-only').checked,include_static:$('include-static').checked,smonthly:$('smonthly').checked,
-    target_resolution:Number($('resolution').value),max_workers:Number($('workers').value),
+    target_resolution:Number($('resolution').value),resampling_method:'auto',max_workers:Number($('workers').value),
     spatial_despeckle:$('despeckle').checked,features_ratio:$('ratio').checked,features_rvi:$('rvi').checked,
     static_layers:[...document.querySelectorAll('[name=static-layer]:checked')].map(el=>el.value)
   };
@@ -185,7 +185,7 @@ async function preflight(){
   try{
     const plan=await api('/api/plan',{method:'POST',body:JSON.stringify(payload())}); state.plan=plan; drawPlan(plan);
     const temporal=`${plan.years.join('、')} 年 · ${plan.months.length} 个月份`,products=plan.include_static?`${plan.workflow} + static`:plan.workflow;
-    $('plan-summary').innerHTML=`<dl><dt>产品</dt><dd>${escapeHtml(products)}</dd><dt>瓦片</dt><dd>${plan.tiles.length} 个：${escapeHtml(plan.tiles.slice(0,18).join(', '))}${plan.tiles.length>18?' …':''}</dd><dt>轨道</dt><dd>${escapeHtml(plan.directions.join(' → '))}</dd><dt>时间</dt><dd>${escapeHtml(temporal)}</dd><dt>输出</dt><dd><code>${escapeHtml(plan.output_dir)}</code></dd><dt>规划估算</dt><dd>${plan.raw_gib.toFixed(3)} GiB</dd></dl><p class="hint">${escapeHtml(plan.estimate_note)}</p>`;
+    $('plan-summary').innerHTML=`<dl><dt>产品</dt><dd>${escapeHtml(products)}</dd><dt>目标格网</dt><dd>${plan.target_resolution} 米 · ${plan.resampling_method==='bilinear'?'双线性（线性功率域）':'最近邻'}</dd><dt>瓦片</dt><dd>${plan.tiles.length} 个：${escapeHtml(plan.tiles.slice(0,18).join(', '))}${plan.tiles.length>18?' …':''}</dd><dt>轨道</dt><dd>${escapeHtml(plan.directions.join(' → '))}</dd><dt>时间</dt><dd>${escapeHtml(temporal)}</dd><dt>输出</dt><dd><code>${escapeHtml(plan.output_dir)}</code></dd><dt>规划估算</dt><dd>${plan.raw_gib.toFixed(3)} GiB</dd></dl><p class="hint">${escapeHtml(plan.estimate_note)}</p>`;
     const needs=Boolean(plan.confirmation_phrase); $('phrase-wrap').hidden=!needs; $('phrase').value=''; $('phrase').placeholder=needs?plan.confirmation_phrase:'';
     $('confirm-dialog').showModal(); $('form-message').textContent='预检通过，请核对规划。';
   }catch(error){$('form-message').textContent=error.message}
@@ -341,6 +341,7 @@ document.querySelectorAll('[data-workflow]').forEach(el=>el.onclick=()=>setWorkf
 document.querySelectorAll('[data-mode]').forEach(el=>el.onclick=()=>setSelection(el.dataset.mode));
 $('apply-bbox').onclick=applyBBox;$('submit').onclick=preflight;$('confirm-run').onclick=confirmTask;$('refresh-tasks').onclick=loadTasks;
 $('include-static').onchange=()=>{$('static-options').hidden=!$('include-static').checked};
+$('resolution').onchange=()=>{$('resampling-note').textContent=$('resolution').value==='10'?'10 米采用 NoData 感知双线性插值；后向散射先在功率域插值，再转换为 dB。分类静态层仍采用最近邻。':'30 米采用最近邻重投影，保持现有产品兼容。'};
 $('aoi-file').onchange=async event=>{try{const file=event.target.files[0];if(!file)return;state.aoi=polygonGeometry(JSON.parse(await file.text()));$('aoi-status').textContent=`已载入 ${file.name}（EPSG:4326）`;drawAOI()}catch(error){$('aoi-status').textContent=error.message}};
 $('browse-output').onclick=()=>openDirectoryBrowser('output',$('output').value);
 $('close-output').onclick=()=>$('output-dialog').close();$('dir-up').onclick=()=>browseDirectory($('dir-up').dataset.parent);$('create-folder').onclick=createFolder;
