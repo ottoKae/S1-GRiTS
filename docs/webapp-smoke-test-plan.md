@@ -11,9 +11,9 @@
 | 项目 | 固定值 |
 |---|---|
 | 服务 | `http://127.0.0.1:5556` |
-| 正式仓库 | `D:\Project\claude-demo\data_pipeline\S1-GRiTS` |
+| 正式仓库 | `D:\path\to\S1-GRiTS` |
 | Python 环境 | `py312_s1grits_v3` |
-| 服务工作区 | `D:\Project\claude-demo\data_pipeline\S1-GRiTS\webapp_output` |
+| 服务工作区 | `D:\S1-GRiTS-output` |
 | 工作流 | 逐景时序 `scenes` |
 | MGRS 瓦片 | `49RGP` |
 | 轨道方向 | 仅升轨 `ASCENDING` |

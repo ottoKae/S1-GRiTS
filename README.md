@@ -184,14 +184,14 @@ S1-GRiTS is designed for researchers and practitioners who need **large-scale, l
 ## Quick Start
 
 ```bash
-# 1. Install (Python 3.12; geospatial wheels ship for linux/macos/windows)
-pip install s1grits
+# 1. Install with the canonical Chinese web console (Python 3.12)
+pip install "s1grits[web]"
 
 # 2. (Optional) Earthdata auth for ASF downloads — ~/.netrc with your
 #    urs.earthdata.nasa.gov credentials. See docs/installation.md.
 
-# 3. Copy a config template and set your ROI + time range
-cp config/s1grits_scenes.yaml my_run.yaml
+# 3. Generate a config from the installed wheel; no repository clone is needed
+s1grits init my_run.yaml
 
 # 4. Validate the environment and config, then run
 s1grits doctor --config my_run.yaml
@@ -200,6 +200,11 @@ s1grits process_scenes --config my_run.yaml
 # 5. 启动中文下载与目录检索控制台（workspace 是安全输出根）
 s1grits serve /path/to/output --port 5556
 ```
+
+The packaged browser interface is the **Chinese v3 console**. The removed
+Streamlit/English prototype is not shipped or tracked; a future English UI
+will be translated from this single frontend instead of maintained as a second
+implementation.
 
 Full installation options (conda, from-source, extras), authentication setup
 and first-run guidance: **[docs/installation.md](docs/installation.md)**.
@@ -254,6 +259,7 @@ Standalone static YAML downloads are intentionally unsupported because static ge
 | [Bounded-Memory Architecture](docs/scenes_blockwise_architecture.md) | The blockwise scenes pipeline design |
 | [FAQ](docs/faq.md) | Common questions and troubleshooting |
 | [Changelog](CHANGELOG.md) | Release history |
+| [Release Process](docs/release.md) | Version/tag contract, local gate, wheel checks and PyPI publication |
 
 
 ## License & Citation

@@ -7,9 +7,8 @@ title: "S1-GRiTS: Sentinel-1 Gridded RTC Time Series Data Cube"
 authors:
   - family-names: Rao
     given-names: Keyi
-    email: r1536803768@gmail.com
-version: 2.3.0
-date-released: 2026-07-06
+version: 3.0.0
+date-released: 2026-08-11
 url: "https://github.com/ottoKae/S1-GRiTS"
 repository-code: "https://github.com/ottoKae/S1-GRiTS"
 license: PolyForm-Noncommercial-1.0.0

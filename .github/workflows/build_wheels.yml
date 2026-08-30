@@ -117,6 +117,18 @@ jobs:
           echo "is-prerelease=${IS_PRERELEASE}" >> "${GITHUB_OUTPUT}"
           echo "should-publish=${SHOULD_PUBLISH}" >> "${GITHUB_OUTPUT}"
 
+      - name: Run repository release contract
+        shell: bash
+        env:
+          SHOULD_PUBLISH: ${{ steps.version.outputs.should-publish }}
+        run: |
+          set -euo pipefail
+          if [[ "${SHOULD_PUBLISH}" == "true" ]]; then
+            python tools/release_check.py --release-tag "${GITHUB_REF_NAME}"
+          else
+            python tools/release_check.py
+          fi
+
   test:
     name: Test (${{ matrix.os }}, py${{ matrix.python-version }})
     needs: validate-tag

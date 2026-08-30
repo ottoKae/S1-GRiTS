@@ -7,6 +7,19 @@ the full history.
 
 ## Unreleased
 
+### Added
+- `s1grits init [FILE]` writes the package-owned starter scenes/monthly YAML,
+  so PyPI users no longer need a repository checkout to begin.
+- `tools/release_check.py` provides offline candidate and strict-tag release
+  gates for version, package assets, canonical frontend and Git state.
+
+### Changed
+- The bundled v3 Chinese web console is the single canonical frontend. The
+  retired Streamlit/English prototype remains absent from source and wheels;
+  future English support will internationalize this frontend.
+- Quick starts install `s1grits[web]` when they instruct users to run
+  `s1grits serve`, and document the complete wheel-first setup path.
+
 ## [3.0.0] - 2026-08-11
 
 The **development → stable** release retires deprecated paths, completes the

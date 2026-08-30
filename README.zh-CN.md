@@ -142,22 +142,26 @@ S1-GRiTS 面向需要开展大范围、长时序 SAR 分析，同时希望避免
 ## 快速开始
 
 ```bash
-# 1. 安装（Python 3.12，Linux/macOS/Windows 均有地理空间依赖包）
-pip install s1grits
+# 1. 安装并包含正式中文 Web 控制台（Python 3.12）
+pip install "s1grits[web]"
 
 # 2. 可选：为 ASF 下载配置 Earthdata 认证
 #    在 ~/.netrc 中填写 urs.earthdata.nasa.gov 凭据，详见 docs/installation.md
 
-# 3. 复制配置模板并设置研究区和时间范围
-cp config/s1grits_scenes.yaml my_run.yaml
+# 3. 从已安装 wheel 生成配置，不需要克隆 GitHub 仓库
+s1grits init my_run.yaml
 
 # 4. 检查环境和配置，然后运行
 s1grits doctor --config my_run.yaml
 s1grits process_scenes --config my_run.yaml
 
 # 5. 在网页界面浏览结果
-s1grits serve --root /path/to/output
+s1grits serve --root /path/to/output --port 5556
 ```
+
+当前随 Python 包发布的是 **v3 中文控制台**。已经移除的
+Streamlit/英文原型不再打包或跟踪；以后需要英文界面时，应从同一套中文前端做国际化，
+不再维护第二套相互漂移的页面代码。
 
 conda、源码安装、可选依赖、认证和首次运行说明见 **[安装文档](docs/installation.md)**。
 
@@ -209,6 +213,7 @@ s1grits static ensure --output-dir /path/to/output --product-label smonthly_ASCE
 | [内存受控架构](docs/scenes_blockwise_architecture.md) | 分块 scenes 流水线设计 |
 | [常见问题](docs/faq.md) | 常见问题与故障排查 |
 | [更新日志](CHANGELOG.md) | 版本变更记录 |
+| [发布流程](docs/release.md) | 版本与 tag 契约、本地门禁、wheel 检查和 PyPI 发布 |
 
 ## 许可证与引用
 

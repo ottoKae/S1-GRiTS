@@ -47,6 +47,9 @@ jobs:
       - name: ruff (lint rules from pyproject)
         run: ruff check src tests tools benchmarks
 
+      - name: Repository privacy and release-source contract
+        run: python tools/release_check.py
+
       - name: mypy (typed-module allowlist from pyproject)
         run: mypy
 

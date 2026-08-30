@@ -5,18 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>S1-GRiTS 中国区数据立方体下载控制台</title>
   <link rel="stylesheet" href="/static/leaflet/leaflet.css">
-  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/styles.css?v=20260823-folder-browser-v3">
   </head>
 <body>
   <header class="topbar">
     <div class="brand-mark"><img class="brand-logo" src="/static/logo-mark.png?v=2" alt="S1-GRiTS"></div>
     <div>
       <h1>S1-GRiTS 数据立方体</h1>
-      <p>Sentinel-1 时序数据准备与目录检索 · 本地中文控制台</p>
+      <p>Sentinel-1 时序数据准备与本地数据 · 中文控制台</p>
     </div>
     <div class="top-actions">
       <span id="health" class="health">正在连接…</span>
-      <button class="ghost" id="open-catalog">目录检索</button>
     </div>
   </header>
 
@@ -30,17 +29,22 @@
 
       <div class="step-head"><span>2</span><div><b>空间与轨道</b><small>EPSG:4326 检索，MGRS 生产格网</small></div></div>
       <div class="segmented" id="selection-tabs">
-        <button class="active" data-mode="tiles">输入瓦片号</button>
-        <button data-mode="aoi">AOI / 矩形</button>
+        <button class="active" data-mode="tiles">瓦片选择</button>
+        <button data-mode="aoi">AOI 候选筛选</button>
+      </div>
+      <div class="selection-summary">
+        <span>最终选择：<b id="selected-count">0</b> 个瓦片</span>
+        <button class="text-button" id="clear-tiles" type="button">清空瓦片</button>
       </div>
       <section id="tile-pane">
         <label>MGRS 瓦片（空格、逗号或换行分隔）</label>
         <textarea id="tiles" rows="3" placeholder="例如：49RGP 49RGQ"></textarea>
-        <p class="hint">将使用项目内置 <code>mgrs.parquet</code> 校验，不接受未知编号。</p>
+        <p class="hint">文本输入与地图点击双向同步；再次点击已选瓦片即可取消。刷新本页仍保留本次会话的选择。</p>
       </section>
       <section id="aoi-pane" hidden>
-        <label>导入 GeoJSON</label>
-        <label class="file-picker"><span>选择 .geojson / .json</span><input id="aoi-file" type="file" accept=".geojson,.json,application/geo+json"></label>
+        <label>导入 AOI</label>
+        <label class="file-picker"><span>选择 GeoJSON、Shapefile ZIP，或同时选择 SHP 组件</span><input id="aoi-file" type="file" multiple accept=".geojson,.json,.zip,.shp,.shx,.dbf,.prj,.cpg,application/geo+json,application/zip"></label>
+        <p class="hint">Shapefile 至少需要 .shp、.shx、.dbf、.prj；服务端读取其 CRS 并统一转换到 EPSG:4326。</p>
         <div class="divider"><span>或输入经纬度矩形</span></div>
         <div class="bbox-grid">
           <label>西 <input id="west" type="number" step="0.0001" value="109"></label>
@@ -48,8 +52,14 @@
           <label>南 <input id="south" type="number" step="0.0001" value="29"></label>
           <label>北 <input id="north" type="number" step="0.0001" value="33.5"></label>
         </div>
-        <button class="secondary wide" id="apply-bbox">应用矩形 AOI</button>
+        <button class="secondary wide" id="apply-bbox" type="button">应用矩形 AOI</button>
         <p id="aoi-status" class="hint">当前未设置 AOI。</p>
+        <div class="aoi-actions">
+          <button class="secondary" id="select-candidates" type="button" disabled>全选候选</button>
+          <button class="secondary" id="deselect-candidates" type="button" disabled>取消候选选择</button>
+          <button class="secondary" id="clear-aoi" type="button" disabled>清除 AOI</button>
+        </div>
+        <p class="hint">AOI 只限定候选范围，不遮挡地图点击；清除 AOI 不会清除已选择的瓦片。</p>
       </section>
       <label>轨道方向</label>
       <select id="direction">
@@ -110,17 +120,97 @@
         <div class="map-shell">
           <div id="map" aria-label="中国区域空间预检地图"></div>
           <div id="map-error" class="map-error" hidden></div>
+          <div id="map-status" class="map-status" role="status" aria-live="polite" hidden></div>
           <div class="basemap-switch" id="basemap-switch">
             <button class="active" data-basemap="road">道路</button>
-            <button data-basemap="satellite">影像</button>
+            <button data-basemap="satellite">卫星</button>
             <button class="active overlay-toggle" id="toggle-mgrs" aria-pressed="true" title="缩放至4级后显示MGRS格网">MGRS格网</button>
+            <button class="overlay-toggle" id="toggle-local-data" aria-pressed="true" hidden>本地数据</button>
+          </div>
+          <div class="map-layer-legend" aria-label="地图图层图例">
+            <span><i class="legend-mgrs"></i>MGRS</span>
+            <span><i class="legend-candidate"></i>AOI候选</span>
+            <span><i class="legend-selected"></i>下载选择</span>
+            <span id="legend-local-data" hidden><i class="legend-catalog"></i>本地数据</span>
           </div>
         </div>
       </div>
 
       <section class="task-dock">
-        <div class="dock-head"><b>任务中心</b><button class="ghost" id="refresh-tasks">刷新</button></div>
-        <div id="tasks" class="task-list"></div>
+        <div class="dock-head">
+          <div class="dock-tabs" role="tablist" aria-label="工作区">
+            <button id="tasks-tab" class="active" role="tab" aria-selected="true">任务中心</button>
+            <button id="local-search-tab" role="tab" aria-selected="false">本地数据</button>
+          </div>
+          <button class="ghost" id="refresh-tasks">刷新任务</button>
+        </div>
+        <div id="tasks-pane" class="dock-pane" role="tabpanel" aria-labelledby="tasks-tab">
+          <div id="tasks" class="task-list"></div>
+        </div>
+        <div id="local-search-pane" class="dock-pane local-search-pane" role="tabpanel" aria-labelledby="local-search-tab" hidden>
+          <input id="cat-output" type="hidden" value="">
+          <section id="catalog-empty" class="catalog-empty-state">
+            <div class="catalog-folder-icon" aria-hidden="true">📁</div>
+            <div class="catalog-empty-copy">
+              <h3>选择本地数据立方体</h3>
+              <p>请选择根目录直接包含 <code>catalog.parquet</code> 的文件夹，选择后将自动校验并显示在地图上。</p>
+            </div>
+            <div class="catalog-home-actions">
+              <button id="select-catalog-folder" class="primary" type="button">选择数据立方体文件夹</button>
+              <button id="open-manual-catalog" class="secondary" type="button">手动输入路径</button>
+            </div>
+            <p id="catalog-home-message" class="hint" role="status"></p>
+            <details id="recent-catalogs" class="recent-catalogs" hidden>
+              <summary>最近使用的数据</summary>
+              <div id="recent-catalog-list" class="recent-catalog-list"></div>
+            </details>
+          </section>
+
+          <section id="catalog-selection" class="catalog-selection" hidden>
+            <div class="catalog-selection-card">
+              <div class="catalog-folder-icon small" aria-hidden="true">📁</div>
+              <div class="catalog-selection-copy">
+                <b id="catalog-selection-name">本地数据立方体</b>
+                <code id="catalog-selection-path"></code>
+              </div>
+              <div class="catalog-selection-actions">
+                <button id="change-catalog-folder" class="secondary" type="button">更换文件夹</button>
+                <button id="forget-catalog-folder" class="secondary danger" type="button">忘记记录</button>
+              </div>
+            </div>
+
+            <div class="local-search-feedback">
+              <div id="catalog-status" class="catalog-status checking">正在检查本地数据立方体…</div>
+              <p id="catalog-message" class="hint"></p>
+            </div>
+
+            <section id="catalog-discovery" class="catalog-discovery" hidden>
+              <div><b>当前文件夹没有 Catalog</b><p id="catalog-discovery-message">可以重新选择，或只检查它的一级子目录。</p></div>
+              <div class="catalog-discovery-actions"><button id="scan-catalog-children" class="secondary" type="button">查找一级子目录</button><button id="reselect-catalog-folder" class="primary" type="button">重新选择文件夹</button></div>
+              <div id="catalog-candidate-list" class="catalog-candidate-list"></div>
+            </section>
+
+            <div id="catalog-ready-tools" hidden>
+              <div class="local-search-toolbar">
+                <input id="cat-tile" placeholder="瓦片，如 49RGP">
+                <select id="cat-product"><option value="">全部产品</option><option>scenes</option><option>monthly</option><option>smonthly</option><option>static</option></select>
+                <select id="cat-direction"><option value="">全部轨道</option><option>ASCENDING</option><option>DESCENDING</option></select>
+                <input id="cat-month" placeholder="月份 YYYY-MM">
+                <select id="cat-status"><option value="">全部状态</option><option>complete</option><option>partial</option><option>empty</option><option>failed</option><option>deprecated</option></select>
+                <button id="query-catalog" class="primary" type="button" disabled>检索并上图</button>
+                <button id="report-catalog" class="secondary" type="button" disabled>报告</button>
+                <button id="clear-catalog-map" class="secondary" type="button" disabled>清除图层</button>
+              </div>
+              <section id="catalog-report" class="catalog-report compact" hidden>
+                <div id="report-summary" class="report-summary"></div>
+                <div class="report-columns">
+                  <div><h3>产品与状态</h3><div id="report-counts"></div></div>
+                  <div><h3>时间完整性</h3><div id="report-gaps"></div></div>
+                </div>
+              </section>
+            </div>
+          </section>
+        </div>
       </section>
     </section>
   </main>
@@ -129,9 +219,22 @@
     <form method="dialog" class="dialog-card">
       <h2>确认下载规划</h2>
       <div id="plan-summary"></div>
-      <label id="phrase-wrap" hidden>输入服务器确认短语<input id="phrase" autocomplete="off"></label>
+      <section id="phrase-wrap" class="confirmation-gate" hidden>
+        <b>大任务二次确认</b>
+        <p id="phrase-reason" class="hint"></p>
+        <div class="confirmation-phrase"><code id="phrase-example"></code><button id="copy-phrase" class="secondary" type="button">复制短语</button></div>
+        <label>请准确输入上方短语<input id="phrase" autocomplete="off"></label>
+      </section>
       <div class="dialog-actions"><button value="cancel" class="secondary">返回修改</button><button value="default" id="confirm-run" class="primary">确认并执行</button></div>
     </form>
+  </dialog>
+
+  <dialog id="recovery-dialog" aria-labelledby="recovery-title">
+    <div class="dialog-card recovery-card">
+      <h2 id="recovery-title">恢复中断任务</h2>
+      <div id="recovery-summary"></div>
+      <div class="dialog-actions"><button id="close-recovery" class="secondary" type="button">取消</button><button id="confirm-recovery" class="primary" type="button" disabled>确认恢复</button></div>
+    </div>
   </dialog>
 
   <dialog id="output-dialog">
@@ -145,32 +248,51 @@
     </div>
   </dialog>
 
-  <dialog id="catalog-dialog" aria-labelledby="catalog-title">
-    <div class="dialog-card catalog-card">
-      <div class="dialog-title"><div><h2 id="catalog-title">Catalog 检索与报告</h2><p>先选择数据立方体根目录，通过 Catalog v8 校验后再进行查询或报告。</p></div><button id="close-catalog" class="dialog-close" type="button" aria-label="关闭目录检索">×</button></div>
-      <section class="catalog-source">
-        <label for="cat-output">数据立方体目录</label>
-        <div class="inline"><input id="cat-output" placeholder="尚未选择目录" value="hubei_s1_cube" readonly><button id="browse-catalog" class="secondary" type="button">选择文件夹</button></div>
-        <div id="catalog-status" class="catalog-status neutral">尚未打开 Catalog</div>
-      </section>
-      <div class="catalog-filters">
-        <input id="cat-tile" placeholder="瓦片，如 49RGP">
-        <select id="cat-product"><option value="">全部产品</option><option>scenes</option><option>monthly</option><option>smonthly</option><option>static</option></select>
-        <select id="cat-direction"><option value="">全部轨道</option><option>ASCENDING</option><option>DESCENDING</option></select>
-        <input id="cat-month" placeholder="月份 YYYY-MM">
-        <button id="query-catalog" class="primary" type="button" disabled>查询</button>
-        <button id="report-catalog" class="secondary" type="button" disabled>生成报告</button>
-      </div>
-      <p id="catalog-message" class="hint"></p>
-      <section id="catalog-report" class="catalog-report" hidden>
-        <div id="report-summary" class="report-summary"></div>
-        <div class="report-columns">
-          <div><h3>产品与状态</h3><div id="report-counts"></div></div>
-          <div><h3>时间完整性</h3><div id="report-gaps"></div></div>
+  <dialog id="catalog-detail-dialog" aria-labelledby="catalog-detail-title">
+    <div class="dialog-card catalog-detail-card">
+      <div class="dialog-title"><div><h2 id="catalog-detail-title">本地数据详情</h2><p id="catalog-detail-meta"></p></div><button id="close-catalog-detail" class="dialog-close" type="button" aria-label="关闭本地数据详情">×</button></div>
+      <div class="table-wrap"><table><thead><tr><th>Item</th><th>产品</th><th>轨道</th><th>时间</th><th>Grid ID</th><th>Zarr</th><th>状态</th></tr></thead><tbody id="catalog-detail-body"></tbody></table></div>
+    </div>
+  </dialog>
+
+  <dialog id="catalog-folder-dialog" aria-labelledby="catalog-folder-title">
+    <div class="dialog-card catalog-folder-card">
+      <div class="dialog-title">
+        <div>
+          <h2 id="catalog-folder-title">选择数据立方体文件夹</h2>
+          <p>逐级打开本机文件夹，选择后将检查根目录中的 <code>catalog.parquet</code>。</p>
         </div>
-      </section>
-      <div class="table-wrap"><table><thead><tr><th>Item</th><th>瓦片</th><th>产品</th><th>轨道</th><th>时间</th><th>Grid ID</th><th>Zarr</th><th>状态</th></tr></thead><tbody id="catalog-body"></tbody></table></div>
-      <div class="dialog-actions"><button id="close-catalog-bottom" class="secondary" type="button">关闭目录检索</button></div>
+        <button id="close-catalog-folder" class="dialog-close" type="button" aria-label="关闭文件夹选择器">×</button>
+      </div>
+      <div class="catalog-folder-toolbar">
+        <button id="catalog-folder-up" class="secondary" type="button" disabled>上一级</button>
+        <div class="catalog-folder-location">
+          <span>当前位置</span>
+          <code id="catalog-folder-current" title="此电脑">此电脑</code>
+        </div>
+      </div>
+      <div id="catalog-folder-status" class="catalog-folder-status" role="status" aria-live="polite">正在读取可用位置…</div>
+      <div id="catalog-folder-list" class="catalog-folder-list" role="list" aria-busy="true"></div>
+      <button id="retry-catalog-folders" class="secondary catalog-folder-retry" type="button" hidden>重新加载</button>
+      <div class="catalog-folder-alternatives">
+        <span>目录较深时，也可以直接输入路径</span>
+        <button id="manual-catalog-folder" class="secondary" type="button">手动输入绝对路径</button>
+      </div>
+      <div class="dialog-actions">
+        <button id="cancel-catalog-folder" class="secondary" type="button">取消</button>
+        <button id="select-current-catalog-folder" class="primary" type="button" disabled>选择此文件夹</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="catalog-root-dialog" aria-labelledby="catalog-root-title">
+    <div class="dialog-card catalog-root-card">
+      <h2 id="catalog-root-title">手动输入数据文件夹</h2>
+      <p class="hint">请输入服务所在电脑上的绝对路径。该目录只用于本地检索，不会成为任务输出位置。</p>
+      <label>文件夹绝对路径<input id="catalog-root-path" autocomplete="off" placeholder="例如 D:\data\s1_cube"></label>
+      <label>显示名称（可选）<input id="catalog-root-label" autocomplete="off" placeholder="例如 湖北历史数据"></label>
+      <p id="catalog-root-message" class="message" role="status"></p>
+      <div class="dialog-actions"><button id="close-catalog-root" class="secondary" type="button">取消</button><button id="register-catalog-root" class="primary" type="button">打开文件夹</button></div>
     </div>
   </dialog>
 
@@ -192,6 +314,6 @@
   </dialog>
 
   <script src="/static/leaflet/leaflet.js"></script>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=20260823-folder-browser-v3"></script>
 </body>
 </html>

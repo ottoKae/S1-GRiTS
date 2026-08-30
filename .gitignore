@@ -97,3 +97,13 @@ temp/
 *.tmp
 *.bak
 *.bak2
+
+# Local production operations. These files can contain workstation paths,
+# remote hosts, account names, mount points or one-off recovery state. Keep
+# them outside the public source tree even when using `git add .`.
+config/ecuador_*/
+config/ecuador_*.yaml
+config/recovery_ecuador/
+docs/ecuador_*.md
+scripts/*ecuador*
+scripts/sftp_ecuador*

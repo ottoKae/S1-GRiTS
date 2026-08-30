@@ -1,0 +1,7 @@
+include CHANGELOG.md
+include README.zh-CN.md
+include docs/cli.md
+include docs/installation.md
+include docs/release.md
+include docs/webapp.md
+include tools/release_check.py
