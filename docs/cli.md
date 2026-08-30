@@ -8,6 +8,7 @@ S1-GRiTS provides **10+ commands** covering the full workflow: processing, catal
 
 | Command | Purpose | Workflow |
 |---------|---------|----------|
+| `s1grits init [FILE]` | Write a wheel-bundled starter YAML without cloning the repository | Setup |
 | `s1grits process_scenes` | Per-acquisition scene outputs (+ optional monthly composites) | Scenes |
 | `s1grits static ensure` | Catalog-matched time-invariant static layers | Static |
 | `s1grits catalog resync` | Rebuild catalog + STAC from filesystem (no re-processing) | All |
@@ -23,10 +24,26 @@ S1-GRiTS provides **10+ commands** covering the full workflow: processing, catal
 
 ```bash
 s1grits --help
+s1grits init --help
 s1grits process_scenes --help
 s1grits catalog --help
 s1grits mosaic --help
 ```
+
+---
+
+### First-run configuration
+
+Generate a minimal scenes/monthly configuration directly from an installed
+wheel. Existing files are not overwritten unless `--force` is explicit.
+
+```bash
+s1grits init my_run.yaml
+s1grits doctor --config my_run.yaml
+```
+
+This is the supported PyPI quick-start path. Paths under the repository's
+`config/` directory are available only in a source checkout.
 
 ---
 

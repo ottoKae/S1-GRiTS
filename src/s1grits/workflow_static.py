@@ -59,6 +59,11 @@ from s1grits.product_instance import (
     resolve_variant_values, make_processing_signature,
     make_product_variant,
 )
+from s1grits.resampling import (
+    rasterio_resampling,
+    resolve_resampling_method,
+    validate_target_resolution,
+)
 from s1grits.product_registry import load_product_registry
 from s1grits.file_lock import acquire_lock, release_lock
 
@@ -915,6 +920,13 @@ def _process_one_static_group(
         g_zarr.attrs['processing_signature'] = _proc_sig_z
         g_zarr.attrs['product_variant'] = _prod_var_z
         g_zarr.attrs['processing_variant_json'] = _json.dumps(_variant_vals_z)
+        g_zarr.attrs['target_resolution_m'] = validate_target_resolution(
+            abs(float(master_transform.a))
+        )
+        g_zarr.attrs['resampling_method'] = resolve_resampling_method(
+            abs(float(master_transform.a)),
+            (config.get('processing') or {}).get('resampling_method', 'auto'),
+        )
         g_zarr.attrs['product_label'] = product_label
         _ggid = f"{mgrs_tile_id}_{direction_label}_TK{track_token_safe}"
         g_zarr.attrs['geometry_group_id'] = _ggid
@@ -953,8 +965,15 @@ def _process_one_static_group(
             layers_written[layer] = None
             continue
 
+        _target_resolution = validate_target_resolution(abs(float(master_transform.a)))
+        _method = resolve_resampling_method(
+            _target_resolution,
+            (config.get('processing') or {}).get('resampling_method', 'auto'),
+            categorical=(layer == 'ls_map'),
+        )
         mosaicked = _mosaic_align(
             indices, arrs, profs, height, width, master_transform, target_crs,
+            resampling=rasterio_resampling(_method),
         )
         if mosaicked is None:
             logger.warning(
@@ -1304,9 +1323,16 @@ def process_static_for_tile(
         # ---- Build master grid (MGRS tile grid, shared across all groups) ----
         processing_config = config.get('processing') or {}
         static_config = config.get('static_layers') or {}
-        target_res = processing_config.get(
-            'target_resolution', static_config.get('target_resolution', 30.0)
+        target_res = validate_target_resolution(
+            processing_config.get(
+                'target_resolution', static_config.get('target_resolution', 30.0)
+            )
         )
+        processing_config['target_resolution'] = target_res
+        processing_config['resampling_method'] = resolve_resampling_method(
+            target_res, processing_config.get('resampling_method', 'auto')
+        )
+        config['processing'] = processing_config
         cog_block = processing_config.get(
             'cog_block_size', static_config.get('cog_block_size', 256)
         )

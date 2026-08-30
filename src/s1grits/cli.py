@@ -854,7 +854,7 @@ def cmd_mosaic_scenes(args):
 
 
 def cmd_serve(args):
-    """Run the v2.3 web UI + API over a workspace directory."""
+    """Run the v3 Chinese web console + API over a workspace directory."""
     root = args.root or args.workspace
     if not root:
         console.print(
@@ -879,7 +879,27 @@ def cmd_serve(args):
     serve(
         root=root, host=args.host, port=args.port, token=args.token,
         max_concurrent_jobs=args.max_concurrent_jobs, insecure=args.insecure,
+        catalog_roots=args.catalog_root,
     )
+
+
+def cmd_init(args):
+    """Write the package-owned starter configuration without overwriting files."""
+    from s1grits.templates import DEFAULT_SCENES_CONFIG
+
+    target = Path(args.output).expanduser()
+    if target.exists() and not args.force:
+        console.print(
+            f"[red]ERROR: {target} already exists.[/red] "
+            "Use --force only when you intend to replace it."
+        )
+        raise SystemExit(1)
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(DEFAULT_SCENES_CONFIG, encoding="utf-8", newline="\n")
+    console.print(f"[green]Created starter config: {target.resolve()}[/green]")
+    console.print("Next: s1grits doctor --config " + str(target))
+    raise SystemExit(0)
 
 
 def main():
@@ -890,6 +910,9 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''\
 Examples:
+  # Create a starter config (works after a PyPI install; no repository clone needed)
+  s1grits init my_run.yaml
+
   # Run processing workflows
   s1grits process_scenes   --config config/s1grits_scenes.yaml    # per-pass scenes + smonthly
   s1grits static ensure --output-dir ./output --product-label smonthly_ASCENDING
@@ -926,6 +949,20 @@ Examples:
     subparsers = parser.add_subparsers(
         dest='command', metavar='<command>', help='Available commands'
     )
+
+    parser_init = subparsers.add_parser(
+        'init',
+        help='Write a starter scenes YAML configuration',
+    )
+    parser_init.add_argument(
+        'output', nargs='?', default='s1grits.yaml',
+        help='Destination YAML path (default: ./s1grits.yaml)',
+    )
+    parser_init.add_argument(
+        '--force', action='store_true',
+        help='Replace an existing destination file',
+    )
+    parser_init.set_defaults(func=cmd_init)
 
     # ── static ensure ────────────────────────────────────────────────────────
     parser_static = subparsers.add_parser(
@@ -1138,7 +1175,7 @@ Examples:
     )
     parser_mosaic_scenes.set_defaults(func=cmd_mosaic_scenes)
 
-    # ── serve (v2.3 web UI) ───────────────────────────────────────────────────
+    # ── serve (v3 Chinese web console) ────────────────────────────────────────
     parser_serve = subparsers.add_parser(
         'serve',
         help='Run the web UI + API over a workspace (requires s1grits[web])'
@@ -1165,6 +1202,13 @@ Examples:
     parser_serve.add_argument(
         '--max-concurrent-jobs', type=int, default=1,
         help='Concurrent pipeline jobs (default 1; runs parallelise internally)'
+    )
+    parser_serve.add_argument(
+        '--catalog-root', action='append', default=[],
+        help=(
+            'Additional read-only local-data root; repeatable. '
+            'Accepts PATH or LABEL=PATH.'
+        ),
     )
     parser_serve.add_argument(
         '--insecure', action='store_true',

@@ -103,6 +103,7 @@ KNOWN_KEYS: dict = {
         "features_glcm": None,
         "tile_clip": None,
         "target_resolution": None,
+        "resampling_method": None,
         "zarr_chunks": {"y": None, "x": None},
         "cog_block_size": None,
         "despeckle": None,  # method + free-form kwargs

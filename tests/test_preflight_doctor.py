@@ -119,7 +119,9 @@ def test_doctor_with_template_config(tmp_path):
     # Template config but with a writable tmp output dir and disk check off.
     import yaml
     from s1grits.doctor import run_doctor
-    cfg = yaml.safe_load((_ROOT / "config" / "s1grits_scenes.yaml").read_text())
+    cfg = yaml.safe_load(
+        (_ROOT / "config" / "s1grits_scenes.yaml").read_text(encoding="utf-8")
+    )
     cfg["output"]["base_dir"] = str(tmp_path / "out")
     cfg["preflight"] = {"disk": {"mode": "off"}}
     p = tmp_path / "cfg.yaml"

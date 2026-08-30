@@ -239,7 +239,8 @@ makes the combined command unsuccessful if static output is incomplete;
 
 ```yaml
 processing:
-  target_resolution: 30.0          # Meters
+  target_resolution: 30.0          # Fixed choices: 30 or 10 metres
+  resampling_method: auto          # auto | nearest | bilinear
   target_crs: null                 # null = auto-derive UTM zone from MGRS tile
   tile_clip: true                  # Clip outputs to MGRS tile boundary
   
@@ -249,6 +250,14 @@ processing:
   
   cog_block_size: 256              # COG internal tile size
 ```
+
+`auto` is the recommended contract: 30 m resolves to `nearest` for backward
+compatibility, while 10 m resolves to NoData-aware `bilinear`. Backscatter is
+interpolated in linear-power space before conversion to dB. The categorical
+`ls_map` static layer always uses nearest-neighbour resampling. A 10 m grid has
+nine times as many pixels as the same 30 m extent; use a separate output root
+when both resolutions must be retained. See
+[Target Grid and Resampling v1](target-grid-resampling-v1.md).
 
 #### Monthly Workflow Processing Options
 

@@ -23,10 +23,10 @@ requires-python = ">=3.12,<3.13"
 license = "PolyForm-Noncommercial-1.0.0"
 license-files = ["LICENSE", "LICENSE-COMMERCIAL.md"]
 authors = [
-    {name = "ottoKae", email = "r1536803768@gmail.com"},
+    {name = "ottoKae"},
 ]
 maintainers = [
-    {name = "ottoKae", email = "r1536803768@gmail.com"},
+    {name = "ottoKae"},
 ]
 keywords = [
     "sentinel-1",
@@ -126,9 +126,10 @@ notebook = [
     "ipywidgets>=8.0.0",
 ]
 web = [
-    # v2.3 web UI: `s1grits serve` (see docs/webapp.md)
+    # v3 canonical Chinese web console: `s1grits serve` (see docs/webapp.md)
     "fastapi>=0.110.0",
     "uvicorn>=0.29.0",
+    "python-multipart>=0.0.9",
 ]
 all = [
     "s1grits[dev,notebook,web,ml]",
@@ -153,10 +154,13 @@ where = ["src"]
     "py.typed",
 ]
 "s1grits.webapp" = [
-    # v2.3 web UI frontend (zero-build static SPA)
+    # v3 canonical Chinese frontend (zero-build static SPA)
     "static/*.html",
     "static/*.css",
     "static/*.js",
+    "static/*.png",
+    "static/leaflet/*.css",
+    "static/leaflet/*.js",
 ]
 "s1grits.analysis" = ["*.py"]
 

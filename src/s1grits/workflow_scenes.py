@@ -257,6 +257,22 @@ def run_scenes_workflow(config_path: str | Path, overrides: dict | None = None) 
     )
     config = load_config(config_path)
     config = apply_output_overrides_and_stac(config, overrides)
+    from s1grits.resampling import (
+        resolve_resampling_method,
+        validate_target_resolution,
+    )
+    _processing = config.setdefault('processing', {})
+    _target_resolution = validate_target_resolution(
+        _processing.get('target_resolution', 30.0)
+    )
+    _resolved_resampling = resolve_resampling_method(
+        _target_resolution, _processing.get('resampling_method', 'auto')
+    )
+    # Persist the resolved values in the in-memory config so worker processes,
+    # static post-processing, Zarr metadata and Catalog signatures all record
+    # one unambiguous processing contract.
+    _processing['target_resolution'] = _target_resolution
+    _processing['resampling_method'] = _resolved_resampling
     # Warn-only: surface misspelled/misplaced YAML keys that dict.get() would
     # otherwise silently ignore (e.g. processing.on_time_conflict).
     from s1grits.config_schema import (

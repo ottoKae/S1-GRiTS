@@ -60,7 +60,7 @@ SUPPORT_RADIUS = _CFG["window_size"] // 2 + _CFG["distance"]  # = 3
 # ---------------------------------------------------------------------------
 def test_scenes_master_grid_uses_burst_union_not_tile_bounds():
     from s1grits.scenes import pipeline as ws_pipeline
-    src = Path(ws_pipeline.__file__).read_text()
+    src = Path(ws_pipeline.__file__).read_text(encoding="utf-8")
     # Strip comment bodies so a comment that merely *names* the tile-bounds
     # builder (e.g. a "do NOT switch to ..." warning) does not trip the guard;
     # we only care about real call sites.

@@ -25,9 +25,12 @@ conda activate s1grits
 # 2. Install geospatial core libraries via conda-forge (optional but recommended on Windows)
 conda install -c conda-forge rasterio geopandas rioxarray pyproj shapely
 
-# 3. Install s1grits from PyPI
-pip install s1grits
+# 3. Install s1grits from PyPI, including the canonical Chinese web console
+pip install "s1grits[web]"
 ```
+
+The base-only form (`pip install s1grits`) remains valid for headless CLI and
+Python API users. Use the `web` extra when `s1grits serve` is required.
 
 #### Option B: Install from source (developers)
 
@@ -53,11 +56,12 @@ python -m ipykernel install --user --name py312_s1grits --display-name "Python (
 jupyter lab
 ```
 
-#### Optional: web interface
+#### Chinese web console
 
 ```bash
 pip install "s1grits[web]"
-s1grits serve --root <workspace>  # see docs/webapp.md
+mkdir s1grits-output
+s1grits serve --root s1grits-output --port 5556  # see docs/webapp.md
 ```
 
 #### Install all extras
@@ -98,6 +102,14 @@ session.trust_env = True  # Allow reading .netrc
 ```
 
 ### Step 3: Configure
+
+PyPI users should generate the built-in starter template; unlike a repository
+path such as `config/s1grits_scenes.yaml`, this command is available from the
+installed wheel:
+
+```bash
+s1grits init my_run.yaml
+```
 
 Choose a workflow and edit the corresponding config file:
 

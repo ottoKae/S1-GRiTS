@@ -13,66 +13,151 @@ NOTE: deliberately NO ``from __future__ import annotations`` here — FastAPI
 resolves endpoint annotations at runtime, and stringified annotations cannot
 find the function-local request models defined inside create_app.
 """
+import base64
 import hmac
+import ipaddress
 import logging
+import os
+import subprocess
+import threading
 from pathlib import Path
 
 from s1grits.__version__ import __version__
+from s1grits.templates import DEFAULT_SCENES_CONFIG
 from s1grits.webapp.catalog_api import Workspace
+from s1grits.webapp.cn_api import ChineseConsole
 from s1grits.webapp.jobs import JOB_TYPES, JobManager
 
 logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
 
-# Config the job composer pre-fills; mirrors config/s1grits_scenes.yaml's
-# monthly-only production shape (kept minimal on purpose — the full annotated
-# template lives in the repo and docs).
-CONFIG_TEMPLATE = """\
-workflow: "scenes"
 
-roi:
-  manual_mgrs_tiles:
-    - "17MPU"
-  flight_direction: "ASCENDING"
-  polarization: "VV+VH"
+def _is_local_client_host(host: str) -> bool:
+    """Return whether an API client is on the server's loopback interface."""
+    value = str(host or "").strip()
+    if value == "testclient":
+        return True
+    try:
+        return ipaddress.ip_address(value).is_loopback
+    except ValueError:
+        return value.casefold() == "localhost"
 
-time:
-  full: 2026            # full archive up to this year (clipped to last complete month)
-  # or: years: [2026]  +  months: [1]
 
-output:
-  base_dir: "."          # forced to the server workspace on submit
-  existing_store: "resume"
-  existing_month: "skip"
-  formats: {cog: true, preview: true}
+def _pick_windows_directory() -> str | None:
+    """Open a server-local Windows folder chooser and return its path."""
+    if os.name != "nt":
+        raise RuntimeError("原生文件夹选择器仅支持运行在 Windows 上的本地服务")
+    command = (
+        "Add-Type -AssemblyName System.Windows.Forms;"
+        "Add-Type -AssemblyName System.Drawing;"
+        "$dialog=New-Object System.Windows.Forms.FolderBrowserDialog;"
+        "$dialog.Description='选择包含 catalog.parquet 的数据立方体或其父目录';"
+        "$dialog.ShowNewFolderButton=$false;"
+        "$owner=New-Object System.Windows.Forms.Form;"
+        "$owner.ShowInTaskbar=$false;"
+        "$owner.TopMost=$true;"
+        "$owner.FormBorderStyle=[System.Windows.Forms.FormBorderStyle]::FixedToolWindow;"
+        "$owner.StartPosition=[System.Windows.Forms.FormStartPosition]::CenterScreen;"
+        "$owner.Size=New-Object System.Drawing.Size(1,1);"
+        "$owner.Opacity=0;"
+        "$owner.Show();"
+        "$owner.Activate();"
+        "$owner.BringToFront();"
+        "$result=$dialog.ShowDialog($owner);"
+        "$owner.Close();"
+        "if($result -eq [System.Windows.Forms.DialogResult]::OK){"
+        "$bytes=[Text.Encoding]::Unicode.GetBytes($dialog.SelectedPath);"
+        "[Console]::Write([Convert]::ToBase64String($bytes))}"
+    )
+    try:
+        result = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-STA",
+                "-Command",
+                command,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="ascii",
+            errors="replace",
+            timeout=300,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"无法打开 Windows 文件夹选择器：{exc}") from exc
+    if result.returncode != 0:
+        message = result.stderr.strip() or f"PowerShell 返回 {result.returncode}"
+        raise RuntimeError(f"Windows 文件夹选择器失败：{message}")
+    encoded = result.stdout.strip()
+    if not encoded:
+        return None
+    try:
+        return base64.b64decode(encoded, validate=True).decode("utf-16-le")
+    except (ValueError, UnicodeError) as exc:
+        raise RuntimeError("Windows 文件夹选择器返回了无效路径") from exc
 
-processing:
-  target_resolution: 30.0
-  tile_clip: true
-  monthly:
-    enabled: true
-    only: true
-    composite_method: "nanmedian"
-    generate_cog: true
-    generate_preview: true
-    blockwise_threads: 2
 
-memory:
-  max_memory_gb: 'auto'
-  batch_strategy: 'auto'     # demand-aware
-  max_download_workers: 8
-  download_prefetch: true
+def _basemap_sources() -> dict[str, list[dict[str, object]]]:
+    """Return browser tile sources, allowing deployment-local overrides."""
+    defaults = {
+        "road": [
+            {
+                "name": "Google 道路",
+                "url": "https://{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}",
+                "attribution": "&copy; Google",
+                "max_zoom": 19,
+                "subdomains": ["mt0", "mt1", "mt2", "mt3"],
+            },
+            {
+                "name": "OpenStreetMap（备用）",
+                "url": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+                "attribution": "&copy; OpenStreetMap contributors",
+                "max_zoom": 19,
+            },
+        ],
+        "satellite": [
+            {
+                "name": "Google 卫星",
+                "url": "https://{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
+                "attribution": "Imagery &copy; Google",
+                "max_zoom": 19,
+                "subdomains": ["mt0", "mt1", "mt2", "mt3"],
+            },
+            {
+                "name": "Esri 卫星（备用）",
+                "url": (
+                    "https://server.arcgisonline.com/ArcGIS/rest/services/"
+                    "World_Imagery/MapServer/tile/{z}/{y}/{x}"
+                ),
+                "attribution": "Tiles &copy; Esri",
+                "max_zoom": 19,
+            },
+        ],
+    }
+    overrides = {
+        ("road", 0): os.getenv("S1GRITS_BASEMAP_ROAD_URL"),
+        ("road", 1): os.getenv("S1GRITS_BASEMAP_ROAD_FALLBACK_URL"),
+        ("satellite", 0): os.getenv("S1GRITS_BASEMAP_SATELLITE_URL"),
+        ("satellite", 1): os.getenv("S1GRITS_BASEMAP_SATELLITE_FALLBACK_URL"),
+    }
+    for (mode, index), url in overrides.items():
+        if url:
+            defaults[mode][index]["url"] = url
+            defaults[mode][index]["name"] += "（自定义）"
+    return defaults
 
-parallel:
-  enabled: true
-  max_workers: 2
-"""
+# Backward-compatible module name used by the API route and downstream tests.
+# The web job composer forces ``output.base_dir`` to its workspace on submit.
+CONFIG_TEMPLATE = DEFAULT_SCENES_CONFIG
 
 
 def create_app(root: Path | str, token: str | None = None,
                max_concurrent_jobs: int = 1,
-               job_cmd_prefix: list[str] | None = None):
+               job_cmd_prefix: list[str] | None = None,
+               catalog_roots: list[str] | None = None):
     """Build the FastAPI app for one workspace.
 
     ``job_cmd_prefix`` overrides the CLI command vector (tests inject a stub
@@ -92,6 +177,8 @@ def create_app(root: Path | str, token: str | None = None,
     workspace = Workspace(root)
     jobs = JobManager(workspace.root, max_concurrent=max_concurrent_jobs,
                       cmd_prefix=job_cmd_prefix)
+    console = ChineseConsole(workspace.root, jobs, catalog_roots=catalog_roots)
+    catalog_picker_lock = threading.Lock()
 
     app = FastAPI(
         title="S1-GRiTS Web API",
@@ -103,6 +190,7 @@ def create_app(root: Path | str, token: str | None = None,
     )
     app.state.workspace = workspace
     app.state.jobs = jobs
+    app.state.console = console
 
     # -- auth ----------------------------------------------------------
     @app.middleware("http")
@@ -116,7 +204,10 @@ def create_app(root: Path | str, token: str | None = None,
             if not hmac.compare_digest(supplied, token):
                 return JSONResponse({"detail": "Invalid or missing token"},
                                     status_code=401)
-        return await call_next(request)
+        response = await call_next(request)
+        if request.url.path in ("/", "/index.html", "/static/app.js", "/static/styles.css"):
+            response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return response
 
     # -- models --------------------------------------------------------
     class JobRequest(BaseModel):
@@ -124,11 +215,68 @@ def create_app(root: Path | str, token: str | None = None,
         title: str | None = None
         config_yaml: str | None = None
 
+    class DirectoryRequest(BaseModel):
+        parent: str = ""
+        name: str
+
+    class CatalogRootRequest(BaseModel):
+        path: str
+        label: str = ""
+
+    class TaskRequest(BaseModel):
+        plan_id: str
+        confirmation: str = ""
+
     # -- workspace / datasets ------------------------------------------
     @app.get("/api/health", tags=["workspace"])
     def health():
         return {"status": "ok", "version": __version__,
                 "workspace": str(workspace.root)}
+
+    @app.get("/api/capabilities", tags=["workspace"])
+    def capabilities():
+        from datetime import datetime
+        from s1grits.canonical_catalog_schema import SCHEMA_VERSION
+
+        return {
+            "service": "S1-GRiTS 中文控制台",
+            "version": __version__,
+            "catalog_schema_version": SCHEMA_VERSION,
+            "stac_format": "geoparquet",
+            "current_year": datetime.now().year,
+            "workspace": str(workspace.root),
+            "output_root": str(workspace.root),
+            "workflows": ["scenes", "monthly"],
+            "workflow_options": {"include_static": True},
+            "target_grid": {
+                "resolutions_m": [30, 10],
+                "default_m": 30,
+                "auto_resampling": {"30": "nearest", "10": "bilinear"},
+            },
+            "mgrs_map": {
+                "endpoint": "/api/map/mgrs",
+                "min_zoom": console.mgrs_min_zoom,
+                "max_features": console.mgrs_max_features,
+                "count_only_below_min_zoom": True,
+                "source_crs": "EPSG:4326",
+                "display_crs": "EPSG:3857",
+            },
+            "catalog_map": {
+                "endpoint": "/api/catalog/map",
+                "max_features": console.mgrs_max_features,
+                "source_crs": "EPSG:4326",
+                "display_crs": "EPSG:3857",
+            },
+            "native_directory_picker": os.name == "nt",
+            "catalog_folder_browser": {
+                "endpoint": "/api/catalog-folders",
+                "local_only": True,
+                "read_only": True,
+                "max_entries": console.max_catalog_folder_entries,
+                "max_directories": console.max_catalog_folder_directories,
+            },
+            "basemaps": _basemap_sources(),
+        }
 
     @app.get("/api/workspace", tags=["workspace"])
     def workspace_summary():
@@ -221,6 +369,273 @@ def create_app(root: Path | str, token: str | None = None,
         except FileNotFoundError as exc:
             raise HTTPException(404, str(exc))
 
+    @app.get("/api/map/mgrs", tags=["visualisation"])
+    def mgrs_map(bbox: str, zoom: int):
+        try:
+            return console.mgrs_map(bbox, zoom)
+        except (ValueError, OSError) as exc:
+            raise HTTPException(400, str(exc))
+
+    # -- Chinese planner / catalog -------------------------------------
+    @app.get("/api/output-directories", tags=["console"])
+    def output_directories(path: str = "", mode: str = "output"):
+        if mode not in ("output", "catalog"):
+            raise HTTPException(400, "mode 必须为 output 或 catalog")
+        try:
+            return console.browse(path, catalog_mode=mode == "catalog")
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
+    @app.post("/api/output-directories", tags=["console"], status_code=201)
+    def create_output_directory(req: DirectoryRequest):
+        try:
+            return console.mkdir(req.parent, req.name)
+        except FileExistsError:
+            raise HTTPException(409, "目录已经存在")
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
+    @app.get("/api/catalog-folders", tags=["console"])
+    def catalog_folders(request: Request, path: str = ""):
+        try:
+            client_host = request.client.host if request.client else ""
+            if not _is_local_client_host(client_host):
+                raise PermissionError("本地文件夹浏览只能由本机浏览器使用")
+            return console.catalog_folders(path)
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc))
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc))
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise HTTPException(400, str(exc))
+
+    @app.get("/api/catalog-roots", tags=["console"])
+    def catalog_roots():
+        return console.catalog_roots()
+
+    @app.post("/api/catalog-roots", tags=["console"], status_code=201)
+    def register_catalog_root(req: CatalogRootRequest):
+        try:
+            return console.register_catalog_root(req.path, req.label)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(400, str(exc))
+
+    @app.post("/api/catalog-roots/pick", tags=["console"])
+    def pick_catalog_root(request: Request):
+        acquired = False
+        try:
+            client_host = request.client.host if request.client else ""
+            if client_host != "testclient":
+                try:
+                    is_loopback = ipaddress.ip_address(client_host).is_loopback
+                except ValueError:
+                    is_loopback = client_host.lower() == "localhost"
+                if not is_loopback:
+                    raise PermissionError("原生文件夹窗口只能由本机浏览器打开")
+            acquired = catalog_picker_lock.acquire(blocking=False)
+            if not acquired:
+                raise RuntimeError("文件夹选择窗口已经打开，请先完成或取消当前选择")
+            selected = _pick_windows_directory()
+            if selected is None:
+                return {"cancelled": True}
+            return {"cancelled": False, **console.register_catalog_root(selected)}
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc))
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise HTTPException(400, str(exc))
+        finally:
+            if acquired:
+                catalog_picker_lock.release()
+
+    @app.delete("/api/catalog-roots/{root_id}", tags=["console"])
+    def remove_catalog_root(root_id: str):
+        try:
+            return console.remove_catalog_root(root_id)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(400, str(exc))
+
+    @app.get("/api/catalog-directories", tags=["console"])
+    def catalog_directories(root_id: str = "workspace", path: str = ""):
+        try:
+            return console.catalog_browse(root_id=root_id, relative=path)
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
+    @app.get("/api/catalog-candidates", tags=["console"])
+    def catalog_candidates(root_id: str):
+        try:
+            return console.catalog_candidates(root_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc))
+        except (OSError, ValueError) as exc:
+            raise HTTPException(400, str(exc))
+
+    @app.post("/api/spatial/aoi/resolve", tags=["console"])
+    async def resolve_aoi(request: Request):
+        """Normalize GeoJSON/Shapefile AOI and return intersecting MGRS tiles."""
+        try:
+            content_type = request.headers.get("content-type", "")
+            if content_type.lower().startswith("multipart/form-data"):
+                # Parse the small, bounded upload with the Python standard
+                # library so an already-installed web environment keeps
+                # working before ``python-multipart`` is added on upgrade.
+                from email.parser import BytesParser
+                from email.policy import default
+
+                length = int(request.headers.get("content-length") or 0)
+                wire_limit = console.max_aoi_upload_bytes + 1024 * 1024
+                if length > wire_limit:
+                    raise ValueError("AOI 上传总大小不能超过 50 MiB")
+                raw = await request.body()
+                if len(raw) > wire_limit:
+                    raise ValueError("AOI 上传总大小不能超过 50 MiB")
+                message = BytesParser(policy=default).parsebytes(
+                    f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode()
+                    + raw
+                )
+                uploads = [
+                    (part.get_filename(), part.get_payload(decode=True) or b"")
+                    for part in message.iter_parts()
+                    if part.get_content_disposition() == "form-data"
+                    and part.get_param("name", header="content-disposition") == "files"
+                    and part.get_filename()
+                ]
+                return console.resolve_aoi_upload(uploads)
+            payload = await request.json()
+            geometry = payload.get("geometry", payload) if isinstance(payload, dict) else payload
+            return console.resolve_aoi(geometry, source="GeoJSON/矩形")
+        except (ValueError, OSError) as exc:
+            raise HTTPException(400, str(exc))
+
+    @app.post("/api/plan", tags=["console"])
+    def create_plan(payload: dict):
+        try:
+            return console.create_plan(payload)
+        except (ValueError, FileNotFoundError) as exc:
+            raise HTTPException(400, str(exc))
+
+    @app.get("/api/tasks", tags=["console"])
+    def list_tasks():
+        return console.tasks()
+
+    @app.post("/api/tasks", tags=["console"], status_code=201)
+    def create_task(req: TaskRequest):
+        try:
+            return console.create_task(req.plan_id, req.confirmation)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
+    @app.get("/api/tasks/{job_id}", tags=["console"])
+    def task_detail(job_id: str):
+        try:
+            return console.task(jobs.get(job_id).to_dict())
+        except KeyError:
+            raise HTTPException(404, f"未知任务：{job_id}")
+
+    @app.delete("/api/tasks/{job_id}", tags=["console"])
+    def task_cancel(job_id: str):
+        try:
+            return console.task(jobs.cancel(job_id))
+        except KeyError:
+            raise HTTPException(404, f"未知任务：{job_id}")
+
+    @app.get("/api/tasks/{job_id}/recovery", tags=["console"])
+    def task_recovery_check(job_id: str):
+        try:
+            return jobs.recovery_check(job_id)
+        except KeyError:
+            raise HTTPException(404, f"未知任务：{job_id}")
+
+    @app.post("/api/tasks/{job_id}/resume", tags=["console"])
+    def task_resume(job_id: str):
+        try:
+            return console.task(jobs.resume(job_id).to_dict())
+        except KeyError:
+            raise HTTPException(404, f"未知任务：{job_id}")
+        except ValueError as exc:
+            raise HTTPException(409, str(exc))
+
+    @app.get("/api/tasks/{job_id}/log", tags=["console"])
+    def task_log(
+        job_id: str,
+        format: str | None = None,
+        offset: int = Query(0, ge=0),
+        limit: int = Query(65536, ge=1, le=262144),
+        tail: bool = False,
+    ):
+        try:
+            job = jobs.get(job_id)
+        except KeyError:
+            raise HTTPException(404, f"未知任务：{job_id}")
+        path = job.job_dir / "log.txt"
+        if format != "json":
+            if not path.is_file():
+                from fastapi.responses import Response
+                return Response("", media_type="text/plain; charset=utf-8")
+            return FileResponse(path, media_type="text/plain", filename=f"{job_id}.log")
+        data = path.read_bytes() if path.is_file() else b""
+        start = max(0, len(data) - limit) if tail and offset == 0 else min(offset, len(data))
+        chunk = data[start:start + limit]
+        return {
+            "offset": start,
+            "next_offset": start + len(chunk),
+            "size": len(data),
+            "text": chunk.decode("utf-8", errors="replace"),
+            "status": job.status,
+        }
+
+    @app.get("/api/tasks/{job_id}/events", tags=["console"])
+    def task_events(job_id: str, offset: int = Query(0, ge=0),
+                    limit: int = Query(65536, ge=1, le=262144)):
+        try:
+            events = console.task_events(job_id)
+        except KeyError:
+            raise HTTPException(404, f"未知任务：{job_id}")
+        start = min(offset, len(events))
+        return {"events": events[start:], "next_offset": len(events), "size": len(events)}
+
+    @app.get("/api/catalog/inspect", tags=["console"])
+    def catalog_inspect(output: str = "", root_id: str = "workspace"):
+        try:
+            return console.catalog_inspect(output, root_id=root_id)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
+    @app.get("/api/catalog/report", tags=["console"])
+    def catalog_report(output: str = "", root_id: str = "workspace"):
+        try:
+            return console.catalog_report(output, root_id=root_id)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
+    @app.get("/api/catalog/map", tags=["console"])
+    def catalog_map(output: str = "", root_id: str = "workspace",
+                    tile: str = "", product: str = "",
+                    direction: str = "", month: str = "", status: str = ""):
+        try:
+            return console.catalog_map(
+                output, root_id=root_id, tile=tile, product=product,
+                direction=direction, month=month, status=status,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
+    @app.get("/api/catalog", tags=["console"])
+    def catalog_query(output: str = "", root_id: str = "workspace",
+                      tile: str = "", product: str = "",
+                      direction: str = "", month: str = "", status: str = ""):
+        try:
+            return console.catalog_query(
+                output, root_id=root_id, tile=tile, product=product,
+                direction=direction, month=month, status=status,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
     # -- jobs ------------------------------------------------------------
     @app.get("/api/job-types", tags=["jobs"])
     def job_types():
@@ -270,15 +685,18 @@ def create_app(root: Path | str, token: str | None = None,
 
     # -- static frontend (mounted last so /api wins) ---------------------
     if STATIC_DIR.is_dir():
+        app.mount("/static", StaticFiles(directory=str(STATIC_DIR)),
+                  name="static-assets")
         app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True),
-                  name="static")
+                  name="frontend")
 
     return app
 
 
 def serve(root: str, host: str = "127.0.0.1", port: int = 8765,
           token: str | None = None, max_concurrent_jobs: int = 1,
-          insecure: bool = False) -> None:
+          insecure: bool = False,
+          catalog_roots: list[str] | None = None) -> None:
     """Run the web UI (entry point for ``s1grits serve``)."""
     try:
         import uvicorn
@@ -294,6 +712,9 @@ def serve(root: str, host: str = "127.0.0.1", port: int = 8765,
             "Set --token/-S1GRITS_WEB_TOKEN, or pass --insecure if you "
             "really want an open server."
         )
-    app = create_app(root, token=token, max_concurrent_jobs=max_concurrent_jobs)
+    app = create_app(
+        root, token=token, max_concurrent_jobs=max_concurrent_jobs,
+        catalog_roots=catalog_roots,
+    )
     logger.info("S1-GRiTS web UI on http://%s:%d (workspace: %s)", host, port, root)
     uvicorn.run(app, host=host, port=port, log_level="info")

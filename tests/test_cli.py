@@ -22,7 +22,7 @@ from s1grits import cli  # noqa: E402
 
 # Commands that must remain visible in the production help.
 RETAINED_VISIBLE = [
-    "process_scenes", "static",
+    "init", "process_scenes", "static",
     "catalog", "tile", "mosaic", "mosaic_scenes", "doctor",
 ]
 # Dead references that must never reappear. `process`/`process_monthly` were the
@@ -81,6 +81,20 @@ def test_removed_monthly_command_is_gone():
     assert not hasattr(cli, "cmd_process")
     code, _ = _run_expect_error(["process", "--help"])
     assert code != 0  # argparse rejects the unknown command
+
+
+def test_init_writes_built_in_template_and_refuses_overwrite(tmp_path, capsys):
+    target = tmp_path / "starter.yaml"
+    code, text = _run(["init", str(target)], capsys)
+    assert code == 0
+    assert "Created starter config" in text
+    content = target.read_text(encoding="utf-8")
+    assert 'workflow: "scenes"' in content
+    assert "target_resolution: 30.0" in content
+
+    code, text = _run(["init", str(target)], capsys)
+    assert code == 1
+    assert "already exists" in text
 
 
 def _run_expect_error(argv):

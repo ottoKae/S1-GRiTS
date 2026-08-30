@@ -340,8 +340,14 @@ processing:
   # larger-than-block allocation (despeckle is globally coupled); despeckle
   # itself is still footprint-bounded via processing.despeckle.window.
 
-  # Target resolution in meters
+  # Target-grid contract: only 30 m and 10 m are supported.
   target_resolution: 30.0
+
+  # auto: 30 m -> nearest (historical compatibility); 10 m -> bilinear.
+  # Bilinear interpolation is applied to continuous backscatter in linear
+  # power before dB conversion. Categorical static layers always use nearest.
+  # Explicit values: auto | nearest | bilinear
+  resampling_method: auto
 
   # Zarr chunk size (y x x pixels per chunk)
   zarr_chunks:

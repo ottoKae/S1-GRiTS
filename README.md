@@ -184,22 +184,27 @@ S1-GRiTS is designed for researchers and practitioners who need **large-scale, l
 ## Quick Start
 
 ```bash
-# 1. Install (Python 3.12; geospatial wheels ship for linux/macos/windows)
-pip install s1grits
+# 1. Install with the canonical Chinese web console (Python 3.12)
+pip install "s1grits[web]"
 
 # 2. (Optional) Earthdata auth for ASF downloads — ~/.netrc with your
 #    urs.earthdata.nasa.gov credentials. See docs/installation.md.
 
-# 3. Copy a config template and set your ROI + time range
-cp config/s1grits_scenes.yaml my_run.yaml
+# 3. Generate a config from the installed wheel; no repository clone is needed
+s1grits init my_run.yaml
 
 # 4. Validate the environment and config, then run
 s1grits doctor --config my_run.yaml
 s1grits process_scenes --config my_run.yaml
 
-# 5. Browse results in the web interface
-s1grits serve --root /path/to/output
+# 5. 启动中文下载与目录检索控制台（workspace 是安全输出根）
+s1grits serve /path/to/output --port 5556
 ```
+
+The packaged browser interface is the **Chinese v3 console**. The removed
+Streamlit/English prototype is not shipped or tracked; a future English UI
+will be translated from this single frontend instead of maintained as a second
+implementation.
 
 Full installation options (conda, from-source, extras), authentication setup
 and first-run guidance: **[docs/installation.md](docs/installation.md)**.
@@ -244,13 +249,17 @@ Standalone static YAML downloads are intentionally unsupported because static ge
 | [Workflows](docs/workflows.md) | Monthly composites, per-scene processing, static layers |
 | [Output Structure](docs/outputs.md) | Zarr/COG/preview specs, bands, STAC metadata, parquet catalogs |
 | [Configuration Reference](docs/configuration.md) | Every YAML key the workflows read, with defaults |
-| [CLI Reference](docs/cli.md) | All commands: process, catalog, tile, mosaic, doctor, cache, serve |
+| [Target Grid and Resampling v1](docs/target-grid-resampling-v1.md) | Fixed 30/10 m grid contract and optimized 10 m interpolation |
+| [CLI Reference](docs/cli.md) | All commands: process_scenes, static, catalog, tile, mosaic, doctor, cache, serve |
 | [Python API](docs/python_api.md) | `s1grits.analysis` — loading, time series, plotting, validation |
 | [Examples](docs/examples.md) | End-to-end usage examples and the tutorial notebooks |
-| [Web Interface](docs/webapp.md) | The v2.3 web UI (`s1grits serve`) |
+| [Web Interface](docs/webapp.md) | v3 中文下载、MGRS、Catalog 与任务日志控制台 |
+| [Web Smoke Test Plan](docs/webapp-smoke-test-plan.md) | 中文页面最小真实下载、Zarr/Catalog 验收与停止条件 |
+| [Phase 0 Web Contract](docs/phase0-v3-web-contract.md) | v3 CLI、Schema v8、路径、任务与验收门禁 |
 | [Bounded-Memory Architecture](docs/scenes_blockwise_architecture.md) | The blockwise scenes pipeline design |
 | [FAQ](docs/faq.md) | Common questions and troubleshooting |
 | [Changelog](CHANGELOG.md) | Release history |
+| [Release Process](docs/release.md) | Version/tag contract, local gate, wheel checks and PyPI publication |
 
 
 ## License & Citation
