@@ -26,6 +26,7 @@ KNOWN_KEYS: dict = {
     "metadata": {
         "product_config": None,  # optional registry-overlay YAML path
         "products": None,        # inline product overlay (free-form subtree)
+        "provenance": {"enabled": None, "dataset_id": None, "run_id": None},
     },
     "roi": {
         "wkt": None,

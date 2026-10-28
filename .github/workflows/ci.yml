@@ -87,4 +87,6 @@ jobs:
         run: python -m s1grits doctor --config config/s1grits_scenes.yaml
 
       - name: Run network-free test suite (with coverage report)
-        run: python -m pytest tests/ -q --tb=short --cov=s1grits --cov-report=term-missing:skip-covered
+        run: |
+          python -c "from pathlib import Path; Path('.test-tmp').mkdir(exist_ok=True)"
+          python -m pytest tests/ -q --tb=short -p no:cacheprovider --basetemp .test-tmp/ci --cov=s1grits --cov-report=term-missing:skip-covered

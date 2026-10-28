@@ -302,6 +302,19 @@ def read_one_asf(url: str, retry_timeout_seconds: float = 600.0):
                     if _lazy is not None:
                         return _lazy, prof, None
                     arr = ds.read(1).astype(np.float32)
+                    tag_keys = {"units", "unit", "data_domain", "radiometric_domain",
+                                "measurement_domain", "physical_quantity", "product_version",
+                                "processing_version", "algorithm_version", "processing_software_version"}
+                    prof["grits_source"] = {
+                        "asset": {"band": 1, "dtype": ds.dtypes[0], "unit": ds.units[0],
+                                  "scale": ds.scales[0], "offset": ds.offsets[0],
+                                  "scale_offset_basis": "rasterio_metadata_or_default",
+                                  "tags": {scope: {key.lower(): value for key, value in tags.items()
+                                                   if key.lower() in tag_keys}
+                                           for scope, tags in (("dataset", ds.tags()), ("band", ds.tags(1)))}},
+                        "read": {"method": "rasterio.read", "band": 1, "masked": False,
+                                 "output_dtype": "float32", "scale_offset_applied": False},
+                    }
         # Phase 3 (opt-in, memory.batch_spill): hand back a read-only
         # file-backed memmap instead of anonymous RAM — byte-identical
         # values, reclaimable pages, windowed reads for the block path.
@@ -686,6 +699,7 @@ def load_and_despeckle_rtc_strict(
     scene_max_retries: int = 3,
     max_failed_ratio: float = 0.0,
     retry_timeout_seconds: float = 600.0,
+    return_source_indices: bool = False,
 ):
     """
     Strict Mode Downloader (VV/VH Sync) with scene-level retry and 404 exemption.
@@ -703,7 +717,9 @@ def load_and_despeckle_rtc_strict(
         retry_timeout_seconds: Per-scene retry budget in seconds.
 
     Returns:
-        (final_vv, valid_vv_prof, final_vh, valid_vh_prof, valid_dates)
+        (final_vv, valid_vv_prof, final_vh, valid_vh_prof, valid_dates).
+        With return_source_indices=True, a sixth list contains the successful
+        integer positions in the input dataframe, aligned with every output.
     """
     logger = logging.getLogger(__name__)
 
@@ -734,6 +750,7 @@ def load_and_despeckle_rtc_strict(
     valid_vv, valid_vv_prof = [], []
     valid_vh, valid_vh_prof = [], []
     valid_dates = []
+    valid_source_indices = []
     not_found_indices   = []
     network_fail_indices = []
 
@@ -747,6 +764,7 @@ def load_and_despeckle_rtc_strict(
             valid_vv.append(raw_vv[i]);   valid_vv_prof.append(prof_vv[i])
             valid_vh.append(raw_vh[i]);   valid_vh_prof.append(prof_vh[i])
             valid_dates.append(dates[i])
+            valid_source_indices.append(i)
         elif "not_found" in (vv_err, vh_err):
             not_found_indices.append(i)
             logger.info(
@@ -800,7 +818,8 @@ def load_and_despeckle_rtc_strict(
 
     del raw_vv, raw_vh
     gc.collect()
-    return final_vv, valid_vv_prof, final_vh, valid_vh_prof, valid_dates
+    result = (final_vv, valid_vv_prof, final_vh, valid_vh_prof, valid_dates)
+    return (*result, valid_source_indices) if return_source_indices else result
 
 
 # =========================================================

@@ -7,6 +7,17 @@ the full history.
 
 ## Unreleased
 
+### Candidate 3.0.1rc1 — 2026-10-28
+- Add opt-in monthly processing receipts: exact source membership, numeric
+  operations, append/replace generations and coordinated Catalog recovery.
+- Add read-only historical metadata export/attachment and generation-scoped
+  release v2. Tables/data-revision stay v1; use GRiTS-Resolver 0.3.1rc1 for v2.
+- Fix finite source-nodata handling and per-polarization observation counts
+  in the monthly writer; historical imagery is never rewritten by upgrading.
+- Tracking remains off by default. Large incremental batches still incur
+  repeated metadata checks and evidence copies; this candidate is for bounded
+  trials, not a claim of full-year performance acceptance.
+
 ### Added
 - `s1grits init [FILE]` writes the package-owned starter scenes/monthly YAML,
   so PyPI users no longer need a repository checkout to begin.

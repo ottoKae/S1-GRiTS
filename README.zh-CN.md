@@ -14,7 +14,7 @@
 <p align="center">
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.12+-blue.svg" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20NC-green.svg" /></a>
-  <a href="https://github.com/ottoKae/S1-GRiTS"><img src="https://img.shields.io/badge/version-3.0.0-orange.svg" /></a>
+  <a href="https://github.com/ottoKae/S1-GRiTS"><img src="https://img.shields.io/badge/version-3.0.1rc1-orange.svg" /></a>
 </p>
 
 ---
@@ -22,6 +22,12 @@
 <p align="center">
   S1-GRiTS（Sentinel-1 Gridded RTC Time Series）是一个 Python 软件包，用于从 ASF OPERA RTC-S1 产品构建可直接分析的 Sentinel-1 SAR 时序数据立方体。它将 burst 级观测转换为按 MGRS 对齐、时间一致的 Zarr 数据立方体，并可按需导出 COG。
 </p>
+
+## 数据来源与处理记录（3.0.1rc1 候选版）
+
+参见[数据交接](docs/DATA_HANDOFF_ZH.md)、[历史元数据导出](docs/PROVENANCE_READONLY_ZH.md)和[月度生产记录](docs/PROVENANCE_WORKFLOW_ZH.md)。按[配置示例](config/provenance_monthly.example.yaml)启用后，记录实际来源、数值处理步骤、追加／替换代次及 Catalog 恢复；默认关闭。[精简 skill](agents/skills/s1-data-handoff/SKILL.md)仅指向同一公共流程。
+
+带代次范围的说明使用发布语义 v2，配套 GRiTS-Resolver 0.3.1rc1；表结构和 data_revision 算法仍为 v1。升级软件不会自动更新已有影像或元数据，当前代码不能代替历史执行证据。大批量增量仍有明显元数据开销，先按工作流指南的小批次边界试用。
 
 ## 供论文审稿人查阅：论文与代码对应关系
 

@@ -257,6 +257,11 @@ def run_scenes_workflow(config_path: str | Path, overrides: dict | None = None) 
     )
     config = load_config(config_path)
     config = apply_output_overrides_and_stac(config, overrides)
+    from s1grits.provenance_workflow import (
+        start_tracking_locked, validate_tracking_config,
+    )
+    tracking_enabled = validate_tracking_config(config)
+
     from s1grits.resampling import (
         resolve_resampling_method,
         validate_target_resolution,
@@ -373,6 +378,18 @@ def run_scenes_workflow(config_path: str | Path, overrides: dict | None = None) 
     # Acquire file lock — prevents concurrent writes to same base_dir
     _lock_info = acquire_lock(str(output_root))
     try:
+        # An interrupted tracked write must be recovered before legacy workers
+        # can change its store or rebuild Catalogs under the same root lock.
+        tracker = None
+        if tracking_enabled:
+            tracker = start_tracking_locked(output_root, config, mgrs_tile_ids)
+            completed_results = tracker.finished_results()
+            if completed_results is not None:
+                return completed_results
+            config['_provenance_tracking'] = tracker
+        else:
+            from s1grits.provenance_inventory import _assert_no_pending
+            _assert_no_pending(output_root.resolve())
         if parallel_enabled:
             try:
                 import psutil
@@ -459,6 +476,13 @@ def run_scenes_workflow(config_path: str | Path, overrides: dict | None = None) 
                     mgrs_tile_id, time_ranges, config, output_root
                 )
                 results[mgrs_tile_id] = result
+                if tracker is not None and result.get('status') != 'success':
+                    raise RuntimeError(
+                        f"Tracked tile {mgrs_tile_id} failed: {result.get('error')}"
+                    )
+
+        if tracker is not None:
+            return tracker.finish(results)
 
         # Read existing global catalog (from other workflows) for merge safety
         _global_catalog_path = output_root / 'catalog.parquet'

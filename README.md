@@ -21,7 +21,7 @@
     <img src="https://img.shields.io/badge/license-PolyForm%20NC-green.svg" />
   </a>
   <a href="https://github.com/ottoKae/S1-GRiTS">
-    <img src="https://img.shields.io/badge/version-3.0.0-orange.svg" />
+    <img src="https://img.shields.io/badge/version-3.0.1rc1-orange.svg" />
   </a>
 </p>
 
@@ -32,6 +32,19 @@
   It converts burst-level observations into MGRS-aligned, temporally consistent Zarr data cubes, with optional COG exports.
 </p>
 
+
+## Dataset provenance (3.0.1rc1 candidate)
+
+Use the [handoff guide](docs/DATA_HANDOFF_ZH.md), [historical metadata export](docs/PROVENANCE_READONLY_ZH.md)
+and [opt-in monthly workflow](docs/PROVENANCE_WORKFLOW_ZH.md) to keep processing evidence with data.
+The [configuration example](config/provenance_monthly.example.yaml) enables exact source mapping,
+numeric-operation receipts, append/replace generations and Catalog recovery. Tracking is off by default.
+An optional [agent reference](agents/skills/s1-data-handoff/SKILL.md) points to the same public procedure.
+
+Generation-scoped annotations use release semantics v2; table schemas and data-revision stay v1.
+Use GRiTS-Resolver 0.3.1rc1 for these releases. Current source code is not proof of historical processing.
+Upgrading software does not update existing imagery or its metadata. Large incremental jobs still have
+significant metadata costs; see the workflow guide's measured limits before enabling tracking.
 
 ## For Reviewers — Paper ↔ Code
 

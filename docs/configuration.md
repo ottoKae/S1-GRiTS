@@ -11,6 +11,34 @@ S1-GRiTS workflows are configured via YAML files in the `config/` directory.
 | `s1grits_scenes.yaml` | Per-scene processing (+ monthly composites) | High-temporal-resolution outputs; enable `processing.monthly` for composites |
 | `s1grits_scenes.yaml` → `static_layers` | Raw static companions | Time-invariant reference layers |
 
+### Optional monthly production records
+
+The [provenance example](../config/provenance_monthly.example.yaml) enables records
+alongside S1 imagery. Existing configurations keep this option disabled.
+
+```yaml
+metadata:
+  provenance:
+    enabled: true
+    dataset_id: ecuador-s1-monthly
+    run_id: append-202501-v1
+```
+
+`metadata.provenance.enabled` enables exact loader-source binding, generation
+records and coordinated tile/global Catalog recovery. `metadata.provenance.dataset_id`
+is stable across batches. Keep `metadata.provenance.run_id` unchanged for a retry;
+use a new value for new dates, replacement, inputs or processing parameters.
+IDs use letters, digits, dot, underscore or hyphen, start with a letter or digit,
+and contain at most 128 characters.
+
+The initial supported route is serial tiles, one explicit orbit direction,
+VV/VH, monthly-only ARDC, monthly batches and one blockwise thread. Disable
+spatial despeckling, derived features/exports, static post-processing, prefetch,
+lazy/windowed reads and spill. Use explicit years/months or a fixed date interval;
+`time.full` is rejected before queries. Incompatible-store rebuild is not supported.
+Existing Catalogs must validate against the canonical schema. See the
+[workflow guide](PROVENANCE_WORKFLOW_ZH.md) for append, replacement and recovery.
+
 ### ROI Configuration
 
 Two modes supported — choose one in your YAML:

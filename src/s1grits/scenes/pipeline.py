@@ -349,6 +349,7 @@ def _prepare_valid_clean_indices_for_monthly(
     interior_hole_max_frac: float = 0.005,
     console_obj: Console | None = None,
     resampling_method: str = "nearest",
+    clean_source_rows: list[int] | None = None,
 ) -> set[int]:
     """
     Run acquisition-level QC without writing scenes.
@@ -362,8 +363,19 @@ def _prepare_valid_clean_indices_for_monthly(
         _acq_group_to_rows.setdefault(_key, []).append(row)
 
     _dt_str_to_clean_idx: dict[str, list[int]] = {}
-    for _ci, _cd in enumerate(clean_dates):
-        _dt_str_to_clean_idx.setdefault(_clean_date_key(_cd), []).append(_ci)
+    _source_to_clean_idx: dict[int, int] = {}
+    if clean_source_rows is not None:
+        if (len(clean_source_rows) != len(clean_dates)
+                or len(set(clean_source_rows)) != len(clean_source_rows)
+                or "_source_row" not in df_rtc_ts
+                or df_rtc_ts["_source_row"].duplicated().any()):
+            raise ValueError("monthly QC requires unique source rows aligned with clean arrays")
+        _source_to_clean_idx = {int(row): i for i, row in enumerate(clean_source_rows)}
+        if not set(_source_to_clean_idx) <= set(df_rtc_ts["_source_row"].astype(int)):
+            raise ValueError("clean source row is absent from candidate metadata")
+    else:
+        for _ci, _cd in enumerate(clean_dates):
+            _dt_str_to_clean_idx.setdefault(_clean_date_key(_cd), []).append(_ci)
 
     _tile_mask = None
     if tile_clip:
@@ -408,7 +420,12 @@ def _prepare_valid_clean_indices_for_monthly(
 
         indices: list[int] = []
         for r in rows:
-            indices.extend(_dt_str_to_clean_idx.get(_clean_date_key(r['acq_dt']), []))
+            if clean_source_rows is not None:
+                source_row = int(r["_source_row"])
+                if source_row in _source_to_clean_idx:
+                    indices.append(_source_to_clean_idx[source_row])
+            else:
+                indices.extend(_dt_str_to_clean_idx.get(_clean_date_key(r['acq_dt']), []))
 
         _track_tok_raw = str(rows[0]['track_token']) if rows else 'UNK'
         n_bursts = len(rows)
@@ -567,6 +584,8 @@ def process_single_scenes_tile(
     many worker processes share one terminal and only the parent progress bar
     should render — per-tile detail still goes to the log file).
     """
+    tracking = config.get("_provenance_tracking")
+
     # Workflows NEVER write STAC — STAC is produced only by `catalog resync`.
     # This must be set per-tile because ProcessPoolExecutor workers (spawn)
     # re-import stac_builder fresh with the default ON and never call the entry
@@ -644,6 +663,11 @@ def process_single_scenes_tile(
         _dropped_tracks = list(getattr(df_rtc_ts, 'attrs', {}).get('coverage_dropped', []))
 
         if df_rtc_ts.empty:
+            if tracking is not None:
+                tracking.register_candidates(
+                    mgrs_tile_id, str(config.get("roi", {}).get("flight_direction") or "UNKNOWN").upper(),
+                    df_rtc_ts,
+                )
             return {
                 'status': 'failed', 'error': 'No data available',
                 'tile_dir': None, 'catalog_path': None,
@@ -658,6 +682,8 @@ def process_single_scenes_tile(
         if flight_direction:
             df_rtc_ts = filter_by_flight_direction(df_rtc_ts, flight_direction)
             if df_rtc_ts.empty:
+                if tracking is not None:
+                    tracking.register_candidates(mgrs_tile_id, str(flight_direction).upper(), df_rtc_ts)
                 return {
                     'status': 'failed',
                     'error': f'No data for flight direction {flight_direction}',
@@ -683,6 +709,13 @@ def process_single_scenes_tile(
                     "mislabelling outputs.",
                     mgrs_tile_id, _dirs, direction_label,
                 )
+
+        if tracking is not None:
+            identity_columns = [name for name in ("acq_dt", "opera_id", "jpl_burst_id")
+                                if name in df_rtc_ts]
+            df_rtc_ts = df_rtc_ts.sort_values(identity_columns, kind="stable").reset_index(drop=True)
+            df_rtc_ts["_source_row"] = np.arange(len(df_rtc_ts), dtype=np.int64)
+            tracking.register_candidates(mgrs_tile_id, direction_label, df_rtc_ts.copy())
 
         # 3. Batch strategy
         n_scenes = len(df_rtc_ts)
@@ -1080,6 +1113,9 @@ def process_single_scenes_tile(
                     df_rtc_ts['acq_dt'].isin(batch_dates)
                 ].copy()
                 df_batch = df_batch.sort_values('acq_dt').reset_index(drop=True)
+                candidate_frame = df_batch.copy() if tracking is not None else None
+                if tracking is not None:
+                    df_batch = tracking.filter_download_rows(df_batch)
                 if _metadata_prefilter:
                     df_batch = _prefilter_metadata_incomplete_acquisitions(
                         mgrs_tile_id=mgrs_tile_id,
@@ -1095,7 +1131,8 @@ def process_single_scenes_tile(
                         burst_geoms=_burst_geoms,
                         tile_geom=_tile_geom_4326,
                     )
-                df_batch['_source_row'] = np.arange(len(df_batch), dtype=np.int64)
+                if tracking is None:
+                    df_batch['_source_row'] = np.arange(len(df_batch), dtype=np.int64)
             df_input = adapt_enumerator_to_distmetrics(df_batch)
             if '_source_row' not in df_input.columns:
                 df_input['_source_row'] = np.arange(len(df_input), dtype=np.int64)
@@ -1112,6 +1149,7 @@ def process_single_scenes_tile(
             final_vv = final_vh = clean_dates = None
             prof_vv = prof_vh = None
             _copol_source_indices: list[int] | None = None
+            clean_source_rows: list[int] | None = None
             for _attempt in range(_batch_max_retries + 1):
                 try:
                     logger.info(
@@ -1147,9 +1185,7 @@ def process_single_scenes_tile(
                             batch=f"{batch_idx}/{len(date_batches)}",
                             scenes=len(df_input),
                         ):
-                            (
-                                final_vv, prof_vv, final_vh, prof_vh, clean_dates
-                            ) = load_and_despeckle_rtc_strict(
+                            loaded = load_and_despeckle_rtc_strict(
                                 df_input,
                                 max_workers=_max_workers,
                                 do_despeckle=False,  # despeckle after mosaic, not per-burst
@@ -1158,7 +1194,13 @@ def process_single_scenes_tile(
                                 scene_max_retries=_scene_max_retries,
                                 max_failed_ratio=_max_failed_ratio,
                                 retry_timeout_seconds=_scene_retry_timeout,
+                                **({"return_source_indices": True} if tracking is not None else {}),
                             )
+                            if tracking is not None:
+                                final_vv, prof_vv, final_vh, prof_vh, clean_dates, positions = loaded
+                                clean_source_rows = df_input.iloc[positions]["_source_row"].astype(int).tolist()
+                            else:
+                                final_vv, prof_vv, final_vh, prof_vh, clean_dates = loaded
 
                     logger.info(
                         "[DOWNLOAD] Batch %d/%d complete: final_vv=%d, prof_vv=%d, "
@@ -1211,6 +1253,8 @@ def process_single_scenes_tile(
                         )
 
             if not _batch_success or not clean_dates:
+                if tracking is not None:
+                    raise RuntimeError(f"tracked batch {batch_idx} failed to load paired source arrays")
                 logger.warning(
                     "Batch %d skipped (download failed)", batch_idx
                 )
@@ -1317,10 +1361,19 @@ def process_single_scenes_tile(
                 )
                 logger.warning("[DIAG] Applying automatic sanitization...")
 
-                # Apply automatic fix
-                final_vv, prof_vv, final_vh, prof_vh, clean_dates, df_batch = _sanitize_prof_arrays(
-                    final_vv, prof_vv, final_vh, prof_vh, clean_dates, df_batch
-                )
+                # Preserve candidate metadata while filtering exact paired source rows.
+                if tracking is not None:
+                    keep_indices = [i for i in range(len(final_vv)) if i not in problematic_indices]
+                    final_vv = [final_vv[i] for i in keep_indices]
+                    prof_vv = [prof_vv[i] for i in keep_indices]
+                    final_vh = [final_vh[i] for i in keep_indices]
+                    prof_vh = [prof_vh[i] for i in keep_indices]
+                    clean_dates = [clean_dates[i] for i in keep_indices]
+                    clean_source_rows = [clean_source_rows[i] for i in keep_indices]
+                else:
+                    final_vv, prof_vv, final_vh, prof_vh, clean_dates, df_batch = _sanitize_prof_arrays(
+                        final_vv, prof_vv, final_vh, prof_vh, clean_dates, df_batch
+                    )
 
                 logger.info(
                     "[DIAG] Sanitization complete: %d → %d valid scenes",
@@ -1353,6 +1406,8 @@ def process_single_scenes_tile(
                 'final_vh': final_vh, 'prof_vh': prof_vh,
                 'clean_dates': clean_dates,
                 'copol_source_indices': _copol_source_indices,
+                'clean_source_rows': clean_source_rows,
+                'candidate_frame': candidate_frame,
             }
 
         # One-batch download prefetch (opt-in): while the main thread runs
@@ -1392,6 +1447,8 @@ def process_single_scenes_tile(
             prof_vh = _fetched['prof_vh']
             clean_dates = _fetched['clean_dates']
             _copol_source_indices = _fetched['copol_source_indices']
+            clean_source_rows = _fetched.get('clean_source_rows')
+            candidate_frame = _fetched.get('candidate_frame')
             del _fetched
 
             # Build master grid from the burst-footprint UNION (not the MGRS
@@ -1531,6 +1588,7 @@ def process_single_scenes_tile(
                         interior_hole_max_frac=interior_hole_max_frac,
                         console_obj=_console,
                         resampling_method=resampling_method,
+                        **({"clean_source_rows": clean_source_rows} if tracking is not None else {}),
                     )
 
                 if _vv_first_qc:
@@ -1604,12 +1662,12 @@ def process_single_scenes_tile(
                     batch=f"{batch_idx}/{len(date_batches)}",
                     scenes=len(clean_dates),
                 ):
-                    monthly_recs = _write_monthly_output_scenes(
-                        mgrs_tile_id, direction_label, tile_dir,
-                        final_vv, prof_vv, final_vh, prof_vh, clean_dates,
-                        target_crs, target_res,
-                        generate_cog, generate_preview,
-                        chunk_y, chunk_x, cog_block,
+                    monthly_writer_kwargs = dict(
+                        mgrs_tile_id=mgrs_tile_id, direction_label=direction_label, tile_dir=tile_dir,
+                        final_vv=final_vv, prof_vv=prof_vv, final_vh=final_vh, prof_vh=prof_vh,
+                        clean_dates=clean_dates, target_crs=target_crs, target_res=target_res,
+                        generate_cog=generate_cog, generate_preview=generate_preview,
+                        chunk_y=chunk_y, chunk_x=chunk_x, cog_block=cog_block,
                         on_time_conflict=on_time_conflict,
                         monthly_cfg=monthly_cfg,
                         processing_level=processing_level,
@@ -1633,6 +1691,14 @@ def process_single_scenes_tile(
                         rebuild_on_mismatch=overwrite,
                         resampling_method=resampling_method,
                     )
+                    if tracking is not None:
+                        monthly_recs = tracking.write_monthly(
+                            writer_kwargs=monthly_writer_kwargs,
+                            candidate_frame=candidate_frame,
+                            clean_source_rows=clean_source_rows,
+                        )
+                    else:
+                        monthly_recs = _write_monthly_output_scenes(**monthly_writer_kwargs)
                 all_monthly_records.extend(monthly_recs)
 
             if _clear_cache:
@@ -1669,6 +1735,16 @@ def process_single_scenes_tile(
                     f"[yellow]  {len(_incomplete_acqs)} incomplete acquisition(s) "
                     f"{_verb} — see {mgrs_tile_id}/processing_report.json[/yellow]"
                 )
+
+        if tracking is not None:
+            tile_catalog_path = tile_dir / "catalog.parquet"
+            return {
+                "status": "success", "error": None, "tile_dir": str(tile_dir),
+                "catalog_path": str(tile_catalog_path) if tile_catalog_path.exists() else None,
+                "written_scenes": 0,
+                "written_months": sorted({record["month"] for record in all_monthly_records}),
+                "dropped_tracks": _dropped_tracks, "incomplete_acquisitions": _incomplete_acqs,
+            }
 
         # 6. Write per-tile catalog.parquet (scenes + monthly combined)
         monthly_info = (

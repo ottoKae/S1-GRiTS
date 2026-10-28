@@ -46,6 +46,7 @@ venv.bak/
 
 # Pytest / coverage
 .pytest_cache/
+/.test-tmp/
 .coverage
 .coverage.*
 coverage.xml

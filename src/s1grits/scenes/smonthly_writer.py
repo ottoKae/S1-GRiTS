@@ -87,12 +87,14 @@ def _monthly_composite_block(
     stack: list[np.ndarray],
     method: str,
     trim_fraction: float,
+    numeric_record=None,
 ) -> np.ndarray | None:
     """Composite a stack for one spatial block."""
     if not stack:
         return None
     arr = np.stack(stack, axis=0)
     method_norm = str(method or "median").lower()
+    backend = "numpy"
     with warnings.catch_warnings():
         warnings.filterwarnings('ignore', 'All-NaN slice')
         warnings.filterwarnings('ignore', 'Mean of empty slice')
@@ -102,6 +104,7 @@ def _monthly_composite_block(
                 # because ``arr`` is a fresh np.stack copy.  ~50x faster than
                 # np.nanmedian's masked-array path for stack depths < 600.
                 out = _bn.nanmedian(arr, axis=0)
+                backend = "bottleneck"
             else:
                 out = np.nanmedian(arr, axis=0)
         elif method_norm in {"min", "nanmin"}:
@@ -113,7 +116,14 @@ def _monthly_composite_block(
             out = trim_mean(arr, trim_fraction, axis=0)
         else:
             out = np.nanmedian(arr, axis=0)
-    return out.astype(np.float32, copy=False)
+    result = out.astype(np.float32, copy=False)
+    if numeric_record is not None:
+        method_used = {"median": "nanmedian", "nanmedian": "nanmedian", "min": "nanmin",
+                       "nanmin": "nanmin", "mean": "nanmean", "nanmean": "nanmean"}[method_norm]
+        numeric_record("monthly_composite", "linear_power", "linear_power",
+                       {"method": method_used, "backend": backend, "axis": 0,
+                        "nan_policy": "ignore_nan"})
+    return result
 
 def _track_composite_block(
     idxs: list[int],
@@ -129,6 +139,7 @@ def _track_composite_block(
     trim_fraction: float,
     scene_bounds: list | None = None,
     with_count: bool = False,
+    resampling=None,
 ):
     """Composite one track's scenes for a spatial block.
 
@@ -139,15 +150,21 @@ def _track_composite_block(
     computed from the already-aligned stack so it adds no extra warps.
     """
     stack = []
+    alignment_options = {"resampling": resampling} if resampling is not None else {}
     for idx in idxs:
         arr = _mosaic_align_window(
             [idx], final_arr, prof_arr, height, width,
             transform, target_crs, y_slice, x_slice,
-            scene_bounds=scene_bounds,
+            scene_bounds=scene_bounds, **alignment_options,
         )
         if arr is not None:
             stack.append(arr)
-    composite = _monthly_composite_block(stack, composite_method, trim_fraction)
+            if hasattr(final_arr, "_record_used"):
+                final_arr._record_used(idx)
+    numeric_options = {}
+    if hasattr(final_arr, "record_numeric"):
+        numeric_options["numeric_record"] = final_arr.record_numeric
+    composite = _monthly_composite_block(stack, composite_method, trim_fraction, **numeric_options)
     if not with_count:
         return composite
     if composite is None:
@@ -155,6 +172,10 @@ def _track_composite_block(
     count = np.zeros(composite.shape, dtype=np.float32)
     for arr in stack:
         count += np.isfinite(arr)
+    tracker = getattr(final_arr, "numeric_tracker", None)
+    if tracker is not None:
+        tracker.record_numeric("observation_count", N_OBS_BAND, "linear_power", "count",
+                               {"method": "sum_isfinite", "count_unit": "aligned_scene_stack_entry"})
     return composite, count
 
 def _track_valid_mask_block(
@@ -200,9 +221,15 @@ def _make_smonthly_block_bands(
     features_rvi: bool,
     ratio_name: str,
     rvi_name: str,
+    numeric_tracker=None,
 ) -> dict[str, np.ndarray]:
     arr_vv_db = _linear_to_db(composite_vv_lin)
     arr_vh_db = _linear_to_db(composite_vh_lin)
+    if numeric_tracker is not None:
+        for variable in (copol_name, crosspol_name):
+            numeric_tracker.record_numeric(
+                "linear_to_db", variable, "linear_power", "db",
+                {"formula": "10*log10(x)", "nonpositive": "NaN", "result_dtype": "float32"})
     block_bands: dict[str, np.ndarray] = {
         copol_name: arr_vv_db,
         crosspol_name: arr_vh_db,
@@ -416,6 +443,7 @@ def _write_smonthly_month_zarr_blockwise_single_track(
     texture_cfg: dict | None = None,
 ) -> tuple[list[int], dict[int, int]] | None:
     """Write one smonthly timestep for a single track in one blockwise pass."""
+    numeric_tracker = getattr(final_vv, "numeric_tracker", None)
     blocks = list(_iter_spatial_blocks(height, width, chunk_y, chunk_x))
     total_blocks = len(blocks)
     logger.info(
@@ -464,18 +492,25 @@ def _write_smonthly_month_zarr_blockwise_single_track(
         )
         if cvh is None:
             cvh = np.full_like(cvv, np.nan, dtype=np.float32)
+            if numeric_tracker is not None:
+                numeric_tracker.record_numeric("fill_missing", crosspol_name, "linear_power", "linear_power",
+                                               {"value": "NaN", "reason": "no_VH_composite"})
 
         block_bands = _make_smonthly_block_bands(
             cvv, cvh,
             copol_name, crosspol_name,
             features_ratio, features_rvi,
             ratio_name, rvi_name,
+            numeric_tracker=numeric_tracker,
         )
         if N_OBS_BAND in band_names:
             block_bands[N_OBS_BAND] = cnt
         _apply_block_clip(block_bands, clip_geom, transform, y_slice, x_slice)
+        if numeric_tracker is not None:
+            numeric_tracker.record_clip(block_bands, clip_geom is not None)
         _write_smonthly_block_bands(
-            g, time_index, y_slice, x_slice, band_names, block_bands
+            g, time_index, y_slice, x_slice, band_names, block_bands,
+            numeric_tracker=numeric_tracker,
         )
         return int(np.isfinite(cvv).sum())
 
@@ -545,6 +580,7 @@ def _write_smonthly_month_zarr_blockwise(
     This preserves the existing priority-mosaic semantics while avoiding
     full-tile per-track composites in memory.
     """
+    numeric_tracker = getattr(final_vv, "numeric_tracker", None)
     track_items = [
         (int(tk), list(tk_idxs))
         for tk, tk_idxs in idx_by_track.items()
@@ -642,7 +678,7 @@ def _write_smonthly_month_zarr_blockwise(
             track_seen.add(tk)
             track_cov[tk] += px
 
-    if not track_seen:
+    if not track_seen or not any(track_cov.values()):
         logger.warning("Month %s: no valid acquisitions, skipping", month_str)
         return None
 
@@ -675,6 +711,13 @@ def _write_smonthly_month_zarr_blockwise(
         # count of the track that supplied its composite value (0 = no data).
         composite_nobs = np.zeros((bh, bw), dtype=np.float32)
         filled = np.zeros((bh, bw), dtype=bool)
+        if numeric_tracker is not None:
+            for variable in (copol_name, crosspol_name, N_OBS_BAND):
+                domain = "count" if variable == N_OBS_BAND else "linear_power"
+                numeric_tracker.record_numeric(
+                    "fill_missing", variable, domain, domain,
+                    {"value": 0 if variable == N_OBS_BAND else "NaN",
+                     "reason": "uncovered_priority_mosaic_initialization"})
 
         for tk in track_order:
             tk_idxs = idx_by_track.get(tk, [])
@@ -695,6 +738,9 @@ def _write_smonthly_month_zarr_blockwise(
             )
             if cvh is None:
                 cvh = np.full_like(cvv, np.nan, dtype=np.float32)
+                if numeric_tracker is not None:
+                    numeric_tracker.record_numeric("fill_missing", crosspol_name, "linear_power", "linear_power",
+                                                   {"value": "NaN", "reason": "no_VH_composite"})
 
             take = ~filled & np.isfinite(cvv)
             if take.any():
@@ -706,17 +752,26 @@ def _write_smonthly_month_zarr_blockwise(
             if filled.all():
                 break
 
+        if numeric_tracker is not None:
+            for variable in (copol_name, crosspol_name):
+                numeric_tracker.record_numeric(
+                    "track_priority_mosaic", variable, "linear_power", "linear_power",
+                    {"order": [int(track) for track in track_order], "selection": "first_finite_VV"})
         block_bands = _make_smonthly_block_bands(
             composite_vv_lin, composite_vh_lin,
             copol_name, crosspol_name,
             features_ratio, features_rvi,
             ratio_name, rvi_name,
+            numeric_tracker=numeric_tracker,
         )
         if N_OBS_BAND in band_names:
             block_bands[N_OBS_BAND] = composite_nobs
         _apply_block_clip(block_bands, clip_geom, transform, y_slice, x_slice)
+        if numeric_tracker is not None:
+            numeric_tracker.record_clip(block_bands, clip_geom is not None)
         _write_smonthly_block_bands(
-            g, time_index, y_slice, x_slice, band_names, block_bands
+            g, time_index, y_slice, x_slice, band_names, block_bands,
+            numeric_tracker=numeric_tracker,
         )
 
     try:
@@ -1006,6 +1061,74 @@ def _generate_cog_preview_from_zarr(
 
     return cog_relpath, preview_relpath
 
+
+def _monthly_index_tracks(clean_dates, df_batch, clean_source_rows):
+    if clean_source_rows is not None:
+        if (len(clean_source_rows) != len(clean_dates)
+                or len(set(clean_source_rows)) != len(clean_source_rows)
+                or df_batch is None or "_source_row" not in df_batch
+                or df_batch["_source_row"].duplicated().any()):
+            raise ValueError("monthly track mapping requires unique aligned source rows")
+        by_source = {int(row["_source_row"]): int(row["track_number"])
+                     for _, row in df_batch.iterrows()}
+        return {i: by_source.get(int(row), -1) for i, row in enumerate(clean_source_rows)}
+    if df_batch is None or not len(df_batch):
+        return {}
+
+    def timestamp(value):
+        value = pd.Timestamp(value)
+        value = value.tz_convert("UTC") if value.tz is not None else value.tz_localize("UTC")
+        return value.strftime("%Y%m%dT%H%M%S")
+
+    by_time = {timestamp(row["acq_dt"]): int(row["track_number"]) for _, row in df_batch.iterrows()}
+    return {i: by_time.get(timestamp(date), -1) for i, date in enumerate(clean_dates)}
+
+
+def _monthly_output_months(writer_kwargs, *, skip_months=()) -> set[str]:
+    """Find nonempty output months without touching a store or creating an intent."""
+    args = writer_kwargs
+    groups = {month: indices for month, indices in _group_indices_by_period(args["clean_dates"], "monthly").items()
+              if month not in skip_months}
+    if not groups:
+        return set()
+    height, width = args["height"], args["width"]
+    transform, crs = args["transform"], args["target_crs"]
+    arrays, profiles = args["final_vv"], args["prof_vv"]
+    resampling = rasterio_resampling(args.get("resampling_method", "nearest"))
+    bounds = _compute_scene_dst_bounds(arrays, profiles, transform, crs, height, width)
+    clip = _prepare_block_clip_geom(args.get("tile_clip", True), args["mgrs_tile_id"], crs)
+    tracks = _monthly_index_tracks(args["clean_dates"], args.get("df_batch"), args.get("clean_source_rows"))
+    cfg = args.get("monthly_cfg") or {}
+    valid_indices = args.get("valid_clean_indices")
+    valid_months = set()
+    for month, indices in groups.items():
+        by_track = {}
+        for i in indices:
+            if valid_indices is not None and i not in valid_indices:
+                continue
+            track = tracks.get(i, -1)
+            if args.get("restrict_to_group", False) and track == -1:
+                continue
+            by_track.setdefault(track, []).append(i)
+        for y_slice, x_slice in _iter_spatial_blocks(height, width, args["chunk_y"], args["chunk_x"]):
+            for selected in by_track.values():
+                composite = _track_composite_block(
+                    selected, arrays, profiles, height, width, transform, crs,
+                    y_slice, x_slice, cfg.get("composite_method", "median"),
+                    cfg.get("trim_fraction", 0.15), scene_bounds=bounds, resampling=resampling,
+                )
+                if composite is None:
+                    continue
+                output = {"VV": _linear_to_db(composite)}
+                _apply_block_clip(output, clip, transform, y_slice, x_slice)
+                if np.isfinite(output["VV"]).any():
+                    valid_months.add(month)
+                    break
+            if month in valid_months:
+                break
+    return valid_months
+
+
 def _write_smonthly_one_track(
     mgrs_tile_id: str,
     direction_label: str,
@@ -1048,6 +1171,8 @@ def _write_smonthly_one_track(
     spatial_filter_legacy: bool = False,
     rebuild_on_mismatch: bool = False,
     resampling_method: str = "nearest",
+    _provenance_tracker=None,
+    clean_source_rows: list[int] | None = None,
 ) -> list[dict]:
     """
     Compute monthly composites for ONE acquisition-group track and write
@@ -1086,6 +1211,17 @@ def _write_smonthly_one_track(
     monthly_cog_dir  = tile_dir / product_label / 'cog'
     monthly_png_dir  = tile_dir / product_label / 'preview'
     zarr_path = monthly_zarr_dir / f"s1grits_smonthly_{mgrs_tile_id}_{direction_label}{_tk_suffix}.zarr"
+
+
+    # Reject deterministic empty outputs before attributes, deletion or append.
+    skip_months = set()
+    if on_time_conflict == "skip" and zarr_path.exists():
+        old = zarr.open_group(str(zarr_path), mode="r")
+        skip_months = set(pd.to_datetime(old["time"][:]).strftime("%Y-%m"))
+    valid_months = skip_months & _group_indices_by_period(clean_dates, "monthly").keys()
+    valid_months.update(_monthly_output_months(locals(), skip_months=skip_months))
+    if not valid_months:
+        return []
 
     # Build band list
     # Core per-pixel bands (written by the main blockwise pass) vs GLCM texture
@@ -1200,6 +1336,9 @@ def _write_smonthly_one_track(
         # master grid once, so the block loop never calls GDAL reproject.
         # Local rebinding only: the caller's lists stay untouched for the
         # per-scene writers.
+        if _provenance_tracker is not None:
+            final_vv = _provenance_tracker.bind(final_vv, "VV")
+            final_vh = _provenance_tracker.bind(final_vh, "VH")
         final_vv, prof_vv = _prealign_scenes_to_master_grid(
             final_vv, prof_vv, transform, target_crs, height, width,
             resampling=_resampling,
@@ -1208,6 +1347,9 @@ def _write_smonthly_one_track(
             final_vh, prof_vh, transform, target_crs, height, width,
             resampling=_resampling,
         )
+        if _provenance_tracker is not None:
+            final_vv = _provenance_tracker.bind(final_vv, "VV")
+            final_vh = _provenance_tracker.bind(final_vh, "VH")
     # Helper: unified monthly compositing
     def _monthly_composite(stack, method):
         arr = np.stack(stack, axis=0)
@@ -1258,18 +1400,7 @@ def _write_smonthly_one_track(
     # so the monthly composite can be built per-track and then mosaicked.
     # Acquisitions with no match (or no df_batch) fall into a single group (-1),
     # which degrades to the original single-median behaviour.
-    def _ts_key(_x):
-        _t = pd.Timestamp(_x)
-        _t = _t.tz_convert('UTC') if _t.tz is not None else _t.tz_localize('UTC')
-        return _t.strftime('%Y%m%dT%H%M%S')
-
-    _index_track: dict[int, int] = {}
-    if df_batch is not None and len(df_batch):
-        _ts_to_track: dict[str, int] = {}
-        for _, _r in df_batch.iterrows():
-            _ts_to_track[_ts_key(_r['acq_dt'])] = int(_r['track_number'])
-        for _ci, _cd in enumerate(clean_dates):
-            _index_track[_ci] = _ts_to_track.get(_ts_key(_cd), -1)
+    _index_track = _monthly_index_tracks(clean_dates, df_batch, clean_source_rows)
 
     zarr_relpath = zarr_path.relative_to(tile_dir)
 
@@ -1283,32 +1414,34 @@ def _write_smonthly_one_track(
         track_coverage: list[dict],
         cog_relpath: str | None,
         preview_relpath: str | None,
+        write_stac: bool = True,
     ) -> None:
         # Per-track identifiers (mirror the scenes per-track layout)
         geom_group_id = f"{mgrs_tile_id}_{direction_label}{_tk_suffix}"
         item_id = f"{geom_group_id}_{month_str}"
         rec_track = _month_track.get(month_str)
 
-        _ws_write_monthly_stac_item(
-            mgrs_tile_id, direction_label, month_str, rep_dt, tile_dir,
-            transform, width, height, target_crs,
-            cog_relpath=cog_relpath,
-            zarr_relpath=str(zarr_relpath),
-            preview_relpath=preview_relpath,
-            processing_level=processing_level,
-            product_label=product_label,
-            product_variant=_smonthly_variant,
-            processing_signature=_smonthly_sig,
-            processing_variant_json=json.dumps(_smonthly_variant_vals),
-            actual_bands=_smonthly_bands,
-            jpl_burst_ids=_month_burst_ids.get(month_str),
-            opera_ids=_month_opera_ids.get(month_str),
-            pass_id=_month_pass.get(month_str),
-            track=rec_track,
-            primary_track=primary_track,
-            track_coverage=track_coverage,
-            item_id_override=item_id,
-        )
+        if write_stac:
+            _ws_write_monthly_stac_item(
+                mgrs_tile_id, direction_label, month_str, rep_dt, tile_dir,
+                transform, width, height, target_crs,
+                cog_relpath=cog_relpath,
+                zarr_relpath=str(zarr_relpath),
+                preview_relpath=preview_relpath,
+                processing_level=processing_level,
+                product_label=product_label,
+                product_variant=_smonthly_variant,
+                processing_signature=_smonthly_sig,
+                processing_variant_json=json.dumps(_smonthly_variant_vals),
+                actual_bands=_smonthly_bands,
+                jpl_burst_ids=_month_burst_ids.get(month_str),
+                opera_ids=_month_opera_ids.get(month_str),
+                pass_id=_month_pass.get(month_str),
+                track=rec_track,
+                primary_track=primary_track,
+                track_coverage=track_coverage,
+                item_id_override=item_id,
+            )
 
         rec = normalize_catalog_record({
             'item_id':      item_id,
@@ -1346,6 +1479,8 @@ def _write_smonthly_one_track(
         catalog_records.append(rec)
 
     for month_str, burst_indices in sorted(month_groups.items()):
+        if month_str not in valid_months:
+            continue
         if valid_clean_indices is not None:
             burst_indices = [i for i in burst_indices if i in valid_clean_indices]
             if not burst_indices:
@@ -1415,6 +1550,8 @@ def _write_smonthly_one_track(
         dt_ns = np.datetime64(rep_dt.to_datetime64(), 'ns')
 
         if use_blockwise:
+            if _provenance_tracker is not None:
+                _provenance_tracker.begin_write(burst_indices)
             if _overwrite_pending:
                 _zarr_delete_timestep(g, month_str)
                 existing_months.discard(month_str)
@@ -1450,6 +1587,8 @@ def _write_smonthly_one_track(
                 texture_cfg=_blockwise_tex_cfg,
             )
             if blockwise_result is None:
+                if _provenance_tracker is not None:
+                    raise RuntimeError("tracked monthly write produced no valid output; pending retained")
                 continue
 
             _track_order, _track_cov = blockwise_result
@@ -1465,6 +1604,14 @@ def _write_smonthly_one_track(
                 }
                 for _tk in _track_order
             ]
+
+            if _provenance_tracker is not None:
+                _add_smonthly_record(
+                    month_str, rep_dt, burst_indices, _primary_track, _track_coverage,
+                    cog_relpath=None, preview_relpath=None, write_stac=False,
+                )
+                _provenance_tracker.commit(catalog_record=catalog_records[-1])
+                continue
 
             # Generate COG/Preview from Zarr (if requested)
             cog_relpath, preview_relpath = None, None
@@ -1832,6 +1979,7 @@ def _write_monthly_output_scenes(
     spatial_filter_legacy: bool = False,
     rebuild_on_mismatch: bool = False,
     resampling_method: str = "nearest",
+    clean_source_rows: list[int] | None = None,
 ) -> list[dict]:
     """
     Write per-track smonthly composites for one tile/direction batch.
@@ -1876,6 +2024,7 @@ def _write_monthly_output_scenes(
             spatial_filter_legacy=spatial_filter_legacy,
             rebuild_on_mismatch=rebuild_on_mismatch,
             resampling_method=resampling_method,
+            clean_source_rows=clean_source_rows,
         )
 
     # No track metadata -> single untracked product (df_track=None so the inner
