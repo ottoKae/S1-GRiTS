@@ -12,7 +12,13 @@ from rasterio.transform import Affine
 zarr = pytest.importorskip("zarr")
 
 from s1grits import provenance_monthly as pm
-from s1grits.provenance_contract import read_tables
+from s1grits.provenance_contract import canonical_json, read_tables
+
+
+def test_affine_profile_keeps_legacy_nine_coefficient_identity():
+    transform = Affine(30, 0, 500010, 0, -30, 8500020)
+    expected = [30., 0., 500010., 0., -30., 8500020., 0., 0., 1.]
+    assert canonical_json(pm._json_value({"transform": transform})) == canonical_json({"transform": expected})
 
 
 def _inputs(root, *, month="2025-01"):

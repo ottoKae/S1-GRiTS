@@ -44,7 +44,7 @@ def _json_value(value):
         if any(not isinstance(key, str) for key in value):
             raise ValueError("input metadata keys must be strings")
         return {key: _json_value(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, (list, tuple, Affine)):
         return [_json_value(item) for item in value]
     # ASF returns GeoDataFrames; bind geometry values without a mutable repr.
     from shapely.geometry.base import BaseGeometry
