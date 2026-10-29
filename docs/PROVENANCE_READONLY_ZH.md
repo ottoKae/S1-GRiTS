@@ -2,7 +2,7 @@
 
 `python -m s1grits.provenance build` 和 `verify` 为明确选定的本地 Zarr 生成、核验独立的 **metadata_only 配套目录**，记录已有结构、坐标、来源声明与未知项；不下载、不改写影像、不重建 Catalog，也不生成完整影像 ZIP。另有受限的 [`attach` 入库入口](#attach-historical-metadata)，用于把专门准备并核验的历史 release 附入现有数据根；下面第 1—6 节仍说明独立导出。
 
-生产追加／替换留痕由受限的 [S1 月度工作流](PROVENANCE_WORKFLOW_ZH.md)负责；配套 GRiTS-Resolver 0.3.1rc1 支持发布 v1/v2 读取保护。这些能力与本只读导出入口分开使用，通用规则见[数据交接说明](DATA_HANDOFF_ZH.md)。
+生产追加／替换留痕由受限的 [S1 月度工作流](PROVENANCE_WORKFLOW_ZH.md)负责；配套 [GRiTS-Resolver](https://github.com/ottoKae/GRiTS-Resolver/blob/main/docs/PROVENANCE_READING_ZH.md)支持发布 v1/v2 读取保护。这些能力与本只读导出入口分开使用，通用规则见[数据交接说明](DATA_HANDOFF_ZH.md)。
 
 ## 1. 开始前
 

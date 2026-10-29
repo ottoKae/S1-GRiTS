@@ -255,7 +255,7 @@ static_layers:
 dynamic Zarr must exist for every direction/track, and static adopts its CRS,
 affine transform, shape, coordinates, and `grid_id`. Use
 `reference_product_type: smonthly` for monthly-only archives. See
-[the pixel-exact static/scenes workflow](static_scenes_alignment.md).
+[the pixel-exact static/scenes workflow](workflows.md#static-alignment).
 
 In a scenes YAML, set only `static_layers.run_after_scenes: true` to enable the
 post-stage. When `layers` is omitted, all six RTC-STATIC layers are downloaded.
@@ -363,23 +363,9 @@ Based on `features_*` toggles, output bands vary:
 
 #### Static Workflow Processing Options
 
-```yaml
-# Static workflow has minimal processing configuration
-# All static layers are always generated
-
-output:
-  base_dir: "./output_static"      # Separate directory recommended
-  overwrite: false                 # Skip if outputs already exist
-                                   # (legacy workflow: uses the v2 key natively)
-```
-
-Static layers generated:
-- `local_inc_angle` — Local incidence angle
-- `inc_angle` — Incidence angle
-- `ls_map` — Layover/shadow mask
-- `number_of_looks` — Multi-looking factor
-- `rtc_anf_beta0` — RTC area normalization factor (beta0)
-- `rtc_anf_sigma0` — RTC area normalization factor (sigma0)
+Use the [static configuration above](#static-workflow-configuration) in the
+scenes YAML. Dynamic and static products share `output.base_dir`; existing
+dynamic data can instead be supplemented with `s1grits static ensure`.
 
 ### Logging Configuration
 
@@ -438,23 +424,17 @@ processing:
     enabled: false               # Set true to also generate monthly composites
 ```
 
-#### Minimal Static Config
+#### Add Static to the Scenes Config
 
 ```yaml
-workflow: "static"
-
-roi:
-  manual_mgrs_tiles: ["46SEG"]
-  flight_direction: "DESCENDING"
-  polarization: "VV+VH"
-
-output:
-  base_dir: "./output_static"
-  overwrite: false
+static_layers:
+  run_after_scenes: true
+  grid_reference: required
+  on_failure: fail
 ```
 
----
-
+Keep the scenes configuration's existing `output.base_dir`. The complete
+production order and pairing rules are in the [workflow guide](workflows.md#static-alignment).
 
 ---
 

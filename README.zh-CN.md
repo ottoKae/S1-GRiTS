@@ -23,11 +23,13 @@
   S1-GRiTS（Sentinel-1 Gridded RTC Time Series）是一个 Python 软件包，用于从 ASF OPERA RTC-S1 产品构建可直接分析的 Sentinel-1 SAR 时序数据立方体。它将 burst 级观测转换为按 MGRS 对齐、时间一致的 Zarr 数据立方体，并可按需导出 COG。
 </p>
 
-## 数据来源与处理记录（3.0.1rc1 候选版）
+## 已有数据的实验使用与交接
 
-参见[数据交接](docs/DATA_HANDOFF_ZH.md)、[历史元数据导出](docs/PROVENANCE_READONLY_ZH.md)和[月度生产记录](docs/PROVENANCE_WORKFLOW_ZH.md)。按[配置示例](config/provenance_monthly.example.yaml)启用后，记录实际来源、数值处理步骤、追加／替换代次及 Catalog 恢复；默认关闭。[精简 skill](agents/skills/s1-data-handoff/SKILL.md)仅指向同一公共流程。
+收到 Zarr 后，先核对这一批数据实际使用的处理流程、数值单位、合成域及来源映射；当前源码和变量名不能替代历史生产证据。参见[数据交接说明](docs/DATA_HANDOFF_ZH.md)和[交接 skill](agents/skills/s1-data-handoff/SKILL.md)。按[只读元数据导出指南](docs/PROVENANCE_READONLY_ZH.md)使用 `python -m s1grits.provenance build` / `verify`，或按[可选月度生产记录指南](docs/PROVENANCE_WORKFLOW_ZH.md)及 [YAML 示例](config/provenance_monthly.example.yaml)记录来源、追加／替换及提交恢复。生产留痕默认关闭，支持范围、可复现检查与局限直接写在使用指南中。每批数据的覆盖、处理证据和未知项应随数据交付。元数据导出不改写影像；已有库可按 [`attach` 入库说明](docs/PROVENANCE_READONLY_ZH.md#attach-historical-metadata)附入经核验的历史 release。完整影像交付尚无自动复制／打包入口。
 
-带代次范围的说明使用发布语义 v2，配套 GRiTS-Resolver 0.3.1rc1；表结构和 data_revision 算法仍为 v1。升级软件不会自动更新已有影像或元数据，当前代码不能代替历史执行证据。大批量增量仍有明显元数据开销，先按工作流指南的小批次边界试用。
+3.0.1rc1 对带逐代次历史说明的新包采用发布语义 v2，配套使用 GRiTS-Resolver 0.3.1rc1；旧 v1 仍可读取，表契约和 data_revision 算法不变。当前历史库无需为软件更新立即重发。大批次生产前请先查看[月度工作流与性能边界](docs/PROVENANCE_WORKFLOW_ZH.md)。
+
+文档分工：`docs/` 保存随仓库发布的使用说明、接口与维护指南；`docs/_work/` 保存本地实施计划、执行记录和阶段验收报告，整个目录不进入 Git 和源码发行包。公开说明必须独立可用，不链接本地过程材料。可复用测试仍放 `tests/`；证明实际处理过程的批次证据仍须随数据交付，不能只保存在本地过程目录。
 
 ## 供论文审稿人查阅：论文与代码对应关系
 
@@ -200,26 +202,24 @@ s1grits static ensure --output-dir /path/to/output --product-label smonthly_ASCE
 # 可选：使用 --tile 17MPU 限定瓦片；多个瓦片可重复传入 --tile
 ```
 
-系统有意不支持独立 static YAML，因为 static 必须从权威动态产品取得成像几何和像素网格。详细规则见 **[static/scenes 对齐说明](docs/static_scenes_alignment.md)**。
+系统有意不支持独立 static YAML，因为 static 必须从权威动态产品取得成像几何和像素网格。详细规则见 **[static/scenes 对齐说明](docs/workflows.md#static-alignment)**。
 
 ## 文档
 
-| 页面 | 内容 |
+先按要完成的任务进入，需要时再查详细参数。
+
+| 要做什么 | 阅读入口 |
 |---|---|
-| [安装](docs/installation.md) | 环境要求、pip/conda/源码安装、Earthdata 认证与环境检查 |
-| [架构](docs/architecture.md) | Zarr 优先架构、成像组与工作流比较 |
-| [工作流](docs/workflows.md) | 月度合成、逐景处理和 static 图层 |
-| [输出结构](docs/outputs.md) | Zarr/COG/预览图、波段、STAC 和 Parquet 目录 |
-| [配置参考](docs/configuration.md) | YAML 配置项及默认值 |
-| [目标格网与插值 v1](docs/target-grid-resampling-v1.md) | 固定 30/10 米格网与 10 米优化插值规范 |
-| [命令行参考](docs/cli.md) | 处理、目录、瓦片、镶嵌、检查、缓存与服务命令 |
-| [Python API](docs/python_api.md) | 数据读取、时间序列、绘图和验证 |
-| [示例](docs/examples.md) | 端到端示例和教程 Notebook |
-| [网页界面](docs/webapp.md) | `s1grits serve` 网页界面 |
-| [内存受控架构](docs/scenes_blockwise_architecture.md) | 分块 scenes 流水线设计 |
-| [常见问题](docs/faq.md) | 常见问题与故障排查 |
-| [更新日志](CHANGELOG.md) | 版本变更记录 |
-| [发布流程](docs/release.md) | 版本与 tag 契约、本地门禁、wheel 检查和 PyPI 发布 |
+| 安装并完成首次检查 | [安装](docs/installation.md) |
+| 下载逐景／月度影像及配套 static | [工作流](docs/workflows.md)、[网页界面](docs/webapp.md)、[配置参考](docs/configuration.md) |
+| 理解并交接已有数据 | [输出结构](docs/outputs.md)、[数据交接](docs/DATA_HANDOFF_ZH.md) |
+| 记录或核查处理过程 | [月度生产留痕](docs/PROVENANCE_WORKFLOW_ZH.md)、[历史元数据导出](docs/PROVENANCE_READONLY_ZH.md) |
+| 读取数据、准备分析输入 | [Python API](docs/python_api.md)、[示例](docs/examples.md) |
+| 排查问题 | [常见问题](docs/faq.md) |
+
+技术与维护参考：[命令行](docs/cli.md)、[目标格网与插值](docs/target-grid-resampling-v1.md)、
+[架构](docs/architecture.md)、[分块内存](docs/scenes_blockwise_architecture.md)、
+[发布流程](docs/release.md)和[更新日志](CHANGELOG.md)。
 
 ## 许可证与引用
 

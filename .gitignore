@@ -105,6 +105,8 @@ temp/
 config/ecuador_*/
 config/ecuador_*.yaml
 config/recovery_ecuador/
-docs/ecuador_*.md
 scripts/*ecuador*
 scripts/sftp_ecuador*
+
+# Local plans and execution records; public guides stay in docs/.
+/docs/_work/

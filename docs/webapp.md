@@ -4,8 +4,8 @@
 预检、受控下载任务、Catalog Schema v8 检索与任务日志查看。页面不实现第二套
 遥感处理逻辑；确认后的任务只调用公开 CLI。
 
-正式 CLI、Catalog、路径和状态契约见
-[`phase0-v3-web-contract.md`](phase0-v3-web-contract.md)。
+CLI 映射、Catalog 与路径规则在本文统一说明；生产参数见[配置参考](configuration.md)，
+动态与静态格网配对见[工作流](workflows.md#static-alignment)。
 
 ## 1. 安装与启动
 
@@ -42,6 +42,14 @@ s1grits serve D:\S1-GRiTS-output `
 - “同时生成静态图层”配置集成 Static post-stage，固定生成六类原始层；
   它与影像使用相同动态格网，不能单独提交。
 - “仅 Zarr”保留主数据立方体，关闭 COG 与 Preview。
+
+<a id="contract"></a>
+
+页面和 CLI 共用一条生产路径：不调用已移除的 `process` 或 `process_static`。
+默认增量策略为 `output.existing_store=resume`、`output.existing_month=skip`。
+逐景与月度产品的区别由 `processing.monthly.enabled/only` 决定。
+Static 按瓦片、方向、轨道和 `grid_id` 与动态数据配对；网格身份由 CRS、
+仿射变换和尺寸计算，显示名称不能替代该标识。
 
 ### 空间
 
@@ -114,6 +122,12 @@ workspace 和 `--catalog-root` 仍作为后端安全边界，但不暴露为普�
 写入；选择 Catalog 不会修改任务输出根，也不会自动执行 resync；需要修复目录时应
 显式创建受控任务或使用 CLI。
 
+Catalog 使用 Schema v8 的 46 个规范字段，路径相对于数据立方体根。
+动态数据以 `zarr_path + grid_id` 定位，成像组以 `geometry_group_id` 区分；
+Static 另保留 `reference_grid_id`、`reference_zarr_path` 和产品标签。
+Catalog/STAC 同步由 `catalog resync` 统一负责。每次生产任务按顺序执行
+`resync`、`validate` 和 `doctor --strict`，任何一步失败都不能标记为成功。
+
 ## 4. 主要 API
 
 | 路由 | 作用 |
@@ -158,7 +172,8 @@ workspace 和 `--catalog-root` 仍作为后端安全边界，但不暴露为普�
 ## 6. 验证
 
 ```powershell
-python -m pytest -q
+python -c "from pathlib import Path; Path('.test-tmp').mkdir(exist_ok=True)"
+python -m pytest tests/test_webapp_api.py tests/test_webapp_cn_api.py -q -p no:cacheprovider --basetemp .test-tmp/webapp
 node --check src/s1grits/webapp/static/app.js
 python -m ruff check src/s1grits/webapp tests/test_webapp_api.py tests/test_webapp_cn_api.py
 ```
@@ -166,3 +181,21 @@ python -m ruff check src/s1grits/webapp tests/test_webapp_api.py tests/test_weba
 `tests/test_webapp_cn_api.py` 覆盖 v3 能力、随包静态资源、目录越权、Catalog v8、
 MGRS bbox 和月合成/Static 的 CLI 映射。全量测试使用短 `--basetemp` 可避免
 Windows 传统 260 字符路径限制影响 GLCM Zarr 临时块文件。
+
+### 小范围真实下载检查
+
+在使用者明确选择瓦片、月份与下载范围后，按以下步骤验收；自动测试不会替你发起下载。
+
+1. 使用独立输出目录，选择一个瓦片、一个方向、一个月和 Zarr-only，先关闭
+   static、月度合成和派生波段。预检只返回摘要，不创建任务或下载影像。
+2. 核对摘要后确认一次，记录 `run_id`；任务应依次进入排队、处理、验证和完成状态。
+   刷新页面不应产生重复任务，一次性预检令牌不能重复消费。
+3. 核对任务 YAML、`job.json` 和脱敏日志；确认写入范围符合预检，Catalog 三项检查通过。
+   Zarr 的 VV/VH、时间坐标、CRS、格网与 Catalog 一致，且没有生成未选择的产品。
+4. 用网页查询同一批输出，核对数量和覆盖；任务结束后重启服务，确认台账可读且不重跑。
+5. 检查无效 MGRS、缺少时间、越界输出路径会被拒绝，且不会启动额外下载。
+
+若凭据、持续限流、磁盘余量或 Catalog 检查不满足要求，或发现目录已有待保留数据、
+越界写入、凭据泄露，立即停止。保留任务、日志与输出排查原因，不自动删除或覆盖重跑。
+验收记录至少包括预检摘要、任务身份、起止时间、输出结构和 Catalog 检查结果；
+这些是每次执行的过程材料，不随源码发行。

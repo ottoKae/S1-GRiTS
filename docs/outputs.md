@@ -124,7 +124,8 @@ print(ds)
 
 #### Static Workflow Zarr
 
-**Path:** `{base_dir}_{DIR}_static/{TILE}_{DIR}/static/zarr/s1grits_static_{TILE}_{DIR}_TK{track}_N{bursts}.zarr`
+**Path:** `{base_dir}/{TILE}/static_{DIR}/zarr/<static-store>.zarr`,
+sharing the dynamic data root and Catalog.
 
 **Structure:**
 - **No time dimension** (static layers are time-invariant)
@@ -385,33 +386,9 @@ output/
 
 #### Static Workflow
 
-```
-output_DESCENDING_static/
-├── 17MQV_DESCENDING/
-│   ├── static/
-│   │   ├── zarr/
-│   │   │   ├── s1grits_static_17MQV_DESCENDING_TK142_N07.zarr/
-│   │   │   │   ├── local_inc_angle/ (y, x)
-│   │   │   │   ├── inc_angle/ (y, x)
-│   │   │   │   ├── ls_map/ (y, x)
-│   │   │   │   ├── number_of_looks/ (y, x)
-│   │   │   │   ├── rtc_anf_beta0/ (y, x)
-│   │   │   │   └── rtc_anf_sigma0/ (y, x)
-│   │   │   └── s1grits_static_17MQV_DESCENDING_TK40_N13.zarr/
-│   │   │       └── ...
-│   │   └── cog/
-│   │       ├── 17MQV_DESCENDING_TK142_N07_local_inc_angle.tif
-│   │       ├── 17MQV_DESCENDING_TK142_N07_inc_angle.tif
-│   │       ├── 17MQV_DESCENDING_TK142_N07_ls_map.tif
-│   │       ├── 17MQV_DESCENDING_TK142_N07_number_of_looks.tif
-│   │       ├── 17MQV_DESCENDING_TK142_N07_rtc_anf_beta0.tif
-│   │       ├── 17MQV_DESCENDING_TK142_N07_rtc_anf_sigma0.tif
-│   │       └── ...
-│   └── items/
-│       └── static_DESCENDING/
-│           ├── 17MQV_DESCENDING_TK142_N07_static.json
-│           └── ...
-└── ...
-```
+Static products are siblings of the matching dynamic products below each
+tile directory. Their six arrays use `(y, x)` and retain the matching grid
+and geometry-group identifiers. The canonical directory layout, production
+order and reader examples are in [paired static layers](workflows.md#static-alignment).
 
 ---

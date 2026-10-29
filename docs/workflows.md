@@ -118,91 +118,99 @@ count is time-varying (edge truncation, ASF gaps) and is recorded as
 
 ---
 
-### Workflow 3: Static Layers
+<a id="static-alignment"></a>
 
-**Generate time-invariant reference layers from RTC-STATIC products.**
+### Workflow 3: Paired static layers
 
-#### Purpose
+RTC-STATIC supplies `local_inc_angle`, `inc_angle`, `ls_map`,
+`number_of_looks`, `rtc_anf_beta0` and `rtc_anf_sigma0`. These reference
+arrays have spatial dimensions `(y, x)` and no time dimension.
 
-Produce static reference layers suitable for:
-- Terrain correction validation
-- Incidence angle analysis
-- Layover/shadow masking
-- Number-of-looks weighting
-- RTC area normalization factor reference
+#### Production order and one output root
 
-#### When to Use
+For new data, use the scenes YAML and its integrated static post-stage:
 
-- Need **incidence angle maps** for geometric interpretation
-- Require **layover/shadow masks** for data filtering
-- Want **number of looks** for uncertainty quantification
-- Analyzing **terrain-induced geometric distortions**
-
-#### Output Structure
-
-```
-{base_dir}_{DIR}_static/                  # e.g., output_DESCENDING_static/
-  {TILE}_{DIR}/                          # e.g., 17MQV_DESCENDING/
-    static/
-      zarr/
-        s1grits_static_{TILE}_{DIR}_TK{track}_N{bursts}.zarr/
-          ├── local_inc_angle/   (y, x)   # Local incidence angle
-          ├── inc_angle/         (y, x)   # Incidence angle
-          ├── ls_map/            (y, x)   # Layover/shadow mask
-          ├── number_of_looks/   (y, x)   # Number of looks
-          ├── rtc_anf_beta0/     (y, x)   # RTC ANF (beta0)
-          └── rtc_anf_sigma0/    (y, x)   # RTC ANF (sigma0)
-      cog/
-        {TILE}_{DIR}_TK{track}_N{bursts}_local_inc_angle.tif
-        {TILE}_{DIR}_TK{track}_N{bursts}_inc_angle.tif
-        {TILE}_{DIR}_TK{track}_N{bursts}_ls_map.tif
-        {TILE}_{DIR}_TK{track}_N{bursts}_number_of_looks.tif
-        {TILE}_{DIR}_TK{track}_N{bursts}_rtc_anf_beta0.tif
-        {TILE}_{DIR}_TK{track}_N{bursts}_rtc_anf_sigma0.tif
-    items/
-      static_{DIR}/
-        {TILE}_{DIR}_TK{track}_N{bursts}_static.json   # STAC Item (no datetime)
+```yaml
+static_layers:
+  run_after_scenes: true
+  grid_reference: required
+  on_failure: fail
 ```
 
-#### CLI Command
+```bash
+s1grits process_scenes --config config/s1grits_scenes.yaml
+s1grits catalog resync --output-dir ./output
+```
+
+The YAML's `output.base_dir` must match `--output-dir`. The static post-stage
+runs after the dynamic output lock is released and only for successfully
+created tiles/tracks. For dynamic products that already exist:
 
 ```bash
 s1grits static ensure --output-dir ./output --product-label smonthly_ASCENDING
 ```
 
-For pixel-exact static/scenes cubes, run `process_scenes` first, use the same
-`output.base_dir`, and set `static_layers.grid_reference: required`. Static
-then adopts the corresponding scenes Zarr grid per direction and track. See
-[Static and dynamic scenes: pixel-exact workflow](static_scenes_alignment.md).
+Keep dynamic and static products in the same data root and Catalog:
 
-#### Key Configuration
-
-```yaml
-workflow: "static"
-
-# Static layers are always enabled; no temporal processing options
-output:
-  base_dir: "./output_static"   # Separate directory recommended
-  overwrite: false              # Skip if outputs exist
-                                # (legacy workflow: uses the v2 key natively)
+```text
+{base_dir}/
+  catalog.parquet
+  {TILE}/
+    catalog.parquet
+    scenes_{DIR}_{label}/zarr/<dynamic-store>.zarr/
+    smonthly_{DIR}_{label}/zarr/<monthly-store>.zarr/
+    static_{DIR}/zarr/<static-store>.zarr/
 ```
 
-#### Available Static Layers
+Do not create a separate static data root or standalone static YAML. The
+reference is selected by tile, direction, track and product label. If several
+dynamic variants have different grids, set
+`static_layers.reference_product_label` explicitly. With `grid_reference:
+required`, a missing or ambiguous reference stops the run. `auto` can fall
+back to the legacy tile grid; `tile` always uses it.
 
-| Layer | Variable Name | Description | Units |
-|-------|---------------|-------------|-------|
-| **Local Incidence Angle** | `local_inc_angle` | Local terrain incidence angle | degrees |
-| **Incidence Angle** | `inc_angle` | SAR incidence angle | degrees |
-| **Layover/Shadow Map** | `ls_map` | Geometric distortion mask | 0=valid, 1=layover, 2=shadow |
-| **Number of Looks** | `number_of_looks` | Multi-looking factor | count |
-| **RTC ANF (beta0)** | `rtc_anf_beta0` | Area normalization factor (beta0) | unitless |
-| **RTC ANF (sigma0)** | `rtc_anf_sigma0` | Area normalization factor (sigma0) | unitless |
+#### Alignment contract
 
-#### Notes
+Paired dynamic and static stores have identical CRS, affine transform,
+width, height, `x`, `y` and `grid_id`, and share the track-level
+`geometry_group_id`. Static provenance retains `grid_source`,
+`reference_grid_id`, `reference_product_label` and `reference_zarr_path`.
+Opening existing static stores validates the grid and required bands;
+`catalog resync` reconstructs the pairing from Zarr attributes.
 
-- Static layers are **time-invariant** — no temporal dimension
-- One set of outputs per acquisition group (same as scenes workflow)
-- Processing is **skipped if outputs exist** (unless `overwrite: true`)
-- Zarr stores have **no time dimension** — only spatial (y, x)
+#### Reading and machine-learning inputs
 
----
+Select a track when a tile contains multiple acquisition geometries:
+
+```python
+from s1grits.resolver import CubeResolver
+
+r = CubeResolver("./output")
+ds = r.open_stack(
+    "17MPU", ["scenes", "static"],
+    direction="DESCENDING", track=40,
+    chunks={"time": 1, "y": 512, "x": 512},
+)
+```
+
+Static bands remain 2-D by default; broadcast only in the downstream patch
+or model batch. `open_stack(..., broadcast_static=True)` provides an explicit
+lazy compatibility view. New stores use the identical-grid path. Legacy
+tile-grid stores require an integer-pixel lattice match; the resolver does
+not resample their values. Ambiguous tracks or geometry groups are rejected.
+
+To write a training store with dynamic arrays at the root and 2-D static
+arrays under `static/`:
+
+```python
+r.materialize_training_cube(
+    "17MPU", "training/17MPU_DESCENDING_TK40.zarr",
+    direction="DESCENDING", track=40,
+)
+```
+
+Cross-sensor reading and versioned processing evidence use the separate
+[GRiTS-Resolver package](https://github.com/ottoKae/GRiTS-Resolver).
+Choose a release compatible with the dataset's metadata version; the old
+v0.1.0 installer example is not a recommendation for new v2 metadata.
+Installation and reader usage are maintained in that repository.

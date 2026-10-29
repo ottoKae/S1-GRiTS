@@ -1,6 +1,6 @@
 # S1 月度工作流：可选生产记录与增量恢复
 
-更新：2026-10-28，3.0.1rc1 候选版。此功能接在现有 `process_scenes` 流程上。默认关闭，启用后把来源、实际使用情况、写入代次和 Catalog 发布记录保存在影像旁边。合成算法及数值转换沿用原 writer；本候选同时包含有限 nodata 和分极化有效次数修复，升级不会重写历史影像。
+更新：2026-10-28。此功能接在现有 `process_scenes` 流程上。默认关闭，启用后把来源、实际使用情况、写入代次和 Catalog 发布记录保存在影像旁边。合成算法及数值转换沿用原 writer；已有有限 nodata 和分极化有效次数修复，升级不会重写历史影像。
 
 ## 1. 开关和最小启动方法
 
@@ -120,6 +120,7 @@ Windows 深层证据路径使用扩展路径读取，并有超过 260 字符的�
 安装测试依赖后，可复现小库流程和恢复检查：
 
 ```powershell
+python -c "from pathlib import Path; Path('.test-tmp').mkdir(exist_ok=True)"
 python -m pytest tests/test_provenance_workflow.py tests/test_provenance_incremental_cost.py -q -p no:cacheprovider --basetemp .test-tmp/provenance
 ```
 

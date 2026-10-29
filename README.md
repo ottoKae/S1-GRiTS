@@ -33,18 +33,34 @@
 </p>
 
 
-## Dataset provenance (3.0.1rc1 candidate)
+## Using and handing off an existing dataset
 
-Use the [handoff guide](docs/DATA_HANDOFF_ZH.md), [historical metadata export](docs/PROVENANCE_READONLY_ZH.md)
-and [opt-in monthly workflow](docs/PROVENANCE_WORKFLOW_ZH.md) to keep processing evidence with data.
-The [configuration example](config/provenance_monthly.example.yaml) enables exact source mapping,
-numeric-operation receipts, append/replace generations and Catalog recovery. Tracking is off by default.
-An optional [agent reference](agents/skills/s1-data-handoff/SKILL.md) points to the same public procedure.
+The current source tree is not proof of how a historical cube was produced.
+Read the [dataset handoff procedure (Chinese)](docs/DATA_HANDOFF_ZH.md) for
+processing semantics, batch-level evidence, explicit unknowns and sanitized
+exports. An optional [agent reference](agents/skills/s1-data-handoff/SKILL.md)
+links to that same procedure. The [read-only metadata guide (Chinese)](docs/PROVENANCE_READONLY_ZH.md)
+provides the working `python -m s1grits.provenance build` / `verify` commands for
+a detached metadata-only companion. The [opt-in S1 monthly workflow guide (Chinese)](docs/PROVENANCE_WORKFLOW_ZH.md)
+and [YAML example](config/provenance_monthly.example.yaml) enable exact loader-to-source
+mapping, multi-month append/replace records, and coordinated tile/global Catalog recovery.
+The supported route is serial, monthly-only VV/VH without derived exports; tracking is off
+by default. Reproducible checks and their limits are described in the workflow guide.
+Actual coverage, processing evidence and unknowns belong to each delivered dataset.
+Metadata export does not rewrite imagery. The [historical metadata attachment guide (Chinese)](docs/PROVENANCE_READONLY_ZH.md#attach-historical-metadata)
+explains how to attach a verified release and its bound README to an existing data root.
 
-Generation-scoped annotations use release semantics v2; table schemas and data-revision stay v1.
-Use GRiTS-Resolver 0.3.1rc1 for these releases. Current source code is not proof of historical processing.
-Upgrading software does not update existing imagery or its metadata. Large incremental jobs still have
-significant metadata costs; see the workflow guide's measured limits before enabling tracking.
+Version 3.0.1rc1 publishes generation-scoped historical annotations using release semantics v2;
+tables and the data-revision algorithm remain v1. Use GRiTS-Resolver 0.3.1rc1 for these releases.
+Old v1 archives remain readable, and metadata-only upgrades do not rewrite imagery.
+See the [monthly workflow and measured limits (Chinese)](docs/PROVENANCE_WORKFLOW_ZH.md) before scheduling large batches.
+Automatic complete-imagery delivery is not implemented.
+
+Documentation layout: `docs/` contains public user and maintainer guides;
+`docs/_work/` holds local implementation plans, execution notes and acceptance reports.
+The entire `_work/` directory is excluded from Git and source distributions. Public guides
+must stand on their own without links to it. Keep reusable tests in `tests/`; dataset-specific
+processing evidence remains with the delivered data, not solely in local work notes.
 
 ## For Reviewers — Paper ↔ Code
 
@@ -251,28 +267,25 @@ s1grits static ensure --output-dir /path/to/output --product-label smonthly_ASCE
 # Optional tile scope (repeat --tile for several tiles): --tile 17MPU
 ```
 
-Standalone static YAML downloads are intentionally unsupported because static geometry must always be derived from an authoritative dynamic product. See **[Static/scenes alignment](docs/static_scenes_alignment.md)** for the detailed contract.
+Standalone static YAML downloads are intentionally unsupported because static geometry must always be derived from an authoritative dynamic product. See **[Static/scenes alignment](docs/workflows.md#static-alignment)** for the detailed contract.
 
 ## Documentation
 
-| Page | Contents |
+Start with the task you need; the detailed references can be read as needed.
+
+| Task | Read |
 |---|---|
-| [Installation](docs/installation.md) | Prerequisites, pip/conda/source installs, Earthdata auth, doctor |
-| [Architecture](docs/architecture.md) | Zarr-first philosophy, acquisition groups, workflow comparison |
-| [Workflows](docs/workflows.md) | Monthly composites, per-scene processing, static layers |
-| [Output Structure](docs/outputs.md) | Zarr/COG/preview specs, bands, STAC metadata, parquet catalogs |
-| [Configuration Reference](docs/configuration.md) | Every YAML key the workflows read, with defaults |
-| [Target Grid and Resampling v1](docs/target-grid-resampling-v1.md) | Fixed 30/10 m grid contract and optimized 10 m interpolation |
-| [CLI Reference](docs/cli.md) | All commands: process_scenes, static, catalog, tile, mosaic, doctor, cache, serve |
-| [Python API](docs/python_api.md) | `s1grits.analysis` — loading, time series, plotting, validation |
-| [Examples](docs/examples.md) | End-to-end usage examples and the tutorial notebooks |
-| [Web Interface](docs/webapp.md) | v3 中文下载、MGRS、Catalog 与任务日志控制台 |
-| [Web Smoke Test Plan](docs/webapp-smoke-test-plan.md) | 中文页面最小真实下载、Zarr/Catalog 验收与停止条件 |
-| [Phase 0 Web Contract](docs/phase0-v3-web-contract.md) | v3 CLI、Schema v8、路径、任务与验收门禁 |
-| [Bounded-Memory Architecture](docs/scenes_blockwise_architecture.md) | The blockwise scenes pipeline design |
-| [FAQ](docs/faq.md) | Common questions and troubleshooting |
-| [Changelog](CHANGELOG.md) | Release history |
-| [Release Process](docs/release.md) | Version/tag contract, local gate, wheel checks and PyPI publication |
+| Install and run the first check | [Installation](docs/installation.md) |
+| Produce scenes, monthly composites and paired static layers | [Workflows](docs/workflows.md), [Web interface](docs/webapp.md), [Configuration](docs/configuration.md) |
+| Understand and hand off a dataset | [Output structure](docs/outputs.md), [Data handoff](docs/DATA_HANDOFF_ZH.md) |
+| Record or inspect processing evidence | [Monthly production records](docs/PROVENANCE_WORKFLOW_ZH.md), [Historical metadata export](docs/PROVENANCE_READONLY_ZH.md) |
+| Read data and prepare analysis inputs | [Python API](docs/python_api.md), [Examples](docs/examples.md) |
+| Troubleshoot | [FAQ](docs/faq.md) |
+
+Technical and maintainer references: [CLI](docs/cli.md),
+[Grid and resampling](docs/target-grid-resampling-v1.md), [Architecture](docs/architecture.md),
+[Blockwise memory](docs/scenes_blockwise_architecture.md), [Release process](docs/release.md)
+and [Changelog](CHANGELOG.md).
 
 
 ## License & Citation

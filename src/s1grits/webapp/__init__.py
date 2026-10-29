@@ -6,5 +6,5 @@ static frontend. Install the optional extra to use it:
     pip install "s1grits[web]"
     s1grits serve --root /path/to/outputs
 
-See docs/phase0-v3-web-contract.md and docs/webapp.md.
+See docs/webapp.md for the UI, CLI mapping and Catalog contract.
 """

@@ -4,7 +4,7 @@ API-first: every capability is an HTTP endpoint (OpenAPI docs at ``/docs``);
 the bundled static SPA is just one client of it. Requires the optional
 ``s1grits[web]`` extra (fastapi + uvicorn).
 
-Security posture (docs/webapp_v2_architecture.md §6): default bind is
+Security posture (docs/webapp.md, security constraints): default bind is
 localhost; a bearer token (``--token`` / ``S1GRITS_WEB_TOKEN``) gates every
 ``/api`` route when set; job execution is whitelist-only with the output
 directory pinned to the workspace; asset serving is traversal-safe.

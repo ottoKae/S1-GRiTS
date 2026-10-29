@@ -104,10 +104,11 @@ s1grits static ensure --output-dir ./output --product-label smonthly_ASCENDING
 1. Query ASF for RTC-STATIC products
 2. Group by acquisition geometry (same as scenes workflow)
 3. Download static layers per burst
-4. Mosaic to MGRS tile grid per acquisition group
-5. Write Zarr store (no time dimension) + COG per layer
+4. Mosaic onto the matching dynamic product's grid per acquisition group
+5. Write the paired static Zarr store (no time dimension); COG export is optional
 
-**Output:** `{base_dir}_{DIR}_static/{TILE}_{DIR}/static/zarr/s1grits_static_{TILE}_{DIR}_TK{track}_N{bursts}.zarr`
+**Output:** `{base_dir}/{TILE}/static_{DIR}/zarr/<static-store>.zarr`,
+sharing the dynamic data root and Catalog. See [static pairing](workflows.md#static-alignment).
 
 **Static layers:**
 - `local_inc_angle` — Local incidence angle

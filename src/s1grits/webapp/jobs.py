@@ -1,6 +1,6 @@
 """Server-side job manager: whitelisted CLI invocations with a bounded queue.
 
-Design (see docs/webapp_v2_architecture.md §2.2):
+Design (see docs/webapp.md):
 
 - A job IS a CLI run. The manager never reimplements pipeline logic; it
   supervises ``s1grits <subcommand>`` exactly as a user would run it, so the
