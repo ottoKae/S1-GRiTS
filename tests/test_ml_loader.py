@@ -208,8 +208,8 @@ def test_build_patch_index_enumerates_origins(cube_root):
     assert len(idx["time_grid"]) == 3
 
 
-def test_patch_dataset_works_without_torch(cube_root):
-    assert "torch" not in sys.modules or pytest.skip("torch installed; torch-free path untestable")
+def test_patch_dataset_works_without_torch(cube_root, monkeypatch):
+    monkeypatch.setitem(sys.modules, "torch", None)
     ds = ml.PatchDataset(cube_root, collection=COLLECTION, tile=TILE,
                          patch_size=16, nan_to=0.0)
     assert len(ds) == 4

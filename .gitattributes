@@ -1,0 +1,2 @@
+# The vendored contract is pinned by its exact bytes on every platform.
+src/s1grits/provenance_contract.py text eol=lf

@@ -26,6 +26,7 @@ KNOWN_KEYS: dict = {
     "metadata": {
         "product_config": None,  # optional registry-overlay YAML path
         "products": None,        # inline product overlay (free-form subtree)
+        "provenance": {"enabled": None, "dataset_id": None, "run_id": None},
     },
     "roi": {
         "wkt": None,
@@ -103,6 +104,7 @@ KNOWN_KEYS: dict = {
         "features_glcm": None,
         "tile_clip": None,
         "target_resolution": None,
+        "resampling_method": None,
         "zarr_chunks": {"y": None, "x": None},
         "cog_block_size": None,
         "despeckle": None,  # method + free-form kwargs

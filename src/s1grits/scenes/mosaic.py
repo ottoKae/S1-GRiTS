@@ -137,6 +137,9 @@ def _mosaic_align_window_direct_copy(
         src_row_start:src_row_stop,
         src_col_start:src_col_stop,
     ].astype(np.float32, copy=False)
+    nodata = src_prof.get("nodata")
+    if nodata is not None:
+        out[out == np.float32(nodata)] = np.nan
     return out
 
 def _scene_dst_bounds(
@@ -223,6 +226,7 @@ def _prealign_scenes_to_master_grid(
     target_crs: str,
     height: int,
     width: int,
+    resampling: Resampling = Resampling.nearest,
 ) -> tuple[list, list]:
     """Warp scenes that cannot be direct-copied onto the master grid, once.
 
@@ -269,7 +273,7 @@ def _prealign_scenes_to_master_grid(
                 dst_transform=dst_transform,
                 dst_crs=target_crs,
                 dst_nodata=np.nan,
-                resampling=Resampling.nearest,
+                resampling=resampling,
                 num_threads=1,
             )
         except Exception as exc:
@@ -289,6 +293,12 @@ def _prealign_scenes_to_master_grid(
         new_final[idx] = dst
         new_prof[idx] = p
         n_warped += 1
+        if hasattr(final_arr, "record_numeric"):
+            final_arr.record_numeric("grid_alignment", "linear_power", "linear_power",
+                                     {"mode": "prealign_reproject", "resampling": resampling.name,
+                                      "result_dtype": "float32", "input_index": idx,
+                                      "src_nodata": prof.get("nodata"),
+                                      "nodata_policy": "rasterio_src_nodata"})
     if n_warped:
         logger.info(
             "Pre-aligned %d cross-grid scene(s) to the master grid "
@@ -308,6 +318,7 @@ def _mosaic_align_window(
     y_slice: slice,
     x_slice: slice,
     scene_bounds: list | None = None,
+    resampling: Resampling = Resampling.nearest,
 ) -> np.ndarray | None:
     """Mosaic only one destination block.
 
@@ -315,6 +326,7 @@ def _mosaic_align_window(
     monthly writer.  It keeps the same first-valid-pixel source policy while
     avoiding construction of full-tile arrays for each acquisition.
     """
+    numeric_record = getattr(final_arr, "record_numeric", None)
     bh = int((y_slice.stop or 0) - (y_slice.start or 0))
     bw = int((x_slice.stop or 0) - (x_slice.start or 0))
     if bh <= 0 or bw <= 0:
@@ -332,9 +344,16 @@ def _mosaic_align_window(
             len(prof_arr) if prof_arr else 0,
             len(final_arr) if final_arr else 0,
         )
-        full = _ws_mosaic_align(indices, final_arr, prof_arr, height, width, transform, target_crs)
+        full = _ws_mosaic_align(
+            indices, final_arr, prof_arr, height, width, transform, target_crs,
+            resampling=resampling,
+        )
         if full is None:
             return None
+        if numeric_record is not None:
+            numeric_record("grid_alignment", "linear_power", "linear_power",
+                           {"mode": "legacy_full_mosaic_fallback", "resampling": resampling.name,
+                            "validity_policy": "legacy_helper_not_instrumented"})
         return full[y_slice, x_slice].astype(np.float32, copy=False)
 
     out: np.ndarray | None = None
@@ -357,6 +376,7 @@ def _mosaic_align_window(
         tmp = _mosaic_align_window_direct_copy(
             src, prof, dst_transform, target_crs, bh, bw
         )
+        alignment_mode = "direct_copy" if tmp is not None else "window_reproject"
         if tmp is None:
             tmp = np.full((bh, bw), np.nan, dtype=np.float32)
             try:
@@ -369,17 +389,34 @@ def _mosaic_align_window(
                     dst_transform=dst_transform,
                     dst_crs=target_crs,
                     dst_nodata=np.nan,
-                    resampling=Resampling.nearest,
+                    resampling=resampling,
                     num_threads=1,
                 )
             except Exception as exc:
                 logger.debug("Windowed reproject failed; falling back to full mosaic: %s", exc)
-                full = _ws_mosaic_align(indices, final_arr, prof_arr, height, width, transform, target_crs)
+                full = _ws_mosaic_align(
+                    indices, final_arr, prof_arr, height, width, transform,
+                    target_crs, resampling=resampling,
+                )
                 if full is None:
                     return None
+                if numeric_record is not None:
+                    numeric_record("grid_alignment", "linear_power", "linear_power",
+                                   {"mode": "legacy_full_mosaic_fallback", "resampling": resampling.name,
+                                    "validity_policy": "legacy_helper_not_instrumented"})
                 return full[y_slice, x_slice].astype(np.float32, copy=False)
 
+        if numeric_record is not None:
+            numeric_record("grid_alignment", "linear_power", "linear_power",
+                           {"mode": alignment_mode, "input_index": idx,
+                            "src_nodata": prof.get("nodata"),
+                            "nodata_policy": "mask_source_nodata" if alignment_mode == "direct_copy"
+                            else "rasterio_src_nodata",
+                            "resampling": resampling.name if alignment_mode == "window_reproject" else None})
         tmp[~np.isfinite(tmp) | (tmp <= 0)] = np.nan
+        if numeric_record is not None:
+            numeric_record("input_filter", "linear_power", "linear_power",
+                           {"nonfinite": "NaN", "nonpositive": "NaN"})
         if out is None:
             # First contributing scene: adopt its buffer directly instead of
             # merging into a pre-allocated NaN window.  With one scene per
@@ -403,6 +440,7 @@ def _mosaic_align_scene_window(
     y_slice: slice,
     x_slice: slice,
     scene_bounds: list | None = None,
+    resampling: Resampling = Resampling.nearest,
 ) -> np.ndarray | None:
     """Windowed replica of ``_mosaic_align`` for the blockwise scenes writer.
 
@@ -435,7 +473,8 @@ def _mosaic_align_scene_window(
             "(profiles incomplete)"
         )
         full = _ws_mosaic_align(
-            indices, arr_list, prof_list, height, width, transform, target_crs
+            indices, arr_list, prof_list, height, width, transform, target_crs,
+            resampling=resampling,
         )
         if full is None:
             return None
@@ -479,7 +518,7 @@ def _mosaic_align_scene_window(
                 src_crs=prof["crs"],
                 dst_transform=dst_transform,
                 dst_crs=target_crs,
-                resampling=Resampling.nearest,
+                resampling=resampling,
                 src_nodata=float(src_nd),
                 dst_nodata=NODATA_SENTINEL,
                 init_dest_nodata=True,

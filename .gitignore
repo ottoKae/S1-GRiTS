@@ -46,6 +46,7 @@ venv.bak/
 
 # Pytest / coverage
 .pytest_cache/
+/.test-tmp/
 .coverage
 .coverage.*
 coverage.xml
@@ -77,6 +78,7 @@ desktop.ini
 # S1-GRiTS output data (never commit large datasets)
 output*/
 output_*/
+webapp_output/
 logs/
 *.log
 *.tif
@@ -96,3 +98,15 @@ temp/
 *.tmp
 *.bak
 *.bak2
+
+# Local production operations. These files can contain workstation paths,
+# remote hosts, account names, mount points or one-off recovery state. Keep
+# them outside the public source tree even when using `git add .`.
+config/ecuador_*/
+config/ecuador_*.yaml
+config/recovery_ecuador/
+scripts/*ecuador*
+scripts/sftp_ecuador*
+
+# Local plans and execution records; public guides stay in docs/.
+/docs/_work/

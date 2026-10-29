@@ -41,6 +41,8 @@ products:
       - processing.features_ratio
       - processing.features_rvi
       - processing.features_glcm
+      - processing.target_resolution
+      - processing.resampling_method
 
   # --- Monthly median composites from scenes (workflow_scenes monthly.enabled=true) ---
   smonthly:
@@ -56,6 +58,8 @@ products:
       - processing.features_rvi
       - processing.features_glcm
       - processing.monthly.composite_method
+      - processing.target_resolution
+      - processing.resampling_method
 
   # --- Static geometry layers (workflow_static) ---
   static:
@@ -66,6 +70,8 @@ products:
       - local_inc_angle
     variant_fields:
       - processing.bands
+      - processing.target_resolution
+      - processing.resampling_method
 
   # --- Legacy monthly composites (workflow.py) ---
   monthly:

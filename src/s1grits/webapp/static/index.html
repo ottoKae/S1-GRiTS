@@ -1,254 +1,319 @@
-<!DOCTYPE html>
-<html lang="en">
+<!doctype html>
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>S1-GRiTS · Workspace</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛰️</text></svg>">
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
-  <link rel="stylesheet" href="styles.css">
-</head>
+  <title>S1-GRiTS 中国区数据立方体下载控制台</title>
+  <link rel="stylesheet" href="/static/leaflet/leaflet.css">
+  <link rel="stylesheet" href="/static/styles.css?v=20260823-folder-browser-v3">
+  </head>
 <body>
   <header class="topbar">
-    <div class="brand">
-      <span class="brand-logo">S1</span>
-      <span class="brand-name">S1-GRiTS</span>
-      <span class="brand-badge" id="version-badge">v2.3</span>
+    <div class="brand-mark"><img class="brand-logo" src="/static/logo-mark.png?v=2" alt="S1-GRiTS"></div>
+    <div>
+      <h1>S1-GRiTS 数据立方体</h1>
+      <p>Sentinel-1 时序数据准备与本地数据 · 中文控制台</p>
     </div>
-    <div class="workspace-chips" id="workspace-chips" title="Workspace summary"></div>
-    <div class="topbar-actions">
-      <button id="job-status-chip" class="job-chip hidden" title="Active job — click for details"></button>
-      <button id="btn-refresh" class="btn ghost" title="Reload workspace">⟳ Refresh</button>
-      <button id="btn-jobs" class="btn primary">Jobs <span id="jobs-active-badge" class="badge hidden">0</span></button>
+    <div class="top-actions">
+      <span id="health" class="health">正在连接…</span>
     </div>
   </header>
 
-  <main class="layout">
-    <!-- ============ Zone 1 — Browse & filter ============ -->
-    <aside class="sidebar" id="sidebar">
-      <div class="zone-tag">Browse &amp; filter</div>
-      <section class="panel">
-        <h2>Filters</h2>
-        <label>Tile
-          <select id="f-tile"><option value="">All tiles</option></select>
-        </label>
-        <label>Product
-          <select id="f-product"><option value="">All products</option></select>
-        </label>
-        <label>Direction
-          <select id="f-direction"><option value="">All directions</option></select>
-        </label>
-        <label>Track
-          <select id="f-track"><option value="">All tracks</option></select>
-        </label>
-        <!-- From/To stacked vertically: side-by-side month inputs wrapped
-             awkwardly at the sidebar's fixed width -->
-        <label>From <input type="month" id="f-from"></label>
-        <label>To <input type="month" id="f-to"></label>
-        <button id="btn-clear-filters" class="btn ghost small">Clear filters</button>
+  <main class="workspace">
+    <aside class="planner">
+      <div class="step-head"><span>1</span><div><b>选择产品</b><small>影像产品可附带静态几何层</small></div></div>
+      <div class="workflow-grid" id="workflow-grid">
+        <button class="choice active" data-workflow="scenes"><b>逐景时序</b><small>Scenes + 可选逐轨月合成</small></button>
+        <button class="choice" data-workflow="monthly"><b>全瓦片月合成</b><small>Monthly median</small></button>
+      </div>
+
+      <div class="step-head"><span>2</span><div><b>空间与轨道</b><small>EPSG:4326 检索，MGRS 生产格网</small></div></div>
+      <div class="segmented" id="selection-tabs">
+        <button class="active" data-mode="tiles">瓦片选择</button>
+        <button data-mode="aoi">AOI 候选筛选</button>
+      </div>
+      <div class="selection-summary">
+        <span>最终选择：<b id="selected-count">0</b> 个瓦片</span>
+        <button class="text-button" id="clear-tiles" type="button">清空瓦片</button>
+      </div>
+      <section id="tile-pane">
+        <label>MGRS 瓦片（空格、逗号或换行分隔）</label>
+        <textarea id="tiles" rows="3" placeholder="例如：49RGP 49RGQ"></textarea>
+        <p class="hint">文本输入与地图点击双向同步；再次点击已选瓦片即可取消。刷新本页仍保留本次会话的选择。</p>
       </section>
-
-      <section class="panel">
-        <h2>Tiles</h2>
-        <ul class="tile-list" id="tile-list"></ul>
+      <section id="aoi-pane" hidden>
+        <label>导入 AOI</label>
+        <label class="file-picker"><span>选择 GeoJSON、Shapefile ZIP，或同时选择 SHP 组件</span><input id="aoi-file" type="file" multiple accept=".geojson,.json,.zip,.shp,.shx,.dbf,.prj,.cpg,application/geo+json,application/zip"></label>
+        <p class="hint">Shapefile 至少需要 .shp、.shx、.dbf、.prj；服务端读取其 CRS 并统一转换到 EPSG:4326。</p>
+        <div class="divider"><span>或输入经纬度矩形</span></div>
+        <div class="bbox-grid">
+          <label>西 <input id="west" type="number" step="0.0001" value="109"></label>
+          <label>东 <input id="east" type="number" step="0.0001" value="116"></label>
+          <label>南 <input id="south" type="number" step="0.0001" value="29"></label>
+          <label>北 <input id="north" type="number" step="0.0001" value="33.5"></label>
+        </div>
+        <button class="secondary wide" id="apply-bbox" type="button">应用矩形 AOI</button>
+        <p id="aoi-status" class="hint">当前未设置 AOI。</p>
+        <div class="aoi-actions">
+          <button class="secondary" id="select-candidates" type="button" disabled>全选候选</button>
+          <button class="secondary" id="deselect-candidates" type="button" disabled>取消候选选择</button>
+          <button class="secondary" id="clear-aoi" type="button" disabled>清除 AOI</button>
+        </div>
+        <p class="hint">AOI 只限定候选范围，不遮挡地图点击；清除 AOI 不会清除已选择的瓦片。</p>
       </section>
-    </aside>
+      <label>轨道方向</label>
+      <select id="direction">
+        <option value="BOTH">升降轨（串行处理）</option>
+        <option value="ASCENDING">仅升轨 ASCENDING</option>
+        <option value="DESCENDING">仅降轨 DESCENDING</option>
+      </select>
 
-    <!-- ============ Zone 2 — Visualize ============ -->
-    <section class="content">
-      <div class="zone-tag">Visualize — spatial &amp; temporal coverage</div>
-
-      <div class="empty-cta hidden" id="empty-cta">
-        <b>This workspace is empty.</b> Use the
-        <span class="cta-accent">Process &amp; download</span> panel on the right to
-        configure tiles and a time range, then queue a download — products appear
-        here as they are written.
+      <div class="step-head"><span>3</span><div><b>时间与输出</b><small>先预检，再确认执行</small></div></div>
+      <section id="time-pane">
+        <label>年份</label>
+        <div id="years" class="tag-grid"></div>
+        <label>月份</label>
+        <div id="months" class="tag-grid months"></div>
+      </section>
+      <label>数据立方体目录（相对输出根目录）</label>
+      <div class="inline">
+        <input id="output" value="hubei_s1_cube" autocomplete="off">
+        <button class="secondary" id="browse-output">浏览</button>
       </div>
-
-      <div class="map-wrap panel">
-        <div id="map"></div>
-        <div class="map-layers">
-          <label class="inline"><input type="checkbox" id="layer-bursts"> Burst footprints</label>
-          <select id="burst-direction" class="mini" title="Filter burst footprints by orbit direction">
-            <option value="">Asc + Desc</option>
-            <option value="ASCENDING">Ascending</option>
-            <option value="DESCENDING">Descending</option>
-          </select>
-        </div>
-        <div class="map-hint" id="map-hint">Click a tile to filter · select a dataset, then click inside its footprint to probe</div>
+      <div class="options-row">
+        <label><input id="zarr-only" type="checkbox" checked> 仅 Zarr（推荐）</label>
+        <label><input id="include-static" type="checkbox"> 同时生成静态图层</label>
+        <label><input id="smonthly" type="checkbox"> 同时生成逐轨月合成</label>
       </div>
-
-      <div class="panel coverage-panel">
-        <div class="panel-head">
-          <h2>Coverage — tiles × months</h2>
-          <span class="muted" id="coverage-caption">each row is a tile; red cells are temporal gaps inside its span</span>
-        </div>
-        <!-- Fixed tile-label column + horizontally scrollable month canvas:
-             a decade of months stays legible instead of being squeezed. -->
-        <div class="coverage-body">
-          <div class="cov-labels" id="cov-labels"></div>
-          <div class="coverage-scroll" id="coverage-scroll">
-            <canvas id="coverage-matrix"></canvas>
-          </div>
-        </div>
-        <div class="panel-head timeline-head">
-          <h3>Filtered monthly histogram</h3>
-          <span class="muted" id="timeline-caption"></span>
-        </div>
-        <canvas id="timeline" height="56"></canvas>
-      </div>
-
-      <div class="panel table-panel">
-        <div class="panel-head">
-          <h2>Datasets <span class="muted" id="items-count"></span></h2>
-          <div class="pager">
-            <button id="pg-prev" class="btn ghost small">‹</button>
-            <span id="pg-label" class="muted"></span>
-            <button id="pg-next" class="btn ghost small">›</button>
-          </div>
-        </div>
-        <div class="table-scroll">
-          <table id="items-table">
-            <thead><tr>
-              <th>Item</th><th>Tile</th><th>Product</th><th>Track</th>
-              <th>Month</th><th>Scenes</th><th>Assets</th>
-            </tr></thead>
-            <tbody id="items-body"></tbody>
-          </table>
-        </div>
-      </div>
-    </section>
-
-    <!-- ============ Zone 3 — Process & download ============ -->
-    <aside class="detail" id="right-panel">
-      <div class="zone-tag">Process &amp; download</div>
-      <div class="tabs">
-        <button class="tab active" id="tab-download" data-tab="download">⬇ Download</button>
-        <button class="tab" id="tab-item" data-tab="item">Item</button>
-      </div>
-
-      <!-- Tab: Download / gap-fill — a pure-form job composer. The YAML config
-           the CLI needs is generated server-bound at Execute time and never
-           shown; nothing here reads or writes local config files. -->
-      <div class="tab-body" id="tabbody-download">
-        <section class="panel">
-          <label>Job type
-            <select id="job-type"></select>
+      <details>
+        <summary>高级处理选项</summary>
+        <div class="advanced">
+          <label>目标分辨率
+            <select id="resolution">
+              <option value="30" selected>30 米（原生兼容）</option>
+              <option value="10">10 米（优化双线性）</option>
+            </select>
           </label>
-          <label>Title <input type="text" id="job-title" placeholder="e.g. 11-tile monthly run"></label>
-
-          <fieldset class="quickfill" id="job-quickfill">
-            <legend id="job-form-legend">Parameters</legend>
-            <div class="qf-grid">
-              <label>MGRS tiles (comma-separated)
-                <input type="text" id="qf-tiles" placeholder="17MPU, 17MPV, 17NQA">
-              </label>
-              <label>Direction
-                <select id="qf-direction">
-                  <option value="ASCENDING">ASCENDING</option>
-                  <option value="DESCENDING">DESCENDING</option>
-                </select>
-              </label>
-              <label>Time mode
-                <select id="qf-time-mode">
-                  <option value="full">Full archive (to year)</option>
-                  <option value="years">Specific years/months</option>
-                </select>
-              </label>
-              <label>Year(s)
-                <input type="text" id="qf-years" placeholder="2026 or 2024, 2025">
-              </label>
-              <label>Months (1–12, optional)
-                <input type="text" id="qf-months" placeholder="1, 2, 3" disabled>
-              </label>
-              <label>Resolution (m)
-                <input type="number" id="qf-resolution" value="30" min="10" max="500" step="10">
-              </label>
-              <label class="qf-checks" id="qf-outputs-row">Outputs
-                <span>
-                  <label class="inline"><input type="checkbox" id="qf-cog" checked> COG</label>
-                  <label class="inline"><input type="checkbox" id="qf-preview" checked> Preview</label>
-                </span>
-              </label>
-            </div>
-            <div class="qf-actions">
-              <button type="button" id="btn-patch-gaps" class="btn small ghost"
-                      title="Prefill a run covering the red gap months from the coverage matrix (existing months are skipped on resume)">
-                ▨ Patch coverage gaps</button>
-            </div>
+          <p id="resampling-note" class="hint">30 米采用最近邻重投影，保持现有产品兼容。</p>
+          <label>并行瓦片数<input id="workers" type="number" min="1" max="8" value="2"></label>
+          <label><input id="despeckle" type="checkbox"> TV 去斑</label>
+          <label><input id="ratio" type="checkbox"> Ratio 波段</label>
+          <label><input id="rvi" type="checkbox"> RVI 波段</label>
+          <fieldset id="static-options" hidden>
+            <legend>v3 集成静态层</legend>
+            <p class="hint">与影像共用同一动态参考格网，固定生成六类原始静态层；不能脱离影像单独提交。</p>
+            <label><input type="checkbox" name="static-layer" value="local_inc_angle" checked disabled> 局地入射角</label>
+            <label><input type="checkbox" name="static-layer" value="inc_angle" checked disabled> 入射角</label>
+            <label><input type="checkbox" name="static-layer" value="ls_map" checked disabled> 叠掩/阴影</label>
+            <label><input type="checkbox" name="static-layer" value="number_of_looks" checked disabled> 等效视数</label>
+            <label><input type="checkbox" name="static-layer" value="rtc_anf_beta0" checked disabled> ANF β0</label>
+            <label><input type="checkbox" name="static-layer" value="rtc_anf_sigma0" checked disabled> ANF σ0</label>
           </fieldset>
-
-          <p class="muted small-note hidden" id="job-noparams">This command takes no
-            parameters — it runs against the served workspace as-is.</p>
-
-          <p class="muted small-note">Runs are confined to the served workspace
-            (<code>output.base_dir</code> is pinned server-side); your local config
-            files are never read or modified. To work in a different folder,
-            restart with <code>s1grits serve /path/to/folder</code>.</p>
-          <div class="modal-actions">
-            <button class="btn ghost small" id="btn-save-yaml"
-                    title="Download these parameters as a config file for headless CLI use">
-              ⤓ Save as YAML</button>
-            <button class="btn primary" id="job-submit">▶ Execute</button>
-          </div>
-          <div class="error hidden" id="job-error"></div>
-        </section>
-
-        <!-- Terminal: live CLI output of the job launched from this panel -->
-        <section class="panel" id="panel-log-panel">
-          <div class="panel-head">
-            <h2>Execution log</h2>
-            <span class="muted" id="panel-log-status">idle — execute a job to stream its CLI output here</span>
-          </div>
-          <pre class="job-log panel-log" id="panel-log">$ _</pre>
-        </section>
-      </div>
-
-      <!-- Tab: selected item detail + probe -->
-      <div class="tab-body hidden" id="tabbody-item">
-        <section class="panel" id="detail-panel">
-          <div class="panel-head">
-            <h2 id="detail-title">No dataset selected</h2>
-            <button class="btn ghost small" id="detail-close" title="Clear selection">✕</button>
-          </div>
-          <p class="muted" id="detail-empty-hint">Select a row in the Datasets table to
-            inspect its metadata, preview it on the map, and probe per-pixel time series.</p>
-          <img id="detail-preview" class="detail-preview" alt="" hidden>
-          <dl class="detail-meta" id="detail-meta"></dl>
-          <div class="detail-actions" id="detail-actions"></div>
-        </section>
-        <section class="panel" id="probe-panel" hidden>
-          <div class="panel-head">
-            <h2>Point time series</h2><span class="muted" id="probe-caption"></span>
-          </div>
-          <canvas id="probe-chart" height="220"></canvas>
-          <canvas id="probe-nobs" height="46" title="n_obs — observations behind each composite"></canvas>
-        </section>
-      </div>
+        </div>
+      </details>
+      <button id="submit" class="primary wide">预检并创建下载任务</button>
+      <p id="form-message" class="message"></p>
     </aside>
+
+    <section class="stage">
+      <div class="map-card">
+        <div class="map-shell">
+          <div id="map" aria-label="中国区域空间预检地图"></div>
+          <div id="map-error" class="map-error" hidden></div>
+          <div id="map-status" class="map-status" role="status" aria-live="polite" hidden></div>
+          <div class="basemap-switch" id="basemap-switch">
+            <button class="active" data-basemap="road">道路</button>
+            <button data-basemap="satellite">卫星</button>
+            <button class="active overlay-toggle" id="toggle-mgrs" aria-pressed="true" title="缩放至4级后显示MGRS格网">MGRS格网</button>
+            <button class="overlay-toggle" id="toggle-local-data" aria-pressed="true" hidden>本地数据</button>
+          </div>
+          <div class="map-layer-legend" aria-label="地图图层图例">
+            <span><i class="legend-mgrs"></i>MGRS</span>
+            <span><i class="legend-candidate"></i>AOI候选</span>
+            <span><i class="legend-selected"></i>下载选择</span>
+            <span id="legend-local-data" hidden><i class="legend-catalog"></i>本地数据</span>
+          </div>
+        </div>
+      </div>
+
+      <section class="task-dock">
+        <div class="dock-head">
+          <div class="dock-tabs" role="tablist" aria-label="工作区">
+            <button id="tasks-tab" class="active" role="tab" aria-selected="true">任务中心</button>
+            <button id="local-search-tab" role="tab" aria-selected="false">本地数据</button>
+          </div>
+          <button class="ghost" id="refresh-tasks">刷新任务</button>
+        </div>
+        <div id="tasks-pane" class="dock-pane" role="tabpanel" aria-labelledby="tasks-tab">
+          <div id="tasks" class="task-list"></div>
+        </div>
+        <div id="local-search-pane" class="dock-pane local-search-pane" role="tabpanel" aria-labelledby="local-search-tab" hidden>
+          <input id="cat-output" type="hidden" value="">
+          <section id="catalog-empty" class="catalog-empty-state">
+            <div class="catalog-folder-icon" aria-hidden="true">📁</div>
+            <div class="catalog-empty-copy">
+              <h3>选择本地数据立方体</h3>
+              <p>请选择根目录直接包含 <code>catalog.parquet</code> 的文件夹，选择后将自动校验并显示在地图上。</p>
+            </div>
+            <div class="catalog-home-actions">
+              <button id="select-catalog-folder" class="primary" type="button">选择数据立方体文件夹</button>
+              <button id="open-manual-catalog" class="secondary" type="button">手动输入路径</button>
+            </div>
+            <p id="catalog-home-message" class="hint" role="status"></p>
+            <details id="recent-catalogs" class="recent-catalogs" hidden>
+              <summary>最近使用的数据</summary>
+              <div id="recent-catalog-list" class="recent-catalog-list"></div>
+            </details>
+          </section>
+
+          <section id="catalog-selection" class="catalog-selection" hidden>
+            <div class="catalog-selection-card">
+              <div class="catalog-folder-icon small" aria-hidden="true">📁</div>
+              <div class="catalog-selection-copy">
+                <b id="catalog-selection-name">本地数据立方体</b>
+                <code id="catalog-selection-path"></code>
+              </div>
+              <div class="catalog-selection-actions">
+                <button id="change-catalog-folder" class="secondary" type="button">更换文件夹</button>
+                <button id="forget-catalog-folder" class="secondary danger" type="button">忘记记录</button>
+              </div>
+            </div>
+
+            <div class="local-search-feedback">
+              <div id="catalog-status" class="catalog-status checking">正在检查本地数据立方体…</div>
+              <p id="catalog-message" class="hint"></p>
+            </div>
+
+            <section id="catalog-discovery" class="catalog-discovery" hidden>
+              <div><b>当前文件夹没有 Catalog</b><p id="catalog-discovery-message">可以重新选择，或只检查它的一级子目录。</p></div>
+              <div class="catalog-discovery-actions"><button id="scan-catalog-children" class="secondary" type="button">查找一级子目录</button><button id="reselect-catalog-folder" class="primary" type="button">重新选择文件夹</button></div>
+              <div id="catalog-candidate-list" class="catalog-candidate-list"></div>
+            </section>
+
+            <div id="catalog-ready-tools" hidden>
+              <div class="local-search-toolbar">
+                <input id="cat-tile" placeholder="瓦片，如 49RGP">
+                <select id="cat-product"><option value="">全部产品</option><option>scenes</option><option>monthly</option><option>smonthly</option><option>static</option></select>
+                <select id="cat-direction"><option value="">全部轨道</option><option>ASCENDING</option><option>DESCENDING</option></select>
+                <input id="cat-month" placeholder="月份 YYYY-MM">
+                <select id="cat-status"><option value="">全部状态</option><option>complete</option><option>partial</option><option>empty</option><option>failed</option><option>deprecated</option></select>
+                <button id="query-catalog" class="primary" type="button" disabled>检索并上图</button>
+                <button id="report-catalog" class="secondary" type="button" disabled>报告</button>
+                <button id="clear-catalog-map" class="secondary" type="button" disabled>清除图层</button>
+              </div>
+              <section id="catalog-report" class="catalog-report compact" hidden>
+                <div id="report-summary" class="report-summary"></div>
+                <div class="report-columns">
+                  <div><h3>产品与状态</h3><div id="report-counts"></div></div>
+                  <div><h3>时间完整性</h3><div id="report-gaps"></div></div>
+                </div>
+              </section>
+            </div>
+          </section>
+        </div>
+      </section>
+    </section>
   </main>
 
-  <!-- ============ Jobs drawer (queue, progress, logs) ============ -->
-  <div class="drawer-scrim hidden" id="drawer-scrim"></div>
-  <aside class="drawer hidden" id="jobs-drawer">
-    <div class="panel-head">
-      <h2>Jobs — queue &amp; progress</h2>
-      <button class="btn ghost small" id="drawer-close">✕</button>
-    </div>
-    <p class="muted small-note">Jobs run the <code>s1grits</code> CLI on the server and
-      survive browser refreshes. Queue new ones from the
-      <b>Process &amp; download</b> panel.</p>
-    <ul class="job-list" id="job-list"></ul>
-    <div class="job-log-wrap hidden" id="job-log-wrap">
-      <div class="panel-head"><h3 id="job-log-title">Log</h3>
-        <button class="btn ghost small" id="job-log-close">✕</button></div>
-      <pre class="job-log" id="job-log"></pre>
-    </div>
-  </aside>
+  <dialog id="confirm-dialog">
+    <form method="dialog" class="dialog-card">
+      <h2>确认下载规划</h2>
+      <div id="plan-summary"></div>
+      <section id="phrase-wrap" class="confirmation-gate" hidden>
+        <b>大任务二次确认</b>
+        <p id="phrase-reason" class="hint"></p>
+        <div class="confirmation-phrase"><code id="phrase-example"></code><button id="copy-phrase" class="secondary" type="button">复制短语</button></div>
+        <label>请准确输入上方短语<input id="phrase" autocomplete="off"></label>
+      </section>
+      <div class="dialog-actions"><button value="cancel" class="secondary">返回修改</button><button value="default" id="confirm-run" class="primary">确认并执行</button></div>
+    </form>
+  </dialog>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
-  <script type="module" src="app.js"></script>
+  <dialog id="recovery-dialog" aria-labelledby="recovery-title">
+    <div class="dialog-card recovery-card">
+      <h2 id="recovery-title">恢复中断任务</h2>
+      <div id="recovery-summary"></div>
+      <div class="dialog-actions"><button id="close-recovery" class="secondary" type="button">取消</button><button id="confirm-recovery" class="primary" type="button" disabled>确认恢复</button></div>
+    </div>
+  </dialog>
+
+  <dialog id="output-dialog">
+    <div class="dialog-card browser-card">
+      <h2 id="directory-dialog-title">选择输出目录</h2>
+      <p class="hint" id="directory-dialog-hint">服务器输出根：<code id="output-root"></code></p>
+      <div class="crumb"><button id="dir-up" class="ghost">上一级</button><code id="dir-current"></code></div>
+      <div id="dir-list" class="dir-list"></div>
+      <div class="inline" id="new-folder-row"><input id="new-folder" placeholder="新建子目录名"><button id="create-folder" class="secondary">新建</button></div>
+      <div class="dialog-actions"><button id="close-output" class="secondary">取消</button><button id="select-output" class="primary">选择当前目录</button></div>
+    </div>
+  </dialog>
+
+  <dialog id="catalog-detail-dialog" aria-labelledby="catalog-detail-title">
+    <div class="dialog-card catalog-detail-card">
+      <div class="dialog-title"><div><h2 id="catalog-detail-title">本地数据详情</h2><p id="catalog-detail-meta"></p></div><button id="close-catalog-detail" class="dialog-close" type="button" aria-label="关闭本地数据详情">×</button></div>
+      <div class="table-wrap"><table><thead><tr><th>Item</th><th>产品</th><th>轨道</th><th>时间</th><th>Grid ID</th><th>Zarr</th><th>状态</th></tr></thead><tbody id="catalog-detail-body"></tbody></table></div>
+    </div>
+  </dialog>
+
+  <dialog id="catalog-folder-dialog" aria-labelledby="catalog-folder-title">
+    <div class="dialog-card catalog-folder-card">
+      <div class="dialog-title">
+        <div>
+          <h2 id="catalog-folder-title">选择数据立方体文件夹</h2>
+          <p>逐级打开本机文件夹，选择后将检查根目录中的 <code>catalog.parquet</code>。</p>
+        </div>
+        <button id="close-catalog-folder" class="dialog-close" type="button" aria-label="关闭文件夹选择器">×</button>
+      </div>
+      <div class="catalog-folder-toolbar">
+        <button id="catalog-folder-up" class="secondary" type="button" disabled>上一级</button>
+        <div class="catalog-folder-location">
+          <span>当前位置</span>
+          <code id="catalog-folder-current" title="此电脑">此电脑</code>
+        </div>
+      </div>
+      <div id="catalog-folder-status" class="catalog-folder-status" role="status" aria-live="polite">正在读取可用位置…</div>
+      <div id="catalog-folder-list" class="catalog-folder-list" role="list" aria-busy="true"></div>
+      <button id="retry-catalog-folders" class="secondary catalog-folder-retry" type="button" hidden>重新加载</button>
+      <div class="catalog-folder-alternatives">
+        <span>目录较深时，也可以直接输入路径</span>
+        <button id="manual-catalog-folder" class="secondary" type="button">手动输入绝对路径</button>
+      </div>
+      <div class="dialog-actions">
+        <button id="cancel-catalog-folder" class="secondary" type="button">取消</button>
+        <button id="select-current-catalog-folder" class="primary" type="button" disabled>选择此文件夹</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="catalog-root-dialog" aria-labelledby="catalog-root-title">
+    <div class="dialog-card catalog-root-card">
+      <h2 id="catalog-root-title">手动输入数据文件夹</h2>
+      <p class="hint">请输入服务所在电脑上的绝对路径。该目录只用于本地检索，不会成为任务输出位置。</p>
+      <label>文件夹绝对路径<input id="catalog-root-path" autocomplete="off" placeholder="例如 D:\data\s1_cube"></label>
+      <label>显示名称（可选）<input id="catalog-root-label" autocomplete="off" placeholder="例如 湖北历史数据"></label>
+      <p id="catalog-root-message" class="message" role="status"></p>
+      <div class="dialog-actions"><button id="close-catalog-root" class="secondary" type="button">取消</button><button id="register-catalog-root" class="primary" type="button">打开文件夹</button></div>
+    </div>
+  </dialog>
+
+  <dialog id="task-log-dialog" aria-labelledby="task-log-title">
+    <div class="dialog-card task-log-card">
+      <div class="dialog-title"><div><h2 id="task-log-title">任务日志</h2><p id="task-log-meta">正在读取任务状态…</p></div><button id="close-task-log" class="dialog-close" type="button" aria-label="关闭任务日志">×</button></div>
+      <div id="task-stage-track" class="task-stage-track"></div>
+      <div class="log-toolbar">
+        <label><input id="log-follow" type="checkbox" checked> 自动跟随</label>
+        <span id="log-size">0 B</span>
+        <button id="refresh-log" class="secondary" type="button">刷新</button>
+        <a id="download-log" class="secondary button-link" href="#" download>下载完整日志</a>
+      </div>
+      <div class="log-layout">
+        <section><h3>阶段事件</h3><div id="task-events" class="task-events"></div></section>
+        <section><h3>实时输出</h3><pre id="task-log-output" class="task-log-output"></pre></section>
+      </div>
+    </div>
+  </dialog>
+
+  <script src="/static/leaflet/leaflet.js"></script>
+  <script src="/static/app.js?v=20260823-folder-browser-v3"></script>
 </body>
 </html>

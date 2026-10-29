@@ -11,6 +11,34 @@ S1-GRiTS workflows are configured via YAML files in the `config/` directory.
 | `s1grits_scenes.yaml` | Per-scene processing (+ monthly composites) | High-temporal-resolution outputs; enable `processing.monthly` for composites |
 | `s1grits_scenes.yaml` → `static_layers` | Raw static companions | Time-invariant reference layers |
 
+### Optional monthly production records
+
+The [provenance example](../config/provenance_monthly.example.yaml) enables records
+alongside S1 imagery. Existing configurations keep this option disabled.
+
+```yaml
+metadata:
+  provenance:
+    enabled: true
+    dataset_id: ecuador-s1-monthly
+    run_id: append-202501-v1
+```
+
+`metadata.provenance.enabled` enables exact loader-source binding, generation
+records and coordinated tile/global Catalog recovery. `metadata.provenance.dataset_id`
+is stable across batches. Keep `metadata.provenance.run_id` unchanged for a retry;
+use a new value for new dates, replacement, inputs or processing parameters.
+IDs use letters, digits, dot, underscore or hyphen, start with a letter or digit,
+and contain at most 128 characters.
+
+The initial supported route is serial tiles, one explicit orbit direction,
+VV/VH, monthly-only ARDC, monthly batches and one blockwise thread. Disable
+spatial despeckling, derived features/exports, static post-processing, prefetch,
+lazy/windowed reads and spill. Use explicit years/months or a fixed date interval;
+`time.full` is rejected before queries. Incompatible-store rebuild is not supported.
+Existing Catalogs must validate against the canonical schema. See the
+[workflow guide](PROVENANCE_WORKFLOW_ZH.md) for append, replacement and recovery.
+
 ### ROI Configuration
 
 Two modes supported — choose one in your YAML:
@@ -227,7 +255,7 @@ static_layers:
 dynamic Zarr must exist for every direction/track, and static adopts its CRS,
 affine transform, shape, coordinates, and `grid_id`. Use
 `reference_product_type: smonthly` for monthly-only archives. See
-[the pixel-exact static/scenes workflow](static_scenes_alignment.md).
+[the pixel-exact static/scenes workflow](workflows.md#static-alignment).
 
 In a scenes YAML, set only `static_layers.run_after_scenes: true` to enable the
 post-stage. When `layers` is omitted, all six RTC-STATIC layers are downloaded.
@@ -239,7 +267,8 @@ makes the combined command unsuccessful if static output is incomplete;
 
 ```yaml
 processing:
-  target_resolution: 30.0          # Meters
+  target_resolution: 30.0          # Fixed choices: 30 or 10 metres
+  resampling_method: auto          # auto | nearest | bilinear
   target_crs: null                 # null = auto-derive UTM zone from MGRS tile
   tile_clip: true                  # Clip outputs to MGRS tile boundary
   
@@ -249,6 +278,14 @@ processing:
   
   cog_block_size: 256              # COG internal tile size
 ```
+
+`auto` is the recommended contract: 30 m resolves to `nearest` for backward
+compatibility, while 10 m resolves to NoData-aware `bilinear`. Backscatter is
+interpolated in linear-power space before conversion to dB. The categorical
+`ls_map` static layer always uses nearest-neighbour resampling. A 10 m grid has
+nine times as many pixels as the same 30 m extent; use a separate output root
+when both resolutions must be retained. See
+[Target Grid and Resampling v1](target-grid-resampling-v1.md).
 
 #### Monthly Workflow Processing Options
 
@@ -326,23 +363,9 @@ Based on `features_*` toggles, output bands vary:
 
 #### Static Workflow Processing Options
 
-```yaml
-# Static workflow has minimal processing configuration
-# All static layers are always generated
-
-output:
-  base_dir: "./output_static"      # Separate directory recommended
-  overwrite: false                 # Skip if outputs already exist
-                                   # (legacy workflow: uses the v2 key natively)
-```
-
-Static layers generated:
-- `local_inc_angle` — Local incidence angle
-- `inc_angle` — Incidence angle
-- `ls_map` — Layover/shadow mask
-- `number_of_looks` — Multi-looking factor
-- `rtc_anf_beta0` — RTC area normalization factor (beta0)
-- `rtc_anf_sigma0` — RTC area normalization factor (sigma0)
+Use the [static configuration above](#static-workflow-configuration) in the
+scenes YAML. Dynamic and static products share `output.base_dir`; existing
+dynamic data can instead be supplemented with `s1grits static ensure`.
 
 ### Logging Configuration
 
@@ -401,23 +424,17 @@ processing:
     enabled: false               # Set true to also generate monthly composites
 ```
 
-#### Minimal Static Config
+#### Add Static to the Scenes Config
 
 ```yaml
-workflow: "static"
-
-roi:
-  manual_mgrs_tiles: ["46SEG"]
-  flight_direction: "DESCENDING"
-  polarization: "VV+VH"
-
-output:
-  base_dir: "./output_static"
-  overwrite: false
+static_layers:
+  run_after_scenes: true
+  grid_reference: required
+  on_failure: fail
 ```
 
----
-
+Keep the scenes configuration's existing `output.base_dir`. The complete
+production order and pairing rules are in the [workflow guide](workflows.md#static-alignment).
 
 ---
 

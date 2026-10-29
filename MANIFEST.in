@@ -1,0 +1,5 @@
+include CHANGELOG.md
+include README.zh-CN.md
+recursive-include docs *.md
+include tools/release_check.py
+prune docs/_work

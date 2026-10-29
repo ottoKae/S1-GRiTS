@@ -520,6 +520,7 @@ def _mosaic_align(
     width: int,
     master_transform,
     target_crs,
+    resampling=Resampling.nearest,
 ):
     """
     Reproject and mosaic a list of burst arrays onto the master grid.
@@ -561,7 +562,7 @@ def _mosaic_align(
             src_crs=prof_list[i]["crs"],
             dst_transform=master_transform,
             dst_crs=target_crs,
-            resampling=Resampling.nearest,
+            resampling=resampling,
             src_nodata=float(src_nd),
             dst_nodata=NODATA_TMP,
             init_dest_nodata=True,

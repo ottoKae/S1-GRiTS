@@ -7,6 +7,30 @@ the full history.
 
 ## Unreleased
 
+### Candidate 3.0.1rc1 — 2026-10-28
+- Add opt-in monthly processing receipts: exact source membership, numeric
+  operations, append/replace generations and coordinated Catalog recovery.
+- Add read-only historical metadata export/attachment and generation-scoped
+  release v2. Tables/data-revision stay v1; use GRiTS-Resolver 0.3.1rc1 for v2.
+- Fix finite source-nodata handling and per-polarization observation counts
+  in the monthly writer; historical imagery is never rewritten by upgrading.
+- Tracking remains off by default. Large incremental batches still incur
+  repeated metadata checks and evidence copies; this candidate is for bounded
+  trials, not a claim of full-year performance acceptance.
+
+### Added
+- `s1grits init [FILE]` writes the package-owned starter scenes/monthly YAML,
+  so PyPI users no longer need a repository checkout to begin.
+- `tools/release_check.py` provides offline candidate and strict-tag release
+  gates for version, package assets, canonical frontend and Git state.
+
+### Changed
+- The bundled v3 Chinese web console is the single canonical frontend. The
+  retired Streamlit/English prototype remains absent from source and wheels;
+  future English support will internationalize this frontend.
+- Quick starts install `s1grits[web]` when they instruct users to run
+  `s1grits serve`, and document the complete wheel-first setup path.
+
 ## [3.0.0] - 2026-08-11
 
 The **development → stable** release retires deprecated paths, completes the

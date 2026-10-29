@@ -274,6 +274,37 @@ def test_job_history_survives_restart(workspace):
     assert revived["progress"]["per_tile"]["17MPU"] == [2, 2]
 
 
+def test_interrupted_job_can_be_checked_and_resumed_without_overwriting_log(workspace):
+    import json
+
+    jm = JobManager(workspace, cmd_prefix=_stub_cli(ok=True))
+    job = jm.submit("process_scenes", config_text=(
+        "output:\n  existing_store: resume\n  existing_month: skip\n"
+    ))
+    _wait(jm, job.id)
+    ledger_path = job.job_dir / "job.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    ledger.update(status="running", stage="processing", returncode=None,
+                  ended_at=None, process_pid=None, process_started_at=None)
+    ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+
+    restarted = JobManager(workspace, cmd_prefix=_stub_cli(ok=True))
+    interrupted = restarted.get(job.id).to_dict()
+    assert interrupted["status"] == "interrupted"
+    assert interrupted["recoverable"] is True
+    check = restarted.recovery_check(job.id)
+    assert check["recoverable"] is True
+    assert check["resume_command"] == 1
+
+    restarted.resume(job.id)
+    _wait(restarted, job.id)
+    result = restarted.get(job.id).to_dict()
+    assert result["status"] == "success"
+    assert result["attempt_count"] == 2
+    log = (job.job_dir / "log.txt").read_text(encoding="utf-8")
+    assert "attempt 2 resumed after interruption" in log
+
+
 def test_jobs_api_roundtrip(client):
     r = client.post("/api/jobs", json={
         "type": "process_scenes",
@@ -552,9 +583,11 @@ def test_resync_job_uses_the_real_cli_flag():
 
 def test_job_types_cover_datacube_lifecycle(client):
     types = client.get("/api/job-types").json()
-    for expected in ("process_scenes", "process",
-                     "catalog_resync", "doctor"):
+    for expected in ("process_scenes", "catalog_resync", "doctor"):
         assert expected in types, f"missing job type {expected}"
+    # v3 removed the standalone monthly ``process`` command. Monthly-only
+    # runs are process_scenes with processing.monthly.enabled/only=true.
+    assert "process" not in types
     assert types["catalog_resync"]["needs_config"] is False
 
 
@@ -574,6 +607,16 @@ def test_serve_accepts_positional_workspace_and_root_flag(monkeypatch, workspace
         monkeypatch.setattr(sys, "argv", argv)
         s1cli.main()
     assert [c["root"] for c in calls] == [str(workspace)] * 2
+    assert [c["catalog_roots"] for c in calls] == [[], []]
+
+    external = workspace.parent / "external-catalogs"
+    monkeypatch.setattr(sys, "argv", [
+        "s1grits", "serve", str(workspace),
+        "--catalog-root", str(external),
+        "--catalog-root", f"历史成果={external}",
+    ])
+    s1cli.main()
+    assert calls[-1]["catalog_roots"] == [str(external), f"历史成果={external}"]
 
     monkeypatch.setattr(sys, "argv", ["s1grits", "serve"])
     with pytest.raises(SystemExit) as exc:

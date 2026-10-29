@@ -189,6 +189,7 @@ def _write_smonthly_block_bands(
     x_slice: slice,
     band_names: list[str],
     block_bands: dict[str, np.ndarray],
+    *, numeric_tracker=None,
 ) -> None:
     for name in band_names:
         dst = g[name]
@@ -201,6 +202,15 @@ def _write_smonthly_block_bands(
         else:
             arr = arr.astype(np.float32, copy=False)
         dst[time_index, y_slice, x_slice] = arr
+        if numeric_tracker is not None:
+            domain = "count" if name == N_OBS_BAND else "db"
+            numeric_tracker.record_numeric(
+                "storage_cast_and_write", name, domain, domain,
+                {"dtype": str(dst.dtype), "method": "numpy_astype",
+                 "nan_policy": "zero" if np.issubdtype(dst.dtype, np.integer) else "preserve",
+                 "overflow_policy": "numpy_astype_no_saturation",
+                 "extra_affine_scale": 1.0, "extra_affine_offset": 0.0})
+            numeric_tracker.record_output(name, dst.dtype)
 
 # GLCM co-occurrence support radius (window_size//2 + distance) for the fixed
 # smonthly texture config (window_size=5, distance=1) is 3 px; 8 is a safe halo

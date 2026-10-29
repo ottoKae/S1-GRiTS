@@ -9,6 +9,7 @@ Subpackages:
 """
 
 from s1grits.__version__ import __version__, __version_info__
+from s1grits.runtime import configure_gdal_data
 
 # Lazy imports to avoid circular dependencies
 __all__ = [
@@ -30,6 +31,5 @@ def __getattr__(name):
         from s1grits.mgrs_burst_data import get_mgrs_tiles_overlapping_geometry
         return get_mgrs_tiles_overlapping_geometry
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
-from .runtime import configure_gdal_data
 
 configure_gdal_data()

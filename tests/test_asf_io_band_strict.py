@@ -106,3 +106,37 @@ def test_load_and_despeckle_rtc_strict_uses_shared_download_pool(monkeypatch):
     assert prof_vv == [prof, prof, prof]
     assert prof_vh == [prof, prof, prof]
     assert len(dates) == 3
+
+
+def test_loader_preserves_asset_declarations_without_applying_scale_offset(monkeypatch):
+    from rasterio.io import MemoryFile
+    from s1grits import batch_spill, lazy_burst
+
+    with MemoryFile() as memory:
+        with memory.open(driver="GTiff", height=2, width=2, count=1, dtype="uint16",
+                         crs="EPSG:32717", transform=Affine(30, 0, 500000, 0, -30, 8500000),
+                         nodata=9999) as dataset:
+            dataset.write(np.full((2, 2), 5, dtype="uint16"), 1)
+            dataset.scales = (2.0,)
+            dataset.offsets = (3.0,)
+            dataset.set_band_unit(1, "dB")
+            dataset.update_tags(PRODUCT_VERSION="1.2", PRIVATE_PATH="do-not-copy")
+            dataset.update_tags(1, RADIOMETRIC_DOMAIN="db", USERNAME="do-not-copy")
+        payload = memory.read()
+    monkeypatch.setattr(asf_io, "_download_to_bytes", lambda *args, **kwargs: payload)
+    monkeypatch.setattr(lazy_burst, "maybe_lazy", lambda *args: None)
+    monkeypatch.setattr(batch_spill, "maybe_spill", lambda array: array)
+
+    array, profile, error = asf_io.read_one_asf("https://example.invalid/fixture.tif")
+
+    assert error is None
+    np.testing.assert_array_equal(array, np.full((2, 2), 5, dtype="float32"))
+    record = profile["grits_source"]
+    assert record["asset"] == {
+        "band": 1, "dtype": "uint16", "unit": "dB", "scale": 2.0, "offset": 3.0,
+        "scale_offset_basis": "rasterio_metadata_or_default",
+        "tags": {"dataset": {"product_version": "1.2"}, "band": {"radiometric_domain": "db"}},
+    }
+    assert record["read"] == {"method": "rasterio.read", "band": 1, "masked": False,
+                              "output_dtype": "float32", "scale_offset_applied": False}
+    assert profile["nodata"] == 9999

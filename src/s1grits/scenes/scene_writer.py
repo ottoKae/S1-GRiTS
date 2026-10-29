@@ -33,6 +33,7 @@ from s1grits.product_instance import (
     make_processing_signature,
     make_product_variant,
 )
+from s1grits.resampling import rasterio_resampling
 from s1grits.scenes.blocks import (
     GLCM_BLOCK_HALO,
     _apply_block_clip,
@@ -222,6 +223,7 @@ def _write_scenes_output(
     interior_hole_max_frac: float = 0.005,
     rebuild_on_mismatch: bool = False,
     blockwise_threads: int = 1,
+    resampling_method: str = "nearest",
 ) -> list[dict]:
     """
     Write per-acquisition-group scene products.
@@ -288,6 +290,8 @@ def _write_scenes_output(
         "processing.features_ratio": features_ratio,
         "processing.features_rvi": features_rvi,
         "processing.features_glcm": features_glcm,
+        "processing.target_resolution": float(target_res),
+        "processing.resampling_method": str(resampling_method),
     }
     _scenes_sig = make_processing_signature(_scenes_variant_vals)
     _scenes_variant = make_product_variant('scenes', _scenes_variant_vals, _scenes_bands)
@@ -332,15 +336,18 @@ def _write_scenes_output(
     _bounds_vv = _bounds_vh = None
     _clip_geom_blocks = None
     _scene_tex_cfg = None
+    _resampling = rasterio_resampling(resampling_method)
     if not do_despeckle:
         # One-time warp of cross-grid bursts onto the master lattice so
         # per-block reads are slice copies instead of O(bursts x blocks)
         # GDAL warps (same destination lattice => same values).
         final_vv, prof_vv = _prealign_scenes_to_master_grid(
-            final_vv, prof_vv, transform, target_crs, height, width
+            final_vv, prof_vv, transform, target_crs, height, width,
+            resampling=_resampling,
         )
         final_vh, prof_vh = _prealign_scenes_to_master_grid(
-            final_vh, prof_vh, transform, target_crs, height, width
+            final_vh, prof_vh, transform, target_crs, height, width,
+            resampling=_resampling,
         )
         _bounds_vv = _compute_scene_dst_bounds(
             final_vv, prof_vv, transform, target_crs, height, width
@@ -397,10 +404,12 @@ def _write_scenes_output(
             # mask accumulated during pass 1 instead of a full raw mosaic.
             return _idx, None, None, None, None
         _vv = _ws_mosaic_align(
-            _idx, final_vv, prof_vv, height, width, transform, target_crs
+            _idx, final_vv, prof_vv, height, width, transform, target_crs,
+            resampling=_resampling,
         )
         _vh = _ws_mosaic_align(
-            _idx, final_vh, prof_vh, height, width, transform, target_crs
+            _idx, final_vh, prof_vh, height, width, transform, target_crs,
+            resampling=_resampling,
         )
         _vv_d = _vh_d = None
         if do_despeckle and _vv is not None and _vh is not None:
@@ -626,10 +635,12 @@ def _write_scenes_output(
             _vvw = _mosaic_align_scene_window(
                 indices, final_vv, prof_vv, height, width,
                 transform, target_crs, _ys, _xs, _bounds_vv,
+                resampling=_resampling,
             )
             _vhw = _mosaic_align_scene_window(
                 indices, final_vh, prof_vh, height, width,
                 transform, target_crs, _ys, _xs, _bounds_vh,
+                resampling=_resampling,
             )
             return _vvw, _vhw
 
@@ -665,6 +676,8 @@ def _write_scenes_output(
             _g_group.attrs['processing_signature'] = _scenes_sig
             _g_group.attrs['product_variant'] = _scenes_variant
             _g_group.attrs['processing_variant_json'] = json.dumps(_scenes_variant_vals)
+            _g_group.attrs['target_resolution_m'] = float(target_res)
+            _g_group.attrs['resampling_method'] = str(resampling_method)
             _g_group.attrs['product_label'] = product_label
             _g_group.attrs['geometry_group_id'] = (
                 f"{mgrs_tile_id}_{direction_label}_TK{_track_tok}"
@@ -687,6 +700,7 @@ def _write_scenes_output(
                     _vvw = _mosaic_align_scene_window(
                         indices, final_vv, prof_vv, height, width,
                         transform, target_crs, _qy, _qx, _bounds_vv,
+                        resampling=_resampling,
                     )
                     if _vvw is not None:
                         _raw_vv_finite[_qy, _qx] = np.isfinite(_vvw)
@@ -705,6 +719,8 @@ def _write_scenes_output(
                 _g_group.attrs['processing_signature'] = _scenes_sig
                 _g_group.attrs['product_variant'] = _scenes_variant
                 _g_group.attrs['processing_variant_json'] = json.dumps(_scenes_variant_vals)
+                _g_group.attrs['target_resolution_m'] = float(target_res)
+                _g_group.attrs['resampling_method'] = str(resampling_method)
                 _g_group.attrs['product_label'] = product_label
                 _g_group.attrs['geometry_group_id'] = (
                     f"{mgrs_tile_id}_{direction_label}_TK{_track_tok}"

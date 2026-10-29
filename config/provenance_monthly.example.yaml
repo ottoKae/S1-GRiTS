@@ -1,0 +1,54 @@
+# Opt-in provenance for a bounded S1 monthly batch.
+# Copy this file, choose output.base_dir, and keep the same run_id when resuming.
+# Change run_id for new dates, source membership, parameters, or replacement.
+# This command downloads real ASF inputs; the offline demo is in the guide.
+workflow: scenes
+metadata:
+  provenance:
+    enabled: true
+    dataset_id: s1-monthly-example
+    run_id: append-202501-v1
+roi:
+  manual_mgrs_tiles: ["17MPU"]
+  flight_direction: ASCENDING
+  polarization: VV+VH
+  min_tile_coverage_frac: 0.2
+time:
+  years: [2025]
+  months: [1]
+output:
+  base_dir: ./outputs/provenance-monthly-example
+  existing_store: resume
+  existing_month: skip
+  formats:
+    cog: false
+    preview: false
+processing:
+  target_resolution: 30
+  tile_clip: true
+  spatial_despeckle: false
+  features_ratio: false
+  features_rvi: false
+  features_glcm: false
+  monthly:
+    enabled: true
+    only: true
+    composite_method: nanmedian
+    blockwise_threads: 1
+parallel:
+  enabled: false
+  max_workers: 1
+memory:
+  batch_strategy: monthly
+  max_download_workers: 2
+  download_prefetch: false
+  windowed_burst_reads: false
+  batch_spill: false
+query:
+  footprint_lookback_months: 0
+preflight:
+  disk:
+    mode: fail
+static_layers:
+  enabled: false
+  run_after_scenes: false

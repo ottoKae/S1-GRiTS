@@ -21,7 +21,7 @@
     <img src="https://img.shields.io/badge/license-PolyForm%20NC-green.svg" />
   </a>
   <a href="https://github.com/ottoKae/S1-GRiTS">
-    <img src="https://img.shields.io/badge/version-3.0.0-orange.svg" />
+    <img src="https://img.shields.io/badge/version-3.0.1rc1-orange.svg" />
   </a>
 </p>
 
@@ -32,6 +32,35 @@
   It converts burst-level observations into MGRS-aligned, temporally consistent Zarr data cubes, with optional COG exports.
 </p>
 
+
+## Using and handing off an existing dataset
+
+The current source tree is not proof of how a historical cube was produced.
+Read the [dataset handoff procedure (Chinese)](docs/DATA_HANDOFF_ZH.md) for
+processing semantics, batch-level evidence, explicit unknowns and sanitized
+exports. An optional [agent reference](agents/skills/s1-data-handoff/SKILL.md)
+links to that same procedure. The [read-only metadata guide (Chinese)](docs/PROVENANCE_READONLY_ZH.md)
+provides the working `python -m s1grits.provenance build` / `verify` commands for
+a detached metadata-only companion. The [opt-in S1 monthly workflow guide (Chinese)](docs/PROVENANCE_WORKFLOW_ZH.md)
+and [YAML example](config/provenance_monthly.example.yaml) enable exact loader-to-source
+mapping, multi-month append/replace records, and coordinated tile/global Catalog recovery.
+The supported route is serial, monthly-only VV/VH without derived exports; tracking is off
+by default. Reproducible checks and their limits are described in the workflow guide.
+Actual coverage, processing evidence and unknowns belong to each delivered dataset.
+Metadata export does not rewrite imagery. The [historical metadata attachment guide (Chinese)](docs/PROVENANCE_READONLY_ZH.md#attach-historical-metadata)
+explains how to attach a verified release and its bound README to an existing data root.
+
+Version 3.0.1rc1 publishes generation-scoped historical annotations using release semantics v2;
+tables and the data-revision algorithm remain v1. Use GRiTS-Resolver 0.3.1rc1 for these releases.
+Old v1 archives remain readable, and metadata-only upgrades do not rewrite imagery.
+See the [monthly workflow and measured limits (Chinese)](docs/PROVENANCE_WORKFLOW_ZH.md) before scheduling large batches.
+Automatic complete-imagery delivery is not implemented.
+
+Documentation layout: `docs/` contains public user and maintainer guides;
+`docs/_work/` holds local implementation plans, execution notes and acceptance reports.
+The entire `_work/` directory is excluded from Git and source distributions. Public guides
+must stand on their own without links to it. Keep reusable tests in `tests/`; dataset-specific
+processing evidence remains with the delivered data, not solely in local work notes.
 
 ## For Reviewers — Paper ↔ Code
 
@@ -184,22 +213,27 @@ S1-GRiTS is designed for researchers and practitioners who need **large-scale, l
 ## Quick Start
 
 ```bash
-# 1. Install (Python 3.12; geospatial wheels ship for linux/macos/windows)
-pip install s1grits
+# 1. Install with the canonical Chinese web console (Python 3.12)
+pip install "s1grits[web]"
 
 # 2. (Optional) Earthdata auth for ASF downloads — ~/.netrc with your
 #    urs.earthdata.nasa.gov credentials. See docs/installation.md.
 
-# 3. Copy a config template and set your ROI + time range
-cp config/s1grits_scenes.yaml my_run.yaml
+# 3. Generate a config from the installed wheel; no repository clone is needed
+s1grits init my_run.yaml
 
 # 4. Validate the environment and config, then run
 s1grits doctor --config my_run.yaml
 s1grits process_scenes --config my_run.yaml
 
-# 5. Browse results in the web interface
-s1grits serve --root /path/to/output
+# 5. 启动中文下载与目录检索控制台（workspace 是安全输出根）
+s1grits serve /path/to/output --port 5556
 ```
+
+The packaged browser interface is the **Chinese v3 console**. The removed
+Streamlit/English prototype is not shipped or tracked; a future English UI
+will be translated from this single frontend instead of maintained as a second
+implementation.
 
 Full installation options (conda, from-source, extras), authentication setup
 and first-run guidance: **[docs/installation.md](docs/installation.md)**.
@@ -233,24 +267,25 @@ s1grits static ensure --output-dir /path/to/output --product-label smonthly_ASCE
 # Optional tile scope (repeat --tile for several tiles): --tile 17MPU
 ```
 
-Standalone static YAML downloads are intentionally unsupported because static geometry must always be derived from an authoritative dynamic product. See **[Static/scenes alignment](docs/static_scenes_alignment.md)** for the detailed contract.
+Standalone static YAML downloads are intentionally unsupported because static geometry must always be derived from an authoritative dynamic product. See **[Static/scenes alignment](docs/workflows.md#static-alignment)** for the detailed contract.
 
 ## Documentation
 
-| Page | Contents |
+Start with the task you need; the detailed references can be read as needed.
+
+| Task | Read |
 |---|---|
-| [Installation](docs/installation.md) | Prerequisites, pip/conda/source installs, Earthdata auth, doctor |
-| [Architecture](docs/architecture.md) | Zarr-first philosophy, acquisition groups, workflow comparison |
-| [Workflows](docs/workflows.md) | Monthly composites, per-scene processing, static layers |
-| [Output Structure](docs/outputs.md) | Zarr/COG/preview specs, bands, STAC metadata, parquet catalogs |
-| [Configuration Reference](docs/configuration.md) | Every YAML key the workflows read, with defaults |
-| [CLI Reference](docs/cli.md) | All commands: process, catalog, tile, mosaic, doctor, cache, serve |
-| [Python API](docs/python_api.md) | `s1grits.analysis` — loading, time series, plotting, validation |
-| [Examples](docs/examples.md) | End-to-end usage examples and the tutorial notebooks |
-| [Web Interface](docs/webapp.md) | The v2.3 web UI (`s1grits serve`) |
-| [Bounded-Memory Architecture](docs/scenes_blockwise_architecture.md) | The blockwise scenes pipeline design |
-| [FAQ](docs/faq.md) | Common questions and troubleshooting |
-| [Changelog](CHANGELOG.md) | Release history |
+| Install and run the first check | [Installation](docs/installation.md) |
+| Produce scenes, monthly composites and paired static layers | [Workflows](docs/workflows.md), [Web interface](docs/webapp.md), [Configuration](docs/configuration.md) |
+| Understand and hand off a dataset | [Output structure](docs/outputs.md), [Data handoff](docs/DATA_HANDOFF_ZH.md) |
+| Record or inspect processing evidence | [Monthly production records](docs/PROVENANCE_WORKFLOW_ZH.md), [Historical metadata export](docs/PROVENANCE_READONLY_ZH.md) |
+| Read data and prepare analysis inputs | [Python API](docs/python_api.md), [Examples](docs/examples.md) |
+| Troubleshoot | [FAQ](docs/faq.md) |
+
+Technical and maintainer references: [CLI](docs/cli.md),
+[Grid and resampling](docs/target-grid-resampling-v1.md), [Architecture](docs/architecture.md),
+[Blockwise memory](docs/scenes_blockwise_architecture.md), [Release process](docs/release.md)
+and [Changelog](CHANGELOG.md).
 
 
 ## License & Citation

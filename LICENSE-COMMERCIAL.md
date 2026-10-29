@@ -12,9 +12,11 @@ into a paid product or service, running it to produce data products that
 are sold or used in a for-profit operation, or offering it as part of a
 hosted service.
 
-To obtain a commercial license, contact the author:
+To obtain a commercial license, contact the author through the contact
+options on the [GitHub profile for @ottoKae](https://github.com/ottoKae).
+Do not post confidential commercial details in a public issue.
 
-* **KaeRao** — <r1536803768@gmail.com>
+* **KaeRao / @ottoKae**
 * Please include: your organization, the intended use, and deployment
   scale (tiles/years processed, users).
 
