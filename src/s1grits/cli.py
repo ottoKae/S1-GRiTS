@@ -535,7 +535,9 @@ def cmd_derive_cube(args):
     try:
         record = derive_cube(args.catalog_root, args.item_id, args.output,
             start=args.start, end=args.end, features=args.features, spatial_filter=args.filter,
-            monthly=args.monthly, window=args.window, chunk_size=args.chunk_size)
+            monthly=args.monthly, window=args.window, chunk_size=args.chunk_size,
+            interpolation=args.interpolation, interpolation_domain=args.interpolation_domain,
+            max_gap_days=args.max_gap_days)
     except Exception as exc:
         console.print(f'[red]ERROR: {exc}[/red]')
         raise SystemExit(1) from exc
@@ -1135,6 +1137,9 @@ Examples:
     parser_derive.add_argument('--features', nargs='*', choices=['ratio', 'rvi', 'glcm'], default=['ratio', 'rvi'])
     parser_derive.add_argument('--filter', choices=['none', 'tv_bregman', 'nlm'], default='none')
     parser_derive.add_argument('--monthly', choices=['mean', 'median'])
+    parser_derive.add_argument('--interpolation', choices=['none', 'linear'], help='Separate temporal step; use --features with no values')
+    parser_derive.add_argument('--interpolation-domain', choices=['db', 'linear_power'])
+    parser_derive.add_argument('--max-gap-days', type=float, help='Maximum span between bracketing valid observations (linear only)')
     parser_derive.add_argument('--window', nargs=4, type=int, metavar=('XOFF', 'YOFF', 'WIDTH', 'HEIGHT'))
     parser_derive.add_argument('--chunk-size', type=int, default=256)
     parser_derive.set_defaults(func=cmd_derive_cube)

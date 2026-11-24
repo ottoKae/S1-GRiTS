@@ -25,7 +25,8 @@ from s1grits.zarr_encoding import create_zarr_array
 
 
 def derive_cube(catalog_root, item_id, output_root, *, start, end, features=('ratio', 'rvi'),
-                spatial_filter='none', monthly=None, window=None, chunk_size=256) -> dict:
+                spatial_filter='none', monthly=None, window=None, chunk_size=256,
+                interpolation=None, interpolation_domain=None, max_gap_days=None) -> dict:
     """Derive one referenced Zarr store over an explicit inclusive UTC interval.
 
     The catalog item selects the store/instance, not just its catalog timestamp.
@@ -44,6 +45,25 @@ def derive_cube(catalog_root, item_id, output_root, *, start, end, features=('ra
     features = [name for name in ('ratio', 'rvi', 'glcm') if name in features]
     if not isinstance(chunk_size, int) or chunk_size < 1:
         raise ValueError('chunk_size must be a positive integer')
+    temporal = None
+    if interpolation is not None:
+        if interpolation not in ('none', 'linear') or interpolation_domain not in ('db', 'linear_power'):
+            raise ValueError('Interpolation requires method none/linear and explicit domain db/linear_power')
+        if features or spatial_filter != 'none' or monthly:
+            raise ValueError('Run interpolation separately: features=[], filter=none, no monthly composite')
+        if interpolation == 'linear':
+            if max_gap_days is None or not np.isfinite(max_gap_days) or max_gap_days <= 0:
+                raise ValueError('Linear interpolation requires finite positive max_gap_days')
+            max_gap_days = float(max_gap_days)
+        elif max_gap_days is not None:
+            raise ValueError('max_gap_days applies only to linear interpolation')
+        temporal = dict(method=interpolation, domain=interpolation_domain, max_gap_days=max_gap_days,
+            time_axis='selected_parent_timestamps', extrapolation='none',
+            mode='retrospective' if interpolation == 'linear' else 'identity',
+            anchor_selection='nearest_valid_before_and_after_per_band_pixel' if interpolation == 'linear' else None,
+            masks='per_band_valid_parent_values_and_newly_filled_values')
+    elif interpolation_domain is not None or max_gap_days is not None:
+        raise ValueError('Select an interpolation method before setting its domain or maximum gap')
     start, end = pd.to_datetime(start, utc=True), pd.to_datetime(end, utc=True)
     if pd.isna(start) or pd.isna(end) or start > end:
         raise ValueError('Provide a valid inclusive UTC start/end interval')
@@ -62,13 +82,15 @@ def derive_cube(catalog_root, item_id, output_root, *, start, end, features=('ra
     if not path.exists():
         path = root/parent['tile_id']/parent['zarr_path']
     group = zarr.open_group(str(path), mode='r')
+    if temporal and any(f'{prefix}_interpolated_mask' in group for prefix in ('VV', 'VH')):
+        raise ValueError('Select the pre-interpolation parent to recompute gaps; filled values are not new observations')
     with resolver.open(parent, chunks={'time': 1, 'y': chunk_size, 'x': chunk_size}) as dataset:
         return _derive_store(dataset, group, parent, path, destination, start, end,
-                             features, spatial_filter, monthly, window, chunk_size)
+                             features, spatial_filter, monthly, window, chunk_size, temporal)
 
 
 def _derive_store(dataset, group, parent, path, destination, start, end,
-                  features, spatial_filter, monthly, window, chunk):
+                  features, spatial_filter, monthly, window, chunk, temporal):
     for band in ('VV_dB', 'VH_dB'):
         if band not in dataset or set(dataset[band].dims) != {'time', 'y', 'x'}:
             raise ValueError('Parent must expose VV_dB/VH_dB with named time/y/x dimensions')
@@ -136,6 +158,10 @@ def _derive_store(dataset, group, parent, path, destination, start, end,
                            spatial_filter, 'features', 'crop'],
         'filter_support': 'entire_selected_support_per_output_time',
     }
+    if temporal:
+        contract['temporal_interpolation'] = temporal
+        contract['operator_order'] = ['parent_dB', 'temporal_interpolation', 'crop']
+        contract['filter_support'] = None
     signature = make_processing_signature(contract)
     product = 'smonthly' if monthly else parent['product_type']
     label = f'{product}_{parent["flight_direction"]}_derived_{signature}'
@@ -154,12 +180,24 @@ def _derive_store(dataset, group, parent, path, destination, start, end,
         count.attrs.update({'_ARRAY_DIMENSIONS': ['time', 'y', 'x'], 'grid_mapping': 'spatial_ref',
                             'description': 'Paired valid parent scene observations in this selected month; not burst count.'})
         bands.append('n_obs')
+    if temporal:
+        for prefix in ('VV', 'VH'):
+            for kind in ('observed', 'interpolated'):
+                name = f'{prefix}_{kind}_mask'
+                mask = create_zarr_array(output, name, shape=(0, height, width), chunks=(1, chunk, chunk),
+                    dtype='uint8', fill_value=0, dimension_names=['time', 'y', 'x'])
+                mask.attrs.update({'_ARRAY_DIMENSIONS': ['time', 'y', 'x'], 'grid_mapping': 'spatial_ref',
+                    'description': '1 = valid value in selected parent; not a raw observation count' if kind == 'observed'
+                                   else '1 = missing parent value filled by this interpolation run'})
+                bands.append(name)
     variant = 'derived_' + make_product_variant(product, {
         'processing.spatial_despeckle': spatial_filter != 'none',
         'processing.despeckle_method': spatial_filter,
         'processing.despeckle_strength': 5 if spatial_filter == 'tv_bregman' else None,
         'processing.composite_method': monthly,
     }, bands)
+    if temporal:
+        variant += f'_interp_{temporal["method"]}_{temporal["domain"]}'
     output.attrs.update({'status': 'building', 'product_type': product, 'product_label': label,
         'processing_signature': signature, 'processing_variant_json': json.dumps(contract), 'product_variant': variant,
         'geometry_group_id': parent.get('geometry_group_id'), 'parent_reference_item': parent,
@@ -171,7 +209,10 @@ def _derive_store(dataset, group, parent, path, destination, start, end,
         groups = [(p.start_time, [i for i in indices if times[i].strftime('%Y-%m') == str(p)]) for p in periods]
     else:
         groups = [(times[i].tz_localize(None), [i]) for i in indices]
-    for stamp, selected in groups:
+    if temporal:
+        from .interpolation import _write_interpolated_store
+        _write_interpolated_store(output, read_db, times, indices, window, chunk, temporal)
+    for stamp, selected in (groups if temporal is None else ()):
         def read_composite(ys, xs):
             if not selected:
                 shape = (ys.stop-ys.start, xs.stop-xs.start)
@@ -241,5 +282,6 @@ def _derive_store(dataset, group, parent, path, destination, start, end,
     (destination/'derivation.json').write_text(json.dumps({'status': 'complete', 'contract': contract,
         'parent_reference_item': parent, 'parent_store': str(path.resolve()), 'record': serialized_record,
         'input_times_utc': times[indices].astype(str).tolist(),
-        'output_time_sources': {str(t): times[ids].astype(str).tolist() for t, ids in groups}}, indent=2), encoding='utf-8')
+        'output_time_sources': None if temporal else
+                               {str(t): times[ids].astype(str).tolist() for t, ids in groups}}, indent=2), encoding='utf-8')
     return record

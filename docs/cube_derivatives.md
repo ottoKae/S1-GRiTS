@@ -2,6 +2,8 @@
 
 `s1grits derive_cube` reads an existing scenes or monthly Zarr Cube and writes a new, independent Cube root. It does not download bursts. This optional entry point does not change `process_scenes` or its defaults.
 
+For the separate, explicitly selected temporal step, see [retrospective interpolation and observation masks](temporal_interpolation.md).
+
 ```bash
 s1grits derive_cube --catalog-root /data/cube --item-id PARENT_ITEM_ID \
   --output /data/derived-features --start 2026-01-01 --end 2026-03-31T23:59:59Z \
