@@ -9,6 +9,7 @@ from rasterio.transform import Affine
 
 from s1grits.scenes.smonthly_writer import _write_smonthly_one_track
 from s1grits.stac_builder import set_stac_output_enabled, stac_output_enabled
+from s1grits.stac_builder import build_stac_item_dict
 
 
 def monthly_inputs(tile_dir, method):
@@ -49,6 +50,11 @@ def test_written_method_matches_values_and_metadata(tmp_path, method, expected, 
     for metadata in [records[0], group.attrs]:
         variant = json.loads(metadata['processing_variant_json'])
         assert variant['processing.monthly.composite_method'] == method
+    resynced, _ = build_stac_item_dict(records[0], str(tmp_path))
+    assert resynced['properties']['s1:monthly_composite'] == method.removeprefix('nan')
+    historical = dict(records[0], processing_variant_json=None)
+    resynced, _ = build_stac_item_dict(historical, str(tmp_path))
+    assert resynced['properties'].get('s1:monthly_composite') is None
 
 
 def test_bad_method_fails_before_creating_output(tmp_path):
