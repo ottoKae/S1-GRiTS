@@ -1192,6 +1192,9 @@ def _write_smonthly_one_track(
 
     Returns catalog records with product_type='smonthly'.
     """
+    from s1grits.config_schema import monthly_method_name
+    effective_method = monthly_method_name((monthly_cfg or {}).get('composite_method'))
+
     # Store identity keys on the track ONLY. n_bursts is time-varying: bursts
     # drop in/out of a track's acquisitions between batches, so embedding it in
     # the store name splits ONE track across multiple fragmented .zarr stores
@@ -1441,6 +1444,7 @@ def _write_smonthly_one_track(
                 primary_track=primary_track,
                 track_coverage=track_coverage,
                 item_id_override=item_id,
+                composite_method=effective_method,
             )
 
         rec = normalize_catalog_record({
