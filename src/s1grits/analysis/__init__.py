@@ -43,6 +43,7 @@ from .plotting import (
 )
 
 from .mosaic import (
+    create_grid_mosaic,
     create_mosaic_vrt,
     find_cog_files_for_mosaic,
     validate_mosaic_inputs,
@@ -92,6 +93,7 @@ __all__ = [
     "plot_monthly_preview",
 
     # Mosaic
+    "create_grid_mosaic",
     "create_mosaic_vrt",
     "find_cog_files_for_mosaic",
     "validate_mosaic_inputs",

@@ -528,6 +528,23 @@ def _import_gdal():
         raise SystemExit(1) from exc
 
 
+def cmd_mosaic_grid(args):
+    """Create an exact, fixed-grid mosaic from explicit catalog item IDs."""
+    import json
+    from s1grits.analysis.mosaic import create_grid_mosaic
+
+    _import_gdal()
+    try:
+        item_ids = json.loads(Path(args.items_file).read_text(encoding='utf-8'))
+        output = create_grid_mosaic(args.catalog_root, item_ids, args.output,
+                                    target_crs=args.crs, resolution=args.resolution,
+                                    bounds=args.bounds, output_format=args.format)
+    except Exception as exc:
+        console.print(f'[red]ERROR: {exc}[/red]')
+        raise SystemExit(1) from exc
+    console.print(f'[green]Mosaic created: {output}[/green]')
+
+
 def cmd_mosaic(args):
     """Create a multi-tile mosaic VRT or COG for a given month"""
     from s1grits.analysis import create_mosaic_vrt, find_cog_files_for_mosaic
@@ -1094,6 +1111,18 @@ Examples:
         help='Filter tiles by MGRS prefix (e.g., 50R includes 50RKU, 50RKV, …)'
     )
     parser_mosaic.set_defaults(func=cmd_mosaic)
+
+    parser_grid = subparsers.add_parser('mosaic_grid',
+        help='Mosaic explicit catalog COGs onto a fixed metric grid')
+    parser_grid.add_argument('--catalog-root', required=True, help='Source Cube root with catalog.parquet')
+    parser_grid.add_argument('--items-file', required=True, help='JSON list of item IDs, first-valid priority order')
+    parser_grid.add_argument('--output', required=True, help='New .vrt or .tif path outside the source Cube')
+    parser_grid.add_argument('--format', choices=['VRT', 'COG'], default='VRT')
+    parser_grid.add_argument('--crs', required=True, help='Projected target CRS in metres')
+    parser_grid.add_argument('--resolution', required=True, type=float, help='Target pixel size in metres')
+    parser_grid.add_argument('--bounds', required=True, type=float, nargs=4,
+                             metavar=('XMIN', 'YMIN', 'XMAX', 'YMAX'))
+    parser_grid.set_defaults(func=cmd_mosaic_grid)
 
     # ── doctor ────────────────────────────────────────────────────────────────
     parser_doctor = subparsers.add_parser(

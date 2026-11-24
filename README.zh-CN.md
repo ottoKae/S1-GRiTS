@@ -215,6 +215,7 @@ s1grits static ensure --output-dir /path/to/output --product-label smonthly_ASCE
 | 理解并交接已有数据 | [输出结构](docs/outputs.md)、[数据交接](docs/DATA_HANDOFF_ZH.md) |
 | 记录或核查处理过程 | [月度生产留痕](docs/PROVENANCE_WORKFLOW_ZH.md)、[历史元数据导出](docs/PROVENANCE_READONLY_ZH.md) |
 | 读取数据、准备分析输入 | [Python API](docs/python_api.md)、[示例](docs/examples.md) |
+| 将选定科学 COG 拼接到明确的目标格网 | [固定格网拼接](docs/grid_mosaic.md) |
 | 提取点／区域并建立小班索引 | [本地空间产品](docs/spatial-products.md)、[小班格网](docs/stand-geographic-grid.md)、[直接读取 OPERA](docs/opera-spatial.md) |
 | 排查问题 | [常见问题](docs/faq.md) |
 

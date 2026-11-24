@@ -280,6 +280,7 @@ Start with the task you need; the detailed references can be read as needed.
 | Understand and hand off a dataset | [Output structure](docs/outputs.md), [Data handoff](docs/DATA_HANDOFF_ZH.md) |
 | Record or inspect processing evidence | [Monthly production records](docs/PROVENANCE_WORKFLOW_ZH.md), [Historical metadata export](docs/PROVENANCE_READONLY_ZH.md) |
 | Read data and prepare analysis inputs | [Python API](docs/python_api.md), [Examples](docs/examples.md) |
+| Mosaic selected scientific COGs onto an explicit grid | [Fixed-grid mosaics](docs/grid_mosaic.md) |
 | Extract points or regions and build stand indexes | [Local spatial products](docs/spatial-products.md), [Stand grid](docs/stand-geographic-grid.md), [Direct OPERA acquisition](docs/opera-spatial.md) |
 | Troubleshoot | [FAQ](docs/faq.md) |
 
