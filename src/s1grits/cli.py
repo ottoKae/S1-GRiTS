@@ -561,6 +561,22 @@ def cmd_analyze_cusum(args):
     console.print(f'[green]CUSUM analysis created: {args.output} ({receipt["processing_signature"]})[/green]')
 
 
+def cmd_analyze_segments(args):
+    """Explicitly use an optional cloud backend for one existing Cube pixel."""
+    from s1grits.analysis import analyze_segments
+
+    try:
+        receipt = analyze_segments(args.catalog_root, args.item_id, args.output,
+            algorithm=args.algorithm, backend=args.backend, band=args.band, pixel=args.pixel,
+            start=args.start, end=args.end, project=args.project, annual_method=args.annual_method,
+            annual_domain=args.annual_domain, disturbance_direction=args.disturbance_direction,
+            min_annual_observations=args.min_annual_observations)
+    except Exception as exc:
+        console.print(f'[red]ERROR: {exc}[/red]')
+        raise SystemExit(1) from exc
+    console.print(f'[green]Analysis created: {args.output} ({receipt["analysis_state"]})[/green]')
+
+
 def cmd_mosaic_grid(args):
     """Create an exact, fixed-grid mosaic from explicit catalog item IDs."""
     import json
@@ -1175,6 +1191,23 @@ Examples:
     parser_cusum.add_argument('--window', nargs=4, type=int, metavar=('XOFF', 'YOFF', 'WIDTH', 'HEIGHT'))
     parser_cusum.add_argument('--chunk-size', type=int, default=64)
     parser_cusum.set_defaults(func=cmd_analyze_cusum)
+
+    parser_segments = subparsers.add_parser('analyze_segments', help='Explicit Earth Engine CCDC/LandTrendr for one Cube pixel')
+    parser_segments.add_argument('--catalog-root', required=True)
+    parser_segments.add_argument('--item-id', required=True)
+    parser_segments.add_argument('--output', required=True)
+    parser_segments.add_argument('--backend', choices=['earthengine'], required=True)
+    parser_segments.add_argument('--algorithm', choices=['ccdc', 'landtrendr'], required=True)
+    parser_segments.add_argument('--band', choices=['VV_dB', 'VH_dB'], required=True)
+    parser_segments.add_argument('--pixel', nargs=2, type=int, metavar=('COL', 'ROW'), required=True)
+    parser_segments.add_argument('--start', required=True, help='Inclusive UTC timestamp')
+    parser_segments.add_argument('--end', required=True, help='Inclusive UTC timestamp; date alone means midnight')
+    parser_segments.add_argument('--project', help='Authorized Earth Engine project; otherwise use client credential defaults')
+    parser_segments.add_argument('--annual-method', choices=['mean', 'median'])
+    parser_segments.add_argument('--annual-domain', choices=['db', 'linear_power'])
+    parser_segments.add_argument('--disturbance-direction', choices=['increase', 'decrease'])
+    parser_segments.add_argument('--min-annual-observations', type=int, default=1)
+    parser_segments.set_defaults(func=cmd_analyze_segments)
 
     parser_grid = subparsers.add_parser('mosaic_grid',
         help='Mosaic explicit catalog COGs onto a fixed metric grid')

@@ -108,6 +108,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+earthengine = [
+    "earthengine-api==1.7.22",
+]
 dev = [
     "pytest>=7.4.0",
     "pytest-cov>=4.1.0",

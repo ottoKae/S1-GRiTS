@@ -25,6 +25,7 @@ Example:
 
 from .derive import derive_cube
 from .cusum import analyze_cusum
+from .segmentation import analyze_segments
 
 from .io import (
     load_zarr_dataset,
@@ -80,6 +81,7 @@ from .reporting import (
 
 __all__ = [
     "analyze_cusum",
+    "analyze_segments",
     "derive_cube",
     # IO
     "load_zarr_dataset",
