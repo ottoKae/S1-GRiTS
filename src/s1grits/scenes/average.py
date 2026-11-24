@@ -11,11 +11,16 @@ def validate_intra_pass_config(config: dict) -> str:
     """Validate the optional strategy before querying or creating outputs."""
     processing = config.get("processing", {})
     options = processing.get("intra_pass_mosaic", {})
-    if not isinstance(options, dict) or set(options) - {"method"}:
-        raise ValueError("processing.intra_pass_mosaic accepts only method")
+    if not isinstance(options, dict) or set(options) - {"method", "looks_directory"}:
+        raise ValueError("processing.intra_pass_mosaic accepts only method and looks_directory")
     method = options.get("method", "first_valid_pixel")
-    if method not in ("first_valid_pixel", "average", "bursts_center"):
-        raise ValueError("intra_pass_mosaic.method must be first_valid_pixel, average or bursts_center")
+    if method not in ("first_valid_pixel", "average", "bursts_center", "nlooks_weighted"):
+        raise ValueError("intra_pass_mosaic.method must be first_valid_pixel, average, bursts_center or nlooks_weighted")
+    if method == 'nlooks_weighted':
+        if not isinstance(options.get('looks_directory'), str) or not options['looks_directory'].strip():
+            raise ValueError('nlooks_weighted requires an explicit local looks_directory')
+    elif 'looks_directory' in options:
+        raise ValueError('looks_directory is only used by nlooks_weighted')
     if method == "first_valid_pixel":
         return method
     resolution = float(processing.get("target_resolution", 30))

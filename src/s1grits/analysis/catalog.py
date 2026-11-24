@@ -825,7 +825,7 @@ def _resync_locked(output_root, _skip_dirs, write_stac, stac_format) -> Dict[str
                     record['reference_grid_id'] = record.get('grid_id')
                 # Set output_type so write_stac_item uses correct path logic
                 record['output_type'] = product_type
-                if product_type == 'scenes' and any(token in product_label for token in ('_average_', '_bursts_center_')):
+                if product_type == 'scenes' and any(token in product_label for token in ('_average_', '_bursts_center_', '_nlooks_weighted_')):
                     catalog_records.extend(_strategy_scene_records(record, g, time_steps, prod_dir, tile_dir))
                 else:
                     catalog_records.append(record)

@@ -210,8 +210,9 @@ def test_exports(tmp_path):
         assert 'n_contributors' not in [b['name'] for b in item['assets']['cog']['eo:bands']]
 
 
-@pytest.mark.parametrize('method', ['average', 'bursts_center'], ids=['a', 'c'])
-def test_flow(tmp_path, monkeypatch, method):
+@pytest.mark.parametrize('method', ['average', 'bursts_center', 'nlooks_weighted'], ids=['a', 'c', 'w'])
+def test_flow(tmp_path_factory, monkeypatch, method):
+    tmp_path = tmp_path_factory.mktemp('f')
     import yaml
     from s1grits import workflow_scenes as workflow
     from s1grits.scenes import pipeline
@@ -253,6 +254,15 @@ def test_flow(tmp_path, monkeypatch, method):
         'memory': {'batch_strategy': 'monthly', 'batch_max_retries': 0, 'clear_cache_per_batch': False},
         'query': {'footprint_lookback_months': 0}, 'runtime': {'enabled': False},
     }
+    if method == 'nlooks_weighted':
+        from test_nlooks_weighted import rtc_id, weight_file
+        frame['jpl_burst_id'] = [f'T018-03865{i}-IW2' for i in range(4)]
+        frame['opera_id'] = frame['jpl_burst_id'].map(rtc_id)
+        for i, weight in [(0, 1), (3, 3)]:
+            weight_file(tmp_path/'weights', frame.iloc[i]['jpl_burst_id'], options['prof_vv'][0],
+                        np.full((2, 3), weight))
+        config['processing']['intra_pass_mosaic']['looks_directory'] = str(tmp_path/'weights')
+    expected_ids = frame.iloc[[0, 3]]['opera_id'].tolist()
     path = tmp_path/'config.yaml'
     for ratio in (False, True, False):
         config['processing']['features_ratio'] = ratio
@@ -266,10 +276,11 @@ def test_flow(tmp_path, monkeypatch, method):
         assert len(catalog) == 2
         assert catalog['processing_signature'].nunique() == 2
         for record in catalog.to_dict('records'):
-            assert list(record['opera_ids']) == ['O0', 'O3']
+            assert list(record['opera_ids']) == expected_ids
             group = zarr.open_group(str(derived/'17MPU'/record['zarr_path']), mode='r')
-            np.testing.assert_allclose(group['VV_dB'][:], 10*np.log10(4) if method=='average' else 0, atol=1e-6)
-            count_band = 'n_contributors' if method=='average' else 'n_candidates'
+            expected_value = {'average': 4, 'bursts_center': 1, 'nlooks_weighted': 5.5}[method]
+            np.testing.assert_allclose(group['VV_dB'][:], 10*np.log10(expected_value), atol=1e-6)
+            count_band = 'n_candidates' if method=='bursts_center' else 'n_contributors'
             np.testing.assert_array_equal(group[count_band][:], np.full((1, 2, 3), 2))
     assert not (root/'catalog.parquet').exists()
     assert (root/'mainline.txt').read_text() == 'preserve'
@@ -283,7 +294,7 @@ def test_flow(tmp_path, monkeypatch, method):
     rebuilt = pd.read_parquet(derived/'catalog.parquet')
     assert set(rebuilt['item_id']) == set(catalog['item_id'])
     for record in rebuilt.to_dict('records'):
-        assert list(record['opera_ids']) == ['O0', 'O3']
+        assert list(record['opera_ids']) == expected_ids
         assert record['pass_id'] == 1
         item = json.loads((derived/'17MPU'/record['item_path']).read_text())
         assert item['id'] == record['item_id']

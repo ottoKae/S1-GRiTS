@@ -65,6 +65,7 @@ from s1grits.scenes.stac_items import _ws_write_scene_stac_item
 from s1grits.scenes.store import _init_zarr_2band
 from s1grits.scenes.average import average_pair_window
 from s1grits.scenes.center import burst_centers, center_pair_window
+from s1grits.scenes.looks import bind_looks_assets, weighted_pair_window
 
 logger = get_logger(__name__)
 console = Console(legacy_windows=True, no_color=False)
@@ -92,6 +93,7 @@ def _write_scene_timestep_blockwise(
     halo: int = GLCM_BLOCK_HALO,
     read_average_window=None,
     read_center_window=None,
+    read_weighted_window=None,
 ) -> int:
     """Write one scene acquisition into a reserved Zarr timestep, blockwise.
 
@@ -115,7 +117,9 @@ def _write_scene_timestep_blockwise(
     time_index, new_key = _begin_zarr_timestep_blockwise(g, dt_ns, _all_band_names)
 
     def _pass1_block(block_num, y_slice, x_slice):
-        if read_center_window is not None:
+        if read_weighted_window is not None:
+            vv_lin, vh_lin, contributors, weight_sum = read_weighted_window(y_slice, x_slice)
+        elif read_center_window is not None:
             vv_lin, vh_lin, candidates, source_index = read_center_window(y_slice, x_slice)
         elif read_average_window is None:
             vv_lin, vh_lin = read_window(y_slice, x_slice)
@@ -133,8 +137,10 @@ def _write_scene_timestep_blockwise(
             copol_name: _linear_to_db(vv_lin),
             crosspol_name: _linear_to_db(vh_lin),
         }
-        if read_average_window is not None:
+        if read_average_window is not None or read_weighted_window is not None:
             block_bands['n_contributors'] = contributors.astype(np.float64)
+        if read_weighted_window is not None:
+            block_bands['weight_sum'] = weight_sum
         if read_center_window is not None:
             block_bands['n_candidates'] = candidates.astype(np.float64)
             block_bands['source_index'] = source_index.astype(np.float64)
@@ -241,6 +247,7 @@ def _write_scenes_output(
     resampling_method: str = "nearest",
     intra_pass_method: str = "first_valid_pixel",
     clean_source_rows: list[int] | None = None,
+    looks_assets: dict | None = None,
 ) -> list[dict]:
     """
     Write per-acquisition-group scene products.
@@ -257,8 +264,9 @@ def _write_scenes_output(
     """
     average = intra_pass_method == 'average'
     center = intra_pass_method == 'bursts_center'
-    strategy_enabled = average or center
-    if intra_pass_method not in ('first_valid_pixel', 'average', 'bursts_center'):
+    weighted = intra_pass_method == 'nlooks_weighted'
+    strategy_enabled = average or center or weighted
+    if intra_pass_method not in ('first_valid_pixel', 'average', 'bursts_center', 'nlooks_weighted'):
         raise ValueError('Unknown intra-pass mosaic method')
     if strategy_enabled:
         if do_despeckle or float(target_res) != 30 or resampling_method != 'nearest':
@@ -281,6 +289,9 @@ def _write_scenes_output(
             if (array is None or not isinstance(profile, Mapping)
                     or profile.get('crs') is None or profile.get('transform') is None):
                 raise ValueError(f'{intra_pass_method} requires decoded arrays with georeferenced profiles')
+    if weighted:
+        _weights, _weight_profiles, _weight_sources = bind_looks_assets(
+            looks_assets, [rows_by_source.loc[r] for r in clean_source_rows], prof_vv, prof_vh)
 
     # ---- Build product label and directory structure ----
     _desp_label = ""
@@ -305,6 +316,8 @@ def _write_scenes_output(
         _band_names.append(rvi_name)
     if strategy_enabled:
         _band_names.extend(['n_candidates', 'source_index'] if center else ['n_contributors'])
+    if weighted:
+        _band_names.append('weight_sum')
     _glcm_band_names: list[str] = []
     if features_glcm:
         from s1grits.asf_array_processing import _get_texture_band_names
@@ -361,6 +374,16 @@ def _write_scenes_output(
             'processing.center_distance': 'target_crs_euclidean_metres_float64',
             'processing.center_tie_rule': 'first_in_opera_id_order',
             'provenance.source_semantics': 'source_index_1based_into_acquisition_opera_ids; zero_is_nodata',
+        })
+    if weighted:
+        _scenes_variant_vals.update({
+            'contract_version': 'intra_pass_nlooks_weighted_v1',
+            'processing.intra_pass_mosaic.method': 'nlooks_weighted',
+            'processing.mosaic_weights': 'rtc_static_v1.0_number_of_looks',
+            'processing.weight_assets': [looks_assets[k]['identity'] for k in sorted(looks_assets)],
+            'processing.mosaic_validity': 'paired_finite_positive_vv_vh_and_weight',
+            'processing.weight_sum_dtype': 'float64',
+            'processing.operator_order': ['exact_nearest', 'paired_looks_weighted_average', 'features_db', 'clip'],
         })
     # Compute from full native sources before target clipping or prealignment.
     _centers = burst_centers(final_vv, prof_vv, final_vh, prof_vh, target_crs) if center else None
@@ -758,6 +781,16 @@ def _write_scenes_output(
             def _read_pair(_ys, _xs):
                 return _read_center(_ys, _xs)[:2]
 
+        _read_weighted = None
+        if weighted:
+            def _read_weighted(_ys, _xs):
+                return weighted_pair_window(
+                    indices, final_vv, prof_vv, final_vh, prof_vh, _weights, _weight_profiles,
+                    height, width, transform, target_crs, _ys, _xs, _bounds_vv, _bounds_vh)
+
+            def _read_pair(_ys, _xs):
+                return _read_weighted(_ys, _xs)[:2]
+
         if do_despeckle:
             # Raw mosaic exists (from _prep_acquisition); the despeckled
             # full arrays are the block source (despeckle's global coupling
@@ -870,6 +903,7 @@ def _write_scenes_output(
                 num_threads=int(blockwise_threads),
                 **({'read_average_window': _read_average} if strategy_enabled else {}),
                 **({'read_center_window': _read_center} if center else {}),
+                **({'read_weighted_window': _read_weighted} if weighted else {}),
             )
 
         if strategy_enabled:
@@ -879,6 +913,8 @@ def _write_scenes_output(
             }
             if center:
                 acquisition_sources[dt_str]['centers_target_xy'] = [_centers[i] for i in indices]
+            if weighted:
+                acquisition_sources[dt_str]['looks_assets'] = [_weight_sources[i] for i in indices]
             _g_group.attrs['acquisitions_by_time'] = acquisition_sources
             if center:
                 _g_group.attrs['numeric_processing'] = {
@@ -907,6 +943,19 @@ def _write_scenes_output(
                 _g_group['n_contributors'].attrs['description'] = (
                     'Number of jointly valid positive VV/VH burst pairs; equal linear-power weights. '
                     'Zero means no contribution. This is not a temporal observation count.')
+            if weighted:
+                numeric = dict(_g_group.attrs['numeric_processing'])
+                numeric['contract_version'] = 'intra_pass_nlooks_weighted_v1'
+                numeric['mosaic'].update(method='nlooks_weighted',
+                    validity='paired_finite_positive_vv_vh_and_weight',
+                    weights='rtc_static_v1.0_number_of_looks')
+                numeric['output']['weight_sum_band'] = 'weight_sum'
+                _g_group.attrs['numeric_processing'] = numeric
+                _g_group['n_contributors'].attrs['description'] = (
+                    'Number of paired valid VV/VH sources with positive finite static looks; not a temporal count.')
+                _g_group['weight_sum'].attrs['description'] = (
+                    'Float64 sum of contributing static looks weights; zero for no contribution, NaN outside clip. '
+                    'Not a measured effective number of independent looks in the mosaic.')
 
         _cog_name = (
             f"s1grits_scenes_{mgrs_tile_id}_{direction_label}_"
@@ -917,7 +966,7 @@ def _write_scenes_output(
             f"TK{_track_tok}_{dt_str}.png"
         )
         cog_relpath, preview_relpath = _export_scene_cog_preview_from_zarr(
-            _g_group, _time_index, [b for b in _band_names if b not in ('n_contributors', 'n_candidates', 'source_index')], transform,
+            _g_group, _time_index, [b for b in _band_names if b not in ('n_contributors', 'n_candidates', 'source_index', 'weight_sum')], transform,
             int(height), int(width), target_crs, tile_clip, mgrs_tile_id,
             generate_cog, generate_preview,
             scenes_cog_dir / _cog_name, scenes_png_dir / _png_name,

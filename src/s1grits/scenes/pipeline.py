@@ -588,6 +588,10 @@ def process_single_scenes_tile(
     from s1grits.scenes.average import validate_intra_pass_config
     intra_pass_method = validate_intra_pass_config(config)
     strategy_enabled = intra_pass_method != 'first_valid_pixel'
+    looks_assets = None
+    if intra_pass_method == 'nlooks_weighted':
+        from s1grits.scenes.looks import load_looks_assets
+        looks_assets = load_looks_assets(config['processing']['intra_pass_mosaic']['looks_directory'])
 
     # Workflows NEVER write STAC — STAC is produced only by `catalog resync`.
     # This must be set per-tile because ProcessPoolExecutor workers (spawn)
@@ -1569,6 +1573,7 @@ def process_single_scenes_tile(
                     resampling_method=resampling_method,
                     **({'intra_pass_method': intra_pass_method,
                         'clean_source_rows': clean_source_rows} if strategy_enabled else {}),
+                    **({'looks_assets': looks_assets} if looks_assets is not None else {}),
                 )
                 all_scenes_records.extend(scenes_recs)
                 if monthly_enabled:
