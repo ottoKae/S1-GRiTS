@@ -61,3 +61,15 @@ def test_bad_method_fails_before_creating_output(tmp_path):
     with pytest.raises(ValueError, match='Unknown monthly'):
         _write_smonthly_one_track(**monthly_inputs(tmp_path / 'out', 'medain'))
     assert not (tmp_path / 'out').exists()
+
+
+def test_workflow_rejects_bad_method_before_query_or_output(tmp_path):
+    import yaml
+    from s1grits.workflow_scenes import run_scenes_workflow
+    config = {'processing': {'monthly': {'enabled': True, 'composite_method': 'medain'}},
+              'output': {'base_dir': str(tmp_path/'out')}}
+    path = tmp_path/'config.yaml'
+    path.write_text(yaml.safe_dump(config))
+    with pytest.raises(ValueError, match='Unknown monthly'):
+        run_scenes_workflow(path)
+    assert not (tmp_path/'out').exists()
