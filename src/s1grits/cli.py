@@ -950,6 +950,12 @@ Examples:
         dest='command', metavar='<command>', help='Available commands'
     )
 
+    from s1grits.stand_grid import register_cli
+    register_cli(subparsers)
+
+    from s1grits.spatial import register_cli as register_spatial_cli
+    register_spatial_cli(subparsers)
+
     parser_init = subparsers.add_parser(
         'init',
         help='Write a starter scenes YAML configuration',

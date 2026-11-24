@@ -12,7 +12,8 @@ dependencies:
   # Geospatial core (conda-forge binaries; do not use pip for these)
   - rasterio
   - geopandas
-  - rioxarray
+  - rioxarray>=0.16
+  - pyogrio>=0.7
   - pyproj
   - shapely
   # GDAL Python bindings (osgeo). rasterio bundles libgdal but NOT the `osgeo`

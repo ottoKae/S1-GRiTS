@@ -78,10 +78,20 @@ jobs:
           pip install --only-binary=:all: -e ".[dev]"
 
       - name: Import + CLI smoke
+        # Provenance-aware spatial exports use the separately maintained reader.
+        # Pin the public source until its candidate is available on PyPI.
         run: |
+          pip install --no-deps "grits-resolver @ git+https://github.com/ottoKae/GRiTS-Resolver.git@9a92523d8cdbf20ec0b3b377c2265875a6521d73"
           python -c "import s1grits; print(s1grits.__name__)"
           python -m s1grits --version
           python -m s1grits --help
+
+      - name: Spatial CLI smoke
+        run: |
+          python -m s1grits grid --help
+          python -m s1grits points --help
+          python -m s1grits regions --help
+          python -m s1grits.opera_spatial --help
 
       - name: Doctor (env + template config validation, no network)
         run: python -m s1grits doctor --config config/s1grits_scenes.yaml

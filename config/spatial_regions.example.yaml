@@ -1,0 +1,33 @@
+spatial:
+  mode: geographic_0p1
+  # Optional subset of complete cells selected by the AOI.
+  # unit_ids: [deg10_x1172_y312, deg10_x1173_y312]
+input:
+  path: D:/research/study_area.geojson
+  # For vector_grid, use fixed_grid.shp and its stable feature ID column.
+  # id_column: grid_code
+source:
+  root: D:/research/s1_cube
+  product_type: smonthly
+  processing_signature: null
+  # Optional verified companion for historical stores with missing metadata.
+  # dataset_root: D:/research/original_s1_dataset
+  # metadata_root: D:/research/s1_metadata_only
+selection:
+  flight_directions: [ASCENDING]
+  track_numbers: []
+time:
+  years: [2024]
+  months: [1, 2]
+grid:
+  mode: target_crs
+  # Select a suitable projected CRS for the actual study area.
+  target_crs: EPSG:32650
+  origin: [0, 0]
+  target_resolution: 30
+  resampling_method: auto
+source_strategy: S0
+include_static: false
+output:
+  base_dir: D:/research/s1_spatial_regions
+  existing_store: resume

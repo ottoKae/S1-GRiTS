@@ -66,8 +66,9 @@ dependencies = [
     "xarray>=2023.1.0",
     "zarr>=3.0.0",
     "rasterio>=1.3.10",
-    "rioxarray>=0.15.0",
+    "rioxarray>=0.16.0",
     "geopandas>=0.14.0",
+    "pyogrio>=0.7.0",  # preserve source FIDs when building stand indexes
     "pyproj>=3.6.0",
     "shapely>=2.0.0",
 
@@ -114,6 +115,11 @@ dev = [
     "types-PyYAML>=6.0",   # yaml stubs for the mypy-checked modules
     # so CI exercises the optional-ml test modules
     "scikit-learn>=1.3.0",
+    "s1grits[opera]",
+]
+opera = [
+    "tifffile>=2026.3.3",
+    "imagecodecs>=2026.1.14",
 ]
 ml = [
     # PU learning / classifier support (s1grits.analysis.pu_learning)
@@ -132,7 +138,7 @@ web = [
     "python-multipart>=0.0.9",
 ]
 all = [
-    "s1grits[dev,notebook,web,ml]",
+    "s1grits[dev,notebook,web,ml,opera]",
 ]
 
 [project.urls]

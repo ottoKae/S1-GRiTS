@@ -19,6 +19,9 @@ S1-GRiTS provides **10+ commands** covering the full workflow: processing, catal
 | `s1grits tile inspect` | Single-tile temporal completeness | All |
 | `s1grits mosaic` | Multi-tile monthly mosaic | Monthly |
 | `s1grits mosaic_scenes` | Multi-tile per-scene mosaic | Scenes |
+| `s1grits grid build/query` | [Build/query stand and geographic-cell indexes](stand-geographic-grid.md) | Spatial |
+| `s1grits points extract` / `s1grits regions export` | [Extract existing local Zarr products](spatial-products.md) | Spatial |
+| `python -m s1grits.opera_spatial plan/update/repair` | [Read OPERA assets into independent point or region products](opera-spatial.md) | Spatial |
 
 ### Help
 
