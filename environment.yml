@@ -51,6 +51,7 @@ dependencies:
 
   # Image processing
   - scikit-image
+  - pywavelets>=1.8.0
   - pillow
   - matplotlib
 

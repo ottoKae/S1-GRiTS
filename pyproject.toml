@@ -93,6 +93,7 @@ dependencies = [
     # headless-server install failure.
     "opencv-python-headless>=4.10.0.84",
     "scikit-image>=0.22.0",
+    "PyWavelets>=1.8.0",  # NLM's estimate_sigma uses wavelet coefficients.
     "pillow>=10.0.0",
     "matplotlib>=3.7.0",
 
