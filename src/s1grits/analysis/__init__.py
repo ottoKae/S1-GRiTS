@@ -23,6 +23,8 @@ Example:
     >>> plot_timeseries_figure(ts, output_path="ts.png")
 """
 
+from .derive import derive_cube
+
 from .io import (
     load_zarr_dataset,
     load_catalog,
@@ -76,6 +78,7 @@ from .reporting import (
 )
 
 __all__ = [
+    "derive_cube",
     # IO
     "load_zarr_dataset",
     "load_catalog",

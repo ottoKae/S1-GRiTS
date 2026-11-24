@@ -528,6 +528,20 @@ def _import_gdal():
         raise SystemExit(1) from exc
 
 
+def cmd_derive_cube(args):
+    """Apply optional operators to an existing Cube, writing a new root."""
+    from s1grits.analysis.derive import derive_cube
+
+    try:
+        record = derive_cube(args.catalog_root, args.item_id, args.output,
+            start=args.start, end=args.end, features=args.features, spatial_filter=args.filter,
+            monthly=args.monthly, window=args.window, chunk_size=args.chunk_size)
+    except Exception as exc:
+        console.print(f'[red]ERROR: {exc}[/red]')
+        raise SystemExit(1) from exc
+    console.print(f'[green]Derived Cube created: {args.output} ({record["processing_signature"]})[/green]')
+
+
 def cmd_mosaic_grid(args):
     """Create an exact, fixed-grid mosaic from explicit catalog item IDs."""
     import json
@@ -1111,6 +1125,19 @@ Examples:
         help='Filter tiles by MGRS prefix (e.g., 50R includes 50RKU, 50RKV, …)'
     )
     parser_mosaic.set_defaults(func=cmd_mosaic)
+
+    parser_derive = subparsers.add_parser('derive_cube', help='Derive features, filters or monthly products from an existing Cube')
+    parser_derive.add_argument('--catalog-root', required=True)
+    parser_derive.add_argument('--item-id', required=True, help='Catalog item selecting the parent Zarr store')
+    parser_derive.add_argument('--output', required=True, help='New Cube root separate from the source')
+    parser_derive.add_argument('--start', required=True, help='Inclusive UTC timestamp')
+    parser_derive.add_argument('--end', required=True, help='Inclusive UTC timestamp (date alone means midnight)')
+    parser_derive.add_argument('--features', nargs='*', choices=['ratio', 'rvi', 'glcm'], default=['ratio', 'rvi'])
+    parser_derive.add_argument('--filter', choices=['none', 'tv_bregman', 'nlm'], default='none')
+    parser_derive.add_argument('--monthly', choices=['mean', 'median'])
+    parser_derive.add_argument('--window', nargs=4, type=int, metavar=('XOFF', 'YOFF', 'WIDTH', 'HEIGHT'))
+    parser_derive.add_argument('--chunk-size', type=int, default=256)
+    parser_derive.set_defaults(func=cmd_derive_cube)
 
     parser_grid = subparsers.add_parser('mosaic_grid',
         help='Mosaic explicit catalog COGs onto a fixed metric grid')

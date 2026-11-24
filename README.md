@@ -281,6 +281,7 @@ Start with the task you need; the detailed references can be read as needed.
 | Record or inspect processing evidence | [Monthly production records](docs/PROVENANCE_WORKFLOW_ZH.md), [Historical metadata export](docs/PROVENANCE_READONLY_ZH.md) |
 | Read data and prepare analysis inputs | [Python API](docs/python_api.md), [Examples](docs/examples.md) |
 | Mosaic selected scientific COGs onto an explicit grid | [Fixed-grid mosaics](docs/grid_mosaic.md) |
+| Derive features, filters or monthly products from an existing Cube | [Cube derivatives](docs/cube_derivatives.md) |
 | Extract points or regions and build stand indexes | [Local spatial products](docs/spatial-products.md), [Stand grid](docs/stand-geographic-grid.md), [Direct OPERA acquisition](docs/opera-spatial.md) |
 | Troubleshoot | [FAQ](docs/faq.md) |
 

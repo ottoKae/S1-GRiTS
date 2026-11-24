@@ -310,7 +310,7 @@ def build_stac_item_dict(
         if dt_val is not None:
             ts = pd.Timestamp(dt_val)
             item_id = f"{mgrs_tile_id}{flight_suffix}_{ts.strftime('%Y%m%dT%H%M%S')}"
-            if any(token in str(record.get('product_label', '')) for token in ('_average_', '_bursts_center_', '_nlooks_weighted_')) and _explicit_id:
+            if any(token in str(record.get('product_label', '')) for token in ('_average_', '_bursts_center_', '_nlooks_weighted_', '_derived_')) and _explicit_id:
                 item_id = _explicit_id
             datetime_str = ts.strftime("%Y-%m-%dT%H:%M:%SZ")
         else:

@@ -708,6 +708,14 @@ def _resync_locked(output_root, _skip_dirs, write_stac, stac_format) -> Dict[str
                     logger.warning("Cannot open Zarr %s: %s", zarr_p, _e)
                     continue
 
+                if '_derived_' in product_label:
+                    if g.attrs.get('status') == 'complete' and g.attrs.get('derived_record'):
+                        derived_record = dict(g.attrs['derived_record'])
+                        for field in ('datetime', 'start_datetime', 'end_datetime'):
+                            derived_record[field] = pd.Timestamp(derived_record[field])
+                        catalog_records.append(normalize_catalog_record(derived_record))
+                    continue
+
                 # Extract metadata from Zarr. zarr.keys() iteration order is NOT
                 # insertion order, so canonicalize: VV/VH (or HH/HV) lead, then
                 # Ratio/RVI, then the rest — a stable, deterministic band order.
