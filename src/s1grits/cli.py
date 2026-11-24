@@ -544,6 +544,23 @@ def cmd_derive_cube(args):
     console.print(f'[green]Derived Cube created: {args.output} ({record["processing_signature"]})[/green]')
 
 
+def cmd_analyze_cusum(args):
+    """Run the separately installed public CUSUM backend on an existing Cube."""
+    from s1grits.analysis import analyze_cusum
+
+    try:
+        receipt = analyze_cusum(args.catalog_root, args.item_id, args.output,
+            band=args.band, history_start=args.history_start, history_end=args.history_end,
+            monitor_start=args.monitor_start, monitor_end=args.monitor_end,
+            trend=not args.no_trend, harmonic_order=args.harmonic_order,
+            sensitivity=args.sensitivity, fit_alpha=args.fit_alpha,
+            window=args.window, chunk_size=args.chunk_size)
+    except Exception as exc:
+        console.print(f'[red]ERROR: {exc}[/red]')
+        raise SystemExit(1) from exc
+    console.print(f'[green]CUSUM analysis created: {args.output} ({receipt["processing_signature"]})[/green]')
+
+
 def cmd_mosaic_grid(args):
     """Create an exact, fixed-grid mosaic from explicit catalog item IDs."""
     import json
@@ -1143,6 +1160,21 @@ Examples:
     parser_derive.add_argument('--window', nargs=4, type=int, metavar=('XOFF', 'YOFF', 'WIDTH', 'HEIGHT'))
     parser_derive.add_argument('--chunk-size', type=int, default=256)
     parser_derive.set_defaults(func=cmd_derive_cube)
+
+    parser_cusum = subparsers.add_parser('analyze_cusum', help='Optional public nrt CUSUM analysis of an existing Cube')
+    parser_cusum.add_argument('--catalog-root', required=True)
+    parser_cusum.add_argument('--item-id', required=True)
+    parser_cusum.add_argument('--output', required=True, help='New analysis directory separate from the source')
+    parser_cusum.add_argument('--band', choices=['VV_dB', 'VH_dB'], required=True)
+    for interval in ('history-start', 'history-end', 'monitor-start', 'monitor-end'):
+        parser_cusum.add_argument('--'+interval, required=True, help='Inclusive UTC timestamp; date alone means midnight')
+    parser_cusum.add_argument('--no-trend', action='store_true')
+    parser_cusum.add_argument('--harmonic-order', type=int, default=2)
+    parser_cusum.add_argument('--sensitivity', type=float, default=.05)
+    parser_cusum.add_argument('--fit-alpha', type=float, default=.05)
+    parser_cusum.add_argument('--window', nargs=4, type=int, metavar=('XOFF', 'YOFF', 'WIDTH', 'HEIGHT'))
+    parser_cusum.add_argument('--chunk-size', type=int, default=64)
+    parser_cusum.set_defaults(func=cmd_analyze_cusum)
 
     parser_grid = subparsers.add_parser('mosaic_grid',
         help='Mosaic explicit catalog COGs onto a fixed metric grid')

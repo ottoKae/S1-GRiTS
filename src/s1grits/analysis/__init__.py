@@ -24,6 +24,7 @@ Example:
 """
 
 from .derive import derive_cube
+from .cusum import analyze_cusum
 
 from .io import (
     load_zarr_dataset,
@@ -78,6 +79,7 @@ from .reporting import (
 )
 
 __all__ = [
+    "analyze_cusum",
     "derive_cube",
     # IO
     "load_zarr_dataset",

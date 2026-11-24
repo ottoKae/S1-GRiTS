@@ -20,6 +20,7 @@ S1-GRiTS provides **10+ commands** covering the full workflow: processing, catal
 | `s1grits mosaic` | Multi-tile monthly mosaic | Monthly |
 | `s1grits mosaic_scenes` | Multi-tile per-scene mosaic | Scenes |
 | `s1grits derive_cube` | [Existing-Cube features, filters and monthly composites](cube_derivatives.md); [temporal interpolation](temporal_interpolation.md) | Analysis |
+| `s1grits analyze_cusum` | [Optional public CUSUM backend; local experimental adapter](cusum.md) | Analysis |
 | `s1grits grid build/query` | [Build/query stand and geographic-cell indexes](stand-geographic-grid.md) | Spatial |
 | `s1grits points extract` / `s1grits regions export` | [Extract existing local Zarr products](spatial-products.md) | Spatial |
 | `python -m s1grits.opera_spatial plan/update/repair` | [Read OPERA assets into independent point or region products](opera-spatial.md) | Spatial |
