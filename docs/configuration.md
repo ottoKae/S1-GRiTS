@@ -537,6 +537,9 @@ metadata:
 
 ### Processing
 
+- `processing.intra_pass_mosaic.method` — `first_valid_pixel` (default) or
+  opt-in `average`. See [intra-pass averaging](intra_pass_average.md) for its
+  supported combinations, separate output root and provenance contract.
 - `processing.incomplete_acquisition` — policy for acquisitions with a genuine
   interior gap: `skip` (default), `write` (keep with NoData gap), `abort`.
 - `processing.interior_hole_max_frac` — interior-NoData fraction of the tile

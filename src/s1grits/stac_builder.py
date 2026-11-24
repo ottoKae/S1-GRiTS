@@ -310,6 +310,8 @@ def build_stac_item_dict(
         if dt_val is not None:
             ts = pd.Timestamp(dt_val)
             item_id = f"{mgrs_tile_id}{flight_suffix}_{ts.strftime('%Y%m%dT%H%M%S')}"
+            if '_average_' in str(record.get('product_label', '')) and _explicit_id:
+                item_id = _explicit_id
             datetime_str = ts.strftime("%Y-%m-%dT%H:%M:%SZ")
         else:
             item_id = f"{mgrs_tile_id}{flight_suffix}_{month}"
@@ -513,12 +515,13 @@ def build_stac_item_dict(
 
     cog_href = _rel_to_item(record.get("cog_path"))
     if cog_href:
+        cog_bands = [b for b in bands if b != 'n_contributors']
         item["assets"]["cog"] = {
             "href": cog_href,
             "type": "image/tiff; application=geotiff; profile=cloud-optimized",
             "roles": ["data"],
-            "title": f"{asset_title_prefix} COG ({', '.join(bands)})",
-            "eo:bands": [{"name": _b} for _b in bands],
+            "title": f"{asset_title_prefix} COG ({', '.join(cog_bands)})",
+            "eo:bands": [{"name": _b} for _b in cog_bands],
         }
 
     zarr_path_rec = record.get("zarr_path") or record.get("vv_path")

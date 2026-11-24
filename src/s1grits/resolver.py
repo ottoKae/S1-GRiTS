@@ -102,6 +102,7 @@ class CubeResolver:
         time_end: str | None = None,
         geometry_group_id: str | None = None,
         track: int | None = None,
+        processing_signature: str | None = None,
     ) -> pd.DataFrame:
         """
         Query catalog for matching products.
@@ -131,6 +132,8 @@ class CubeResolver:
             df = df[df["geometry_group_id"] == geometry_group_id]
         if track is not None:
             df = df[df["track"] == int(track)]
+        if processing_signature is not None:
+            df = df[df["processing_signature"] == processing_signature]
         return df.reset_index(drop=True)
 
     def get_aligned_products(

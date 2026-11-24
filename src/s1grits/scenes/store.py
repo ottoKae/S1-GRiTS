@@ -136,6 +136,8 @@ def _init_zarr_2band(
         # unwritten blocks read back as 0 by the same mechanism.
         if var == N_OBS_BAND:
             _dtype, _fill = 'uint8', 0
+        elif var == 'n_contributors':
+            _dtype, _fill = 'uint32', 0
         else:
             _dtype, _fill = 'float32', np.nan
         _a = create_zarr_array(g, var, shape=(0, _h, _w), chunks=(1, chunk_y, chunk_x), dtype=_dtype, fill_value=_fill, overwrite=True, dimension_names=['time', 'y', 'x'])

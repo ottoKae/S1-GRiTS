@@ -825,7 +825,10 @@ def _resync_locked(output_root, _skip_dirs, write_stac, stac_format) -> Dict[str
                     record['reference_grid_id'] = record.get('grid_id')
                 # Set output_type so write_stac_item uses correct path logic
                 record['output_type'] = product_type
-                catalog_records.append(record)
+                if product_type == 'scenes' and '_average_' in product_label:
+                    catalog_records.extend(_average_scene_records(record, g, time_steps, prod_dir, tile_dir))
+                else:
+                    catalog_records.append(record)
 
                 # STAC items are emitted after the full catalog is built (from
                 # df_global), so the scan loop only reconstructs the catalog.
@@ -939,6 +942,31 @@ def _resync_locked(output_root, _skip_dirs, write_stac, stac_format) -> Dict[str
         } if "collection_id" in df_global.columns else {},
         'tiles': sorted(d.name for d in tile_dirs if any(d.iterdir())),
     }
+
+
+def _average_scene_records(record, group, time_steps, product_dir, tile_dir):
+    """Rebuild each average acquisition's identity and loaded-source evidence."""
+    from s1grits.canonical_catalog_schema import normalize_catalog_record
+    from s1grits.zarr_cf import band_data_vars
+    import json
+
+    acquisitions = group.attrs['acquisitions_by_time']
+    for time in time_steps:
+        stamp = time.strftime('%Y%m%dT%H%M%S')
+        sources = acquisitions[stamp]
+        identity = f"{record['tile_id']}_{record['flight_direction']}_{stamp}_TK{record['track']}_{record['processing_signature']}"
+        stem = f"s1grits_scenes_{record['tile_id']}_{record['flight_direction']}_TK{record['track']}_{stamp}"
+        cog = product_dir / 'cog' / (stem + '.tif')
+        preview = product_dir / 'preview' / (stem + '.png')
+        yield normalize_catalog_record({
+            **record, 'item_id': identity, 'item_path': None,
+            'datetime': time, 'start_datetime': time, 'end_datetime': time,
+            'month': time.strftime('%Y-%m'), 'n_scenes': None,
+            'n_bursts': len(sources['opera_ids']), **sources,
+            'bands': json.dumps(band_data_vars(group)),
+            'cog_path': cog.relative_to(tile_dir).as_posix() if cog.exists() else None,
+            'preview_path': preview.relative_to(tile_dir).as_posix() if preview.exists() else None,
+        })
 
 
 def _prune_orphan_items(tile_dirs, written_item_abs: set) -> None:
