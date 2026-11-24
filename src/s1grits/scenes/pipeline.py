@@ -587,7 +587,7 @@ def process_single_scenes_tile(
     tracking = config.get("_provenance_tracking")
     from s1grits.scenes.average import validate_intra_pass_config
     intra_pass_method = validate_intra_pass_config(config)
-    average = intra_pass_method == 'average'
+    strategy_enabled = intra_pass_method != 'first_valid_pixel'
 
     # Workflows NEVER write STAC — STAC is produced only by `catalog resync`.
     # This must be set per-tile because ProcessPoolExecutor workers (spawn)
@@ -1052,7 +1052,7 @@ def process_single_scenes_tile(
 
         # 5. Batch loop
         batch_membership = df_rtc_ts['acq_dt']
-        if average:
+        if strategy_enabled:
             # A midnight/month boundary must not split one acquisition's contributors.
             batch_membership = df_rtc_ts.groupby(
                 ['pass_id', 'acq_group_id_within_mgrs_tile'])['acq_dt'].transform('min')
@@ -1202,9 +1202,9 @@ def process_single_scenes_tile(
                                 scene_max_retries=_scene_max_retries,
                                 max_failed_ratio=_max_failed_ratio,
                                 retry_timeout_seconds=_scene_retry_timeout,
-                                **({"return_source_indices": True} if tracking is not None or average else {}),
+                                **({"return_source_indices": True} if tracking is not None or strategy_enabled else {}),
                             )
-                            if tracking is not None or average:
+                            if tracking is not None or strategy_enabled:
                                 final_vv, prof_vv, final_vh, prof_vh, clean_dates, positions = loaded
                                 clean_source_rows = df_input.iloc[positions]["_source_row"].astype(int).tolist()
                             else:
@@ -1370,7 +1370,7 @@ def process_single_scenes_tile(
                 logger.warning("[DIAG] Applying automatic sanitization...")
 
                 # Preserve candidate metadata while filtering exact paired source rows.
-                if tracking is not None or average:
+                if tracking is not None or strategy_enabled:
                     keep_indices = [i for i in range(len(final_vv)) if i not in problematic_indices]
                     final_vv = [final_vv[i] for i in keep_indices]
                     prof_vv = [prof_vv[i] for i in keep_indices]
@@ -1568,7 +1568,7 @@ def process_single_scenes_tile(
                     blockwise_threads=scenes_blockwise_threads,
                     resampling_method=resampling_method,
                     **({'intra_pass_method': intra_pass_method,
-                        'clean_source_rows': clean_source_rows} if average else {}),
+                        'clean_source_rows': clean_source_rows} if strategy_enabled else {}),
                 )
                 all_scenes_records.extend(scenes_recs)
                 if monthly_enabled:
@@ -1824,7 +1824,7 @@ def process_single_scenes_tile(
                                 'datetime', 'product_type', 'month']
                     if k in df_merged.columns
                 ]
-                if average:
+                if strategy_enabled:
                     dedup_keys += ['processing_signature', 'geometry_group_id']
                 if dedup_keys:
                     before = len(df_merged)

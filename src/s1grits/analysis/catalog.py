@@ -825,8 +825,8 @@ def _resync_locked(output_root, _skip_dirs, write_stac, stac_format) -> Dict[str
                     record['reference_grid_id'] = record.get('grid_id')
                 # Set output_type so write_stac_item uses correct path logic
                 record['output_type'] = product_type
-                if product_type == 'scenes' and '_average_' in product_label:
-                    catalog_records.extend(_average_scene_records(record, g, time_steps, prod_dir, tile_dir))
+                if product_type == 'scenes' and any(token in product_label for token in ('_average_', '_bursts_center_')):
+                    catalog_records.extend(_strategy_scene_records(record, g, time_steps, prod_dir, tile_dir))
                 else:
                     catalog_records.append(record)
 
@@ -944,8 +944,8 @@ def _resync_locked(output_root, _skip_dirs, write_stac, stac_format) -> Dict[str
     }
 
 
-def _average_scene_records(record, group, time_steps, product_dir, tile_dir):
-    """Rebuild each average acquisition's identity and loaded-source evidence."""
+def _strategy_scene_records(record, group, time_steps, product_dir, tile_dir):
+    """Rebuild each optional-strategy acquisition and its loaded-source evidence."""
     from s1grits.canonical_catalog_schema import normalize_catalog_record
     from s1grits.zarr_cf import band_data_vars
     import json

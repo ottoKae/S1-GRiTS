@@ -4,6 +4,9 @@ The default scenes workflow retains first-valid-pixel mosaicking, its paths
 and its processing signatures. To produce a separate equal-weight average
 of overlapping bursts within each acquisition, add this to a scenes config:
 
+For selection from one source rather than averaging, see
+[burst-centre selection](intra_pass_center.md).
+
 ```yaml
 roi:
   flight_direction: ASCENDING

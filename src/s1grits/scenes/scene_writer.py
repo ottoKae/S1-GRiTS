@@ -64,6 +64,7 @@ from s1grits.scenes.qc import (
 from s1grits.scenes.stac_items import _ws_write_scene_stac_item
 from s1grits.scenes.store import _init_zarr_2band
 from s1grits.scenes.average import average_pair_window
+from s1grits.scenes.center import burst_centers, center_pair_window
 
 logger = get_logger(__name__)
 console = Console(legacy_windows=True, no_color=False)
@@ -90,6 +91,7 @@ def _write_scene_timestep_blockwise(
     num_threads: int = 1,
     halo: int = GLCM_BLOCK_HALO,
     read_average_window=None,
+    read_center_window=None,
 ) -> int:
     """Write one scene acquisition into a reserved Zarr timestep, blockwise.
 
@@ -113,7 +115,9 @@ def _write_scene_timestep_blockwise(
     time_index, new_key = _begin_zarr_timestep_blockwise(g, dt_ns, _all_band_names)
 
     def _pass1_block(block_num, y_slice, x_slice):
-        if read_average_window is None:
+        if read_center_window is not None:
+            vv_lin, vh_lin, candidates, source_index = read_center_window(y_slice, x_slice)
+        elif read_average_window is None:
             vv_lin, vh_lin = read_window(y_slice, x_slice)
         else:
             vv_lin, vh_lin, contributors = read_average_window(y_slice, x_slice)
@@ -131,6 +135,9 @@ def _write_scene_timestep_blockwise(
         }
         if read_average_window is not None:
             block_bands['n_contributors'] = contributors.astype(np.float64)
+        if read_center_window is not None:
+            block_bands['n_candidates'] = candidates.astype(np.float64)
+            block_bands['source_index'] = source_index.astype(np.float64)
         # Per-pixel band expressions (dB / Ratio / RVI): a block sees exactly
         # the same inputs as any other, so results are position-independent.
         if features_ratio:
@@ -249,29 +256,31 @@ def _write_scenes_output(
     Returns catalog records with output_type='scenes'.
     """
     average = intra_pass_method == 'average'
-    if intra_pass_method not in ('first_valid_pixel', 'average'):
+    center = intra_pass_method == 'bursts_center'
+    strategy_enabled = average or center
+    if intra_pass_method not in ('first_valid_pixel', 'average', 'bursts_center'):
         raise ValueError('Unknown intra-pass mosaic method')
-    if average:
+    if strategy_enabled:
         if do_despeckle or float(target_res) != 30 or resampling_method != 'nearest':
-            raise ValueError('average requires unfiltered 30 m nearest-neighbor inputs')
+            raise ValueError(f'{intra_pass_method} requires unfiltered 30 m nearest-neighbor inputs')
         if (copol_name, crosspol_name) != ('VV_dB', 'VH_dB'):
-            raise ValueError('average currently supports VV/VH only')
+            raise ValueError(f'{intra_pass_method} currently supports VV/VH only')
         if (clean_source_rows is None or '_source_row' not in df_rtc_ts
                 or len(set(clean_source_rows)) != len(clean_dates)
                 or df_rtc_ts['_source_row'].duplicated().any()
                 or not (len(final_vv) == len(prof_vv) == len(final_vh)
                         == len(prof_vh) == len(clean_dates) == len(clean_source_rows))):
-            raise ValueError('average requires exact paired source-row indices')
+            raise ValueError(f'{intra_pass_method} requires exact paired source-row indices')
         rows_by_source = df_rtc_ts.set_index('_source_row')
         if not set(clean_source_rows) <= set(rows_by_source.index):
-            raise ValueError('average source rows are missing from acquisition metadata')
+            raise ValueError(f'{intra_pass_method} source rows are missing from acquisition metadata')
         if rows_by_source.loc[clean_source_rows, 'opera_id'].duplicated().any():
-            raise ValueError('average requires unique OPERA source assets')
+            raise ValueError(f'{intra_pass_method} requires unique OPERA source assets')
         source_to_index = {row: i for i, row in enumerate(clean_source_rows)}
         for array, profile in zip(final_vv + final_vh, prof_vv + prof_vh):
             if (array is None or not isinstance(profile, Mapping)
                     or profile.get('crs') is None or profile.get('transform') is None):
-                raise ValueError('average requires decoded arrays with georeferenced profiles')
+                raise ValueError(f'{intra_pass_method} requires decoded arrays with georeferenced profiles')
 
     # ---- Build product label and directory structure ----
     _desp_label = ""
@@ -294,8 +303,8 @@ def _write_scenes_output(
         _band_names.append(ratio_name)
     if features_rvi:
         _band_names.append(rvi_name)
-    if average:
-        _band_names.append('n_contributors')
+    if strategy_enabled:
+        _band_names.extend(['n_candidates', 'source_index'] if center else ['n_contributors'])
     _glcm_band_names: list[str] = []
     if features_glcm:
         from s1grits.asf_array_processing import _get_texture_band_names
@@ -324,7 +333,7 @@ def _write_scenes_output(
         "processing.target_resolution": float(target_res),
         "processing.resampling_method": str(resampling_method),
     }
-    if average:
+    if strategy_enabled:
         _scenes_variant_vals.update({
             'contract_version': 'intra_pass_average_v1',
             'processing.intra_pass_mosaic.method': 'average',
@@ -341,14 +350,28 @@ def _write_scenes_output(
             'output.bands': _scenes_bands,
             'provenance.source_semantics': 'eligible_loaded_assets; per_pixel_membership_by_validity_rule',
         })
+    if center:
+        _scenes_variant_vals.update({
+            'contract_version': 'intra_pass_bursts_center_v1',
+            'processing.intra_pass_mosaic.method': 'bursts_center',
+            'processing.mosaic_weights': None,
+            'processing.accumulator_dtype': None,
+            'processing.operator_order': ['exact_nearest', 'paired_center_selection', 'features_db', 'clip'],
+            'processing.center_definition': 'full_native_paired_valid_pixel_centroid_transformed_to_target',
+            'processing.center_distance': 'target_crs_euclidean_metres_float64',
+            'processing.center_tie_rule': 'first_in_opera_id_order',
+            'provenance.source_semantics': 'source_index_1based_into_acquisition_opera_ids; zero_is_nodata',
+        })
+    # Compute from full native sources before target clipping or prealignment.
+    _centers = burst_centers(final_vv, prof_vv, final_vh, prof_vh, target_crs) if center else None
     _scenes_sig = make_processing_signature(_scenes_variant_vals)
     _scenes_variant = make_product_variant('scenes', _scenes_variant_vals, _scenes_bands)
-    if average:
-        product_label += f'_average_{_scenes_sig}'
+    if strategy_enabled:
+        product_label += f'_{intra_pass_method}_{_scenes_sig}'
     scenes_zarr_dir = tile_dir / product_label / 'zarr'
     scenes_cog_dir = tile_dir / product_label / 'cog'
     scenes_png_dir = tile_dir / product_label / 'preview'
-    if not average:
+    if not strategy_enabled:
         _check_tile_integrity(str(tile_dir), str(scenes_zarr_dir))
 
     # ---- Pre-compute acquisition groups (always acq_group mode) ----
@@ -449,7 +472,7 @@ def _write_scenes_output(
         """
         _rows = item[1]
         _idx: list[int] = []
-        if average:
+        if strategy_enabled:
             _idx = [source_to_index[int(r['_source_row'])]
                     for r in sorted(_rows, key=lambda r: str(r['opera_id']))
                     if int(r['_source_row']) in source_to_index]
@@ -553,7 +576,7 @@ def _write_scenes_output(
         track_number  = int(rows[0]['track_number']) if rows else -1
         pass_id       = int(rows[0]['pass_id'])       if rows else -1
         _item_id = f"{mgrs_tile_id}_{direction_label}_{dt_str}"
-        if average:
+        if strategy_enabled:
             _item_id += f'_TK{_track_tok}_{_scenes_sig}'
             loaded_rows = [rows_by_source.loc[clean_source_rows[i]] for i in indices]
             opera_ids = [str(r['opera_id']) for r in loaded_rows]
@@ -653,7 +676,7 @@ def _write_scenes_output(
                 opera_ids=opera_ids,
                 pass_id=pass_id,
                 track=track_number,
-                **({'item_id_override': _item_id} if average else {}),
+                **({'item_id_override': _item_id} if strategy_enabled else {}),
             )
             # Catalog timestamps are stored tz-naive (UTC wall-time) so they stay
             # comparable with the tz-naive records written by the monthly workflow
@@ -676,7 +699,7 @@ def _write_scenes_output(
                 'month':         acq_ts.strftime('%Y-%m') if hasattr(acq_ts, 'strftime') else str(acq_ts)[:7],
                 'geometry_group_id': f"{mgrs_tile_id}_{direction_label}_TK{_track_tok}",
                 'track':         track_number,
-                'n_bursts':      len(indices) if average else n_bursts,
+                'n_bursts':      len(indices) if strategy_enabled else n_bursts,
                 'n_scenes':      None,
                 'jpl_burst_ids': jpl_burst_ids,
                 'opera_ids':     opera_ids,
@@ -722,6 +745,19 @@ def _write_scenes_output(
             def _read_pair(_ys, _xs):
                 return _read_average(_ys, _xs)[:2]
 
+        _read_center = None
+        if center:
+            _read_average = None
+
+            def _read_center(_ys, _xs):
+                return center_pair_window(
+                    indices, _centers, final_vv, prof_vv, final_vh, prof_vh,
+                    height, width, transform, target_crs, _ys, _xs,
+                    _bounds_vv, _bounds_vh)
+
+            def _read_pair(_ys, _xs):
+                return _read_center(_ys, _xs)[:2]
+
         if do_despeckle:
             # Raw mosaic exists (from _prep_acquisition); the despeckled
             # full arrays are the block source (despeckle's global coupling
@@ -744,7 +780,7 @@ def _write_scenes_output(
         _g_group = None
         _time_index = None
         if zarr_path_group.exists():
-            if average:
+            if strategy_enabled:
                 existing = zarr.open_group(str(zarr_path_group), mode='r', zarr_format=3)
                 if (existing.attrs.get('processing_signature') != _scenes_sig
                         or existing.attrs.get('transform') != list(transform)[:6]
@@ -752,11 +788,15 @@ def _write_scenes_output(
                         or any(b not in existing for b in _band_names)
                         or not np.array_equal(existing['x'][:], x_coords)
                         or not np.array_equal(existing['y'][:], y_coords)):
-                    raise ValueError('average target identity/grid mismatch; use a separate output root')
+                    raise ValueError(f'{intra_pass_method} target identity/grid mismatch; use a separate output root')
                 old_sources = existing.attrs.get('acquisitions_by_time', {}).get(dt_str, {}).get('opera_ids')
                 existing_times = pd.to_datetime(existing['time'][:]).strftime('%Y%m%dT%H%M%S')
                 if dt_str in existing_times and old_sources != opera_ids:
-                    raise ValueError('average acquisition sources changed; use a separate output root')
+                    raise ValueError(f'{intra_pass_method} acquisition sources changed; use a separate output root')
+                if center and dt_str in existing_times:
+                    old_centers = existing.attrs['acquisitions_by_time'][dt_str].get('centers_target_xy')
+                    if old_centers != [_centers[i] for i in indices]:
+                        raise ValueError('bursts_center acquisition centres changed; use a separate output root')
             _g_group = _init_zarr_2band(
                 zarr_path_group, x_coords, y_coords, target_crs,
                 transform, chunk_y, chunk_x,
@@ -788,7 +828,7 @@ def _write_scenes_output(
             if not do_despeckle:
                 _raw_vv_finite = np.zeros((int(height), int(width)), dtype=bool)
                 for _qy, _qx in _iter_spatial_blocks(height, width, chunk_y, chunk_x):
-                    if average:
+                    if strategy_enabled:
                         _vvw = _read_pair(_qy, _qx)[0]
                     else:
                         _vvw = _mosaic_align_scene_window(
@@ -828,28 +868,45 @@ def _write_scenes_output(
                 features_ratio, features_rvi, ratio_name, rvi_name,
                 _scene_tex_cfg, _clip_geom_blocks,
                 num_threads=int(blockwise_threads),
-                **({'read_average_window': _read_average} if average else {}),
+                **({'read_average_window': _read_average} if strategy_enabled else {}),
+                **({'read_center_window': _read_center} if center else {}),
             )
 
-        if average:
+        if strategy_enabled:
             acquisition_sources = dict(_g_group.attrs.get('acquisitions_by_time', {}))
             acquisition_sources[dt_str] = {
                 'opera_ids': opera_ids, 'jpl_burst_ids': jpl_burst_ids, 'pass_id': pass_id,
             }
+            if center:
+                acquisition_sources[dt_str]['centers_target_xy'] = [_centers[i] for i in indices]
             _g_group.attrs['acquisitions_by_time'] = acquisition_sources
-            _g_group.attrs['numeric_processing'] = {
-                'contract_version': 'intra_pass_average_v1',
-                'mapping': {'resampling': 'nearest', 'transform_tolerance_pixels': 0.0},
-                'mosaic': {'method': 'average', 'domain': 'linear_power',
-                           'validity': 'paired_finite_positive_vv_vh',
-                           'source_order': 'opera_id_ascending', 'weights': 'equal',
-                           'accumulator_dtype': 'float64', 'result_dtype': 'float32'},
-                'output': {'backscatter_domain': 'dB', 'count_band': 'n_contributors',
-                           'clip_after_features': bool(tile_clip)},
-            }
-            _g_group['n_contributors'].attrs['description'] = (
-                'Number of jointly valid positive VV/VH burst pairs; equal linear-power weights. '
-                'Zero means no contribution. This is not a temporal observation count.')
+            if center:
+                _g_group.attrs['numeric_processing'] = {
+                    'contract_version': 'intra_pass_bursts_center_v1',
+                    'mapping': {'resampling': 'nearest', 'transform_tolerance_pixels': 0.0},
+                    'mosaic': {'method': 'bursts_center', 'domain': 'linear_power',
+                               'validity': 'paired_finite_positive_vv_vh',
+                               'center': _scenes_variant_vals['processing.center_definition'],
+                               'distance': _scenes_variant_vals['processing.center_distance'],
+                               'ties': 'first_in_opera_id_order'},
+                    'output': {'backscatter_domain': 'dB', 'clip_after_features': bool(tile_clip)},
+                }
+                _g_group['n_candidates'].attrs['description'] = 'Number of jointly valid positive VV/VH candidates; not a temporal count.'
+                _g_group['source_index'].attrs['description'] = 'One-based position in acquisitions_by_time[time].opera_ids; zero is NoData.'
+            else:
+                _g_group.attrs['numeric_processing'] = {
+                    'contract_version': 'intra_pass_average_v1',
+                    'mapping': {'resampling': 'nearest', 'transform_tolerance_pixels': 0.0},
+                    'mosaic': {'method': 'average', 'domain': 'linear_power',
+                               'validity': 'paired_finite_positive_vv_vh',
+                               'source_order': 'opera_id_ascending', 'weights': 'equal',
+                               'accumulator_dtype': 'float64', 'result_dtype': 'float32'},
+                    'output': {'backscatter_domain': 'dB', 'count_band': 'n_contributors',
+                               'clip_after_features': bool(tile_clip)},
+                }
+                _g_group['n_contributors'].attrs['description'] = (
+                    'Number of jointly valid positive VV/VH burst pairs; equal linear-power weights. '
+                    'Zero means no contribution. This is not a temporal observation count.')
 
         _cog_name = (
             f"s1grits_scenes_{mgrs_tile_id}_{direction_label}_"
@@ -860,7 +917,7 @@ def _write_scenes_output(
             f"TK{_track_tok}_{dt_str}.png"
         )
         cog_relpath, preview_relpath = _export_scene_cog_preview_from_zarr(
-            _g_group, _time_index, [b for b in _band_names if b != 'n_contributors'], transform,
+            _g_group, _time_index, [b for b in _band_names if b not in ('n_contributors', 'n_candidates', 'source_index')], transform,
             int(height), int(width), target_crs, tile_clip, mgrs_tile_id,
             generate_cog, generate_preview,
             scenes_cog_dir / _cog_name, scenes_png_dir / _png_name,

@@ -138,7 +138,7 @@ def _build_stac_item(
                 "spectral": {
                     "type": "bands",
                     "values": (variant_properties.get('s1grits:bands')
-                               if 'n_contributors' in (variant_properties.get('s1grits:bands') or [])
+                               if any(b in (variant_properties.get('s1grits:bands') or []) for b in ('n_contributors', 'source_index'))
                                else bands),
                 },
             },

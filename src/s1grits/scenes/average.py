@@ -14,26 +14,26 @@ def validate_intra_pass_config(config: dict) -> str:
     if not isinstance(options, dict) or set(options) - {"method"}:
         raise ValueError("processing.intra_pass_mosaic accepts only method")
     method = options.get("method", "first_valid_pixel")
-    if method not in ("first_valid_pixel", "average"):
-        raise ValueError("intra_pass_mosaic.method must be first_valid_pixel or average")
+    if method not in ("first_valid_pixel", "average", "bursts_center"):
+        raise ValueError("intra_pass_mosaic.method must be first_valid_pixel, average or bursts_center")
     if method == "first_valid_pixel":
         return method
     resolution = float(processing.get("target_resolution", 30))
     resampling = resolve_resampling_method(resolution, processing.get("resampling_method", "auto"))
     if resolution != 30 or resampling != "nearest":
-        raise ValueError("average requires 30 m and nearest resampling")
+        raise ValueError(f"{method} requires 30 m and nearest resampling")
     if config.get("roi", {}).get("polarization", "VV+VH") != "VV+VH":
-        raise ValueError("average requires paired VV+VH")
+        raise ValueError(f"{method} requires paired VV+VH")
     if config.get("roi", {}).get("flight_direction") not in ('ASCENDING', 'DESCENDING'):
-        raise ValueError("average requires one explicit roi.flight_direction: ASCENDING or DESCENDING")
+        raise ValueError(f"{method} requires one explicit roi.flight_direction: ASCENDING or DESCENDING")
     if processing.get("spatial_despeckle", False):
-        raise ValueError("average currently requires spatial_despeckle=false")
+        raise ValueError(f"{method} currently requires spatial_despeckle=false")
     monthly = processing.get("monthly", {})
     if monthly.get("enabled", False) or monthly.get("only", False):
-        raise ValueError("average monthly composites are not implemented; disable processing.monthly")
+        raise ValueError(f"{method} monthly composites are not implemented; disable processing.monthly")
     static = config.get("static_layers", {})
     if static.get("run_after_scenes", False):
-        raise ValueError("average currently excludes static post-processing")
+        raise ValueError(f"{method} currently excludes static post-processing")
     return method
 
 

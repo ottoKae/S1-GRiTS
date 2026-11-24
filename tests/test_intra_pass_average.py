@@ -210,7 +210,8 @@ def test_exports(tmp_path):
         assert 'n_contributors' not in [b['name'] for b in item['assets']['cog']['eo:bands']]
 
 
-def test_flow(tmp_path, monkeypatch):
+@pytest.mark.parametrize('method', ['average', 'bursts_center'], ids=['a', 'c'])
+def test_flow(tmp_path, monkeypatch, method):
     import yaml
     from s1grits import workflow_scenes as workflow
     from s1grits.scenes import pipeline
@@ -247,7 +248,7 @@ def test_flow(tmp_path, monkeypatch):
     config = {
         'roi': {'flight_direction': 'ASCENDING', 'polarization': 'VV+VH'},
         'output': {'base_dir': str(root), 'formats': {'cog': False, 'preview': False}},
-        'processing': {'intra_pass_mosaic': {'method': 'average'}, 'tile_clip': False,
+        'processing': {'intra_pass_mosaic': {'method': method}, 'tile_clip': False,
                        'zarr_chunks': {'y': 2, 'x': 3}, 'incomplete_acquisition': 'write'},
         'memory': {'batch_strategy': 'monthly', 'batch_max_retries': 0, 'clear_cache_per_batch': False},
         'query': {'footprint_lookback_months': 0}, 'runtime': {'enabled': False},
@@ -258,7 +259,7 @@ def test_flow(tmp_path, monkeypatch):
         path.write_text(yaml.safe_dump(config))
         result = workflow.run_scenes_workflow(path)
         assert result['17MPU']['status'] == 'success', result
-    derived = root/'derived/intra_pass_average'
+    derived = root/'derived'/f'intra_pass_{method}'
     assert len(calls) == 3
     for catalog_path in (derived/'catalog.parquet', derived/'17MPU/catalog.parquet'):
         catalog = pd.read_parquet(catalog_path)
@@ -267,8 +268,9 @@ def test_flow(tmp_path, monkeypatch):
         for record in catalog.to_dict('records'):
             assert list(record['opera_ids']) == ['O0', 'O3']
             group = zarr.open_group(str(derived/'17MPU'/record['zarr_path']), mode='r')
-            np.testing.assert_allclose(group['VV_dB'][:], 10*np.log10(4), atol=1e-6)
-            np.testing.assert_array_equal(group['n_contributors'][:], np.full((1, 2, 3), 2))
+            np.testing.assert_allclose(group['VV_dB'][:], 10*np.log10(4) if method=='average' else 0, atol=1e-6)
+            count_band = 'n_contributors' if method=='average' else 'n_candidates'
+            np.testing.assert_array_equal(group[count_band][:], np.full((1, 2, 3), 2))
     assert not (root/'catalog.parquet').exists()
     assert (root/'mainline.txt').read_text() == 'preserve'
     from s1grits.analysis.catalog import resync_catalog_from_filesystem

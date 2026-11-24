@@ -136,7 +136,7 @@ def _init_zarr_2band(
         # unwritten blocks read back as 0 by the same mechanism.
         if var == N_OBS_BAND:
             _dtype, _fill = 'uint8', 0
-        elif var == 'n_contributors':
+        elif var in ('n_contributors', 'n_candidates', 'source_index'):
             _dtype, _fill = 'uint32', 0
         else:
             _dtype, _fill = 'float32', np.nan
