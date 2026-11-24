@@ -10,7 +10,7 @@ dependencies:
   - pip
 
   # Geospatial core (conda-forge binaries; do not use pip for these)
-  - rasterio
+  - rasterio>=1.4.4
   - geopandas
   - rioxarray
   - pyproj
