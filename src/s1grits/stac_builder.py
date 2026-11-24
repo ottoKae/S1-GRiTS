@@ -220,6 +220,18 @@ def _resolve_bands(record: dict, output_root: str, polarization: str) -> list[st
     return _band_values(polarization)
 
 
+def _catalog_monthly_method(record: dict) -> str | None:
+    """Historical records without a reducer declaration remain unknown."""
+    from s1grits.config_schema import monthly_method_name
+    variant = record.get("processing_variant_json")
+    if isinstance(variant, str):
+        variant = json.loads(variant)
+    if not isinstance(variant, dict):
+        return None
+    method = variant.get("processing.monthly.composite_method") or variant.get("processing.composite_method")
+    return monthly_method_name(method) if method else None
+
+
 def build_stac_item_dict(
     record: dict,
     output_root: str,
@@ -401,7 +413,7 @@ def build_stac_item_dict(
             "sat:relative_orbit": record.get("track"),
             "sat:absolute_orbit": record.get("pass_id"),
             "s1:processing_level": record.get("processing_level", "hARDCp"),
-            "s1:monthly_composite": "median" if output_type in ("monthly", "smonthly") else None,
+            "s1:monthly_composite": _catalog_monthly_method(record) if output_type in ("monthly", "smonthly") else None,
             "s1:despeckle": record.get("processing_level") != "ARDC",
             # Track-level join key: static geometry layers are auxiliary
             # variables of the scenes/smonthly cube sharing this geometry group.
