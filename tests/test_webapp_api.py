@@ -253,6 +253,32 @@ def test_job_failure_and_unknown_type(workspace):
         jm.submit("process_scenes", config_text="not: [valid")
 
 
+def test_job_log_pagination_and_append(workspace):
+    jm = JobManager(workspace, cmd_prefix=_stub_cli())
+    job = jm.submit("catalog_resync")
+    _wait(jm, job.id)
+    path = job.job_dir / "log.txt"
+    expected = [f"line {i} 中文" for i in range(1200)]
+    original = ("\n".join(expected) + "\n").encode("utf-8")
+    path.write_bytes(original)
+    after = 0
+    received = []
+    for count in (500, 500, 200, 0):
+        page = jm.log(job.id, after=after, limit=500)
+        assert len(page["lines"]) == count
+        assert page["next"] == after + count
+        received.extend(page["lines"])
+        after = page["next"]
+    assert received == expected
+    assert path.read_bytes() == original
+    with path.open("ab") as fp:
+        fp.write("added\n".encode())
+    assert jm.log(job.id, after=after)["lines"] == ["added"]
+    path.write_bytes(b"")
+    assert jm.log(job.id)["next"] == 0
+    assert jm.log(job.id, after=2000)["next"] == 2000
+
+
 def test_job_cancel(workspace):
     jm = JobManager(workspace, cmd_prefix=_stub_cli(ok=True, slow=True))
     job = jm.submit("process_scenes", config_text="workflow: scenes\n")
