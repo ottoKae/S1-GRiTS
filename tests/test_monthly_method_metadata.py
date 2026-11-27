@@ -10,6 +10,7 @@ from rasterio.transform import Affine
 from s1grits.scenes.smonthly_writer import _write_smonthly_one_track
 from s1grits.stac_builder import set_stac_output_enabled, stac_output_enabled
 from s1grits.stac_builder import build_stac_item_dict
+from test_incremental_resume_grid import hashes
 
 
 def monthly_inputs(tile_dir, method):
@@ -73,3 +74,46 @@ def test_workflow_rejects_bad_method_before_query_or_output(tmp_path):
     with pytest.raises(ValueError, match='Unknown monthly'):
         run_scenes_workflow(path)
     assert not (tmp_path/'out').exists()
+
+
+@pytest.mark.parametrize('append', [False, True])
+@pytest.mark.parametrize('conflict', ['skip', 'overwrite'])
+def test_method_change_never_relabels_existing_months(tmp_path, append, conflict):
+    _write_smonthly_one_track(**monthly_inputs(tmp_path, 'median'))
+    before = hashes(tmp_path)
+    request = monthly_inputs(tmp_path, 'mean')
+    request['on_time_conflict'] = conflict
+    if append:
+        request['clean_dates'] = [stamp + pd.DateOffset(months=1) for stamp in request['clean_dates']]
+        request['df_batch']['acq_dt'] = request['clean_dates']
+    with pytest.raises(ValueError, match='processing identity'):
+        _write_smonthly_one_track(**request)
+    assert hashes(tmp_path) == before
+
+
+def test_same_method_skip_and_append_preserve_identity(tmp_path):
+    _write_smonthly_one_track(**monthly_inputs(tmp_path, 'median'))
+    path = next(tmp_path.glob('smonthly_*/zarr/*.zarr'))
+    group = zarr.open_group(str(path), mode='r')
+    first = group['VV_dB'][:]
+    signature = group.attrs['processing_signature']
+    _write_smonthly_one_track(**monthly_inputs(tmp_path, 'median'))
+    request = monthly_inputs(tmp_path, 'median')
+    request['clean_dates'] = [stamp + pd.DateOffset(months=1) for stamp in request['clean_dates']]
+    request['df_batch']['acq_dt'] = request['clean_dates']
+    _write_smonthly_one_track(**request)
+    group = zarr.open_group(str(path), mode='r')
+    assert group['time'].shape == (2,)
+    assert group.attrs['processing_signature'] == signature
+    np.testing.assert_array_equal(group['VV_dB'][0:1], first)
+    np.testing.assert_array_equal(group['VV_dB'][1:2], first)
+
+
+def test_unknown_historical_identity_is_not_relabelled(tmp_path):
+    _write_smonthly_one_track(**monthly_inputs(tmp_path, 'median'))
+    group = zarr.open_group(str(next(tmp_path.glob('smonthly_*/zarr/*.zarr'))), mode='r+')
+    del group.attrs['processing_signature']
+    before = hashes(tmp_path)
+    with pytest.raises(ValueError, match='unknown'):
+        _write_smonthly_one_track(**monthly_inputs(tmp_path, 'median'))
+    assert hashes(tmp_path) == before

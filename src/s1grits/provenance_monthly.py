@@ -26,8 +26,11 @@ from .provenance_contract import (
     canonical_json, validate_numeric_processing, validate_numeric_sources, validate_records,
 )
 from .provenance_production import ProductionRun
+from .product_instance import make_processing_signature
 from .resampling import rasterio_resampling, validate_target_resolution
-from .scenes.smonthly_writer import _monthly_output_months, _write_smonthly_one_track
+from .scenes.smonthly_writer import (
+    _check_monthly_identity, _monthly_output_months, _monthly_variant_values, _write_smonthly_one_track,
+)
 
 
 def _json_value(value):
@@ -386,6 +389,7 @@ def _write_tracked_monthly_locked(dataset_root, dataset_id, run_id, *, writer_kw
     run = ProductionRun(root, dataset_id, run_id, request=request)
     if run.completed:
         return run.recover()
+    _check_monthly_identity(_relative(root, store), make_processing_signature(_monthly_variant_values(kwargs)))
     if exists and kwargs["on_time_conflict"] == "skip":
         if run.pending_path.exists():
             raise ValueError("pending write without a durable receipt cannot be skipped")
