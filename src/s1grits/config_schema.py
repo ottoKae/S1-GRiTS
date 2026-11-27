@@ -182,6 +182,17 @@ def _walk(cfg: dict, schema: dict, prefix: str, problems: list[str]) -> None:
             _walk(val, sub, f"{path}.", problems)
 
 
+def monthly_method_name(method: str | None) -> str:
+    """Validate a monthly reducer and return its metadata name."""
+    name = str(method or "median").lower()
+    names = {"median": "median", "nanmedian": "median", "mean": "mean",
+             "nanmean": "mean", "min": "min", "nanmin": "min",
+             "trimmed_mean": "trimmed_mean"}
+    if name not in names:
+        raise ValueError(f"Unknown monthly composite method: {method!r}; choose {', '.join(names)}")
+    return names[name]
+
+
 def find_unknown_config_keys(config: dict) -> list[str]:
     """Return warning strings for keys the workflows never read."""
     problems: list[str] = []

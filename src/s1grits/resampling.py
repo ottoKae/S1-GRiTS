@@ -4,6 +4,8 @@ Sentinel-1 RTC backscatter is a continuous field.  When a 10 m analysis grid
 is requested, cross-grid reprojection is therefore performed with GDAL's
 NoData-aware bilinear kernel while the values are still in linear power.
 Categorical layers must opt out and use nearest-neighbour resampling.
+Nearest-neighbour warps use exact coordinate transformations (tolerance=0)
+so prealignment and blockwise reads select the same source pixels.
 """
 from __future__ import annotations
 
@@ -39,7 +41,7 @@ def resolve_resampling_method(
 ) -> str:
     """Resolve ``auto`` to the stable v1 interpolation contract.
 
-    * 30 m continuous products preserve the historical nearest-neighbour path.
+    * 30 m continuous products use nearest-neighbour with exact coordinates.
     * 10 m continuous products use bilinear interpolation.
     * categorical products always use nearest-neighbour interpolation.
     """

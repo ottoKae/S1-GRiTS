@@ -257,6 +257,10 @@ def run_scenes_workflow(config_path: str | Path, overrides: dict | None = None) 
     )
     config = load_config(config_path)
     config = apply_output_overrides_and_stac(config, overrides)
+    from s1grits.config_schema import monthly_method_name
+    _monthly = config.get('processing', {}).get('monthly', {})
+    if _monthly.get('enabled', False):
+        monthly_method_name(_monthly.get('composite_method'))
     from s1grits.provenance_workflow import (
         start_tracking_locked, validate_tracking_config,
     )

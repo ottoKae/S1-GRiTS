@@ -690,3 +690,68 @@ def test_frontend_exposes_subset_selection_shapefile_and_recovery(cn_client):
     referenced_ids = set(re.findall(r"\$\('([^']+)'\)", script))
     html_ids = set(re.findall(r'id="([^"]+)"', html))
     assert referenced_ids <= html_ids
+
+
+@pytest.fixture()
+def log_job(cn_client):
+    jobs = cn_client.app.state.jobs
+    job = jobs.submit("catalog_resync")
+    deadline = time.monotonic() + 10
+    while job.status in {"queued", "running"} and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert job.status == "success"
+    return job.job_dir / "log.txt", f"/api/tasks/{job.id}/log"
+
+
+@pytest.mark.parametrize("limit", [1, 2, 3, 4, 5, 7, 16])
+def test_task_log_utf8_pages_preserve_bytes(cn_client, log_job, limit):
+    path, url = log_job
+    original = "ASCII\r\n中文🌍记录\n🚀done\n".encode("utf-8")
+    path.write_bytes(original)
+    offset = 0
+    received = []
+    while offset < len(original):
+        response = cn_client.get(url, params={"format": "json", "offset": offset, "limit": limit})
+        assert response.status_code == 200
+        page = response.json()
+        assert page["offset"] == offset
+        assert offset < page["next_offset"] <= offset + limit + 3
+        assert page["size"] == len(original)
+        received.append(page["text"])
+        offset = page["next_offset"]
+    assert "".join(received).encode("utf-8") == original
+    assert path.read_bytes() == original
+    assert cn_client.get(url).content == original
+    eof = cn_client.get(url, params={"format": "json", "offset": offset}).json()
+    assert eof["next_offset"] == offset and eof["text"] == ""
+
+
+def test_task_log_partial_character_waits_for_append(cn_client, log_job):
+    path, url = log_job
+    emoji = "🌍".encode("utf-8")
+    path.write_bytes(b"ok" + emoji[:2])
+    page = cn_client.get(url, params={"format": "json"}).json()
+    assert page["text"] == "ok" and page["next_offset"] == 2
+    for _ in range(2):
+        page = cn_client.get(url, params={"format": "json", "offset": 2, "limit": 1}).json()
+        assert page["text"] == "" and page["next_offset"] == 2
+    with path.open("ab") as fp:
+        fp.write(emoji[2:] + b"\n")
+    page = cn_client.get(url, params={"format": "json", "offset": 2, "limit": 1}).json()
+    assert page["text"] == "🌍" and page["next_offset"] == 6
+
+
+def test_task_log_tail_unaligned_offset_and_missing(cn_client, log_job):
+    path, url = log_job
+    original = "A中🌍B".encode("utf-8")
+    path.write_bytes(original)
+    tail = cn_client.get(url, params={"format": "json", "tail": True, "limit": 3}).json()
+    assert tail["text"] == "B" and tail["offset"] == 8 and tail["next_offset"] == 9
+    middle = cn_client.get(url, params={"format": "json", "offset": 2, "limit": 1}).json()
+    assert middle["offset"] == 4 and middle["text"] == "🌍" and middle["next_offset"] == 8
+    past = cn_client.get(url, params={"format": "json", "offset": 100}).json()
+    assert past["offset"] == past["next_offset"] == 9 and past["text"] == ""
+    assert path.read_bytes() == original
+    path.unlink()
+    empty = cn_client.get(url, params={"format": "json"}).json()
+    assert empty["size"] == empty["next_offset"] == 0 and empty["text"] == ""

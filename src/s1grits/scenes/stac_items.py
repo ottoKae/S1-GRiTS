@@ -290,6 +290,7 @@ def _write_monthly_stac_item(
     primary_track: int | None = None,
     track_coverage: list[dict] | None = None,
     item_id_override: str | None = None,
+    composite_method: str = "median",
 ) -> str:
     """
     Write a STAC Item JSON for one monthly composite.
@@ -304,7 +305,9 @@ def _write_monthly_stac_item(
     datetime_str = f"{month_str}-01T00:00:00Z"
 
     variant_properties = {
-        "s1:monthly_composite": "median",
+        "s1:monthly_composite": composite_method,
+        "s1grits:composite_domain": "linear_power",
+        "s1grits:composite_input": "unfiltered_acquisition_mosaics",
         "s1grits:primary_track": primary_track,
         "s1grits:track_coverage": track_coverage,
         **({"s1grits:product_variant": product_variant} if product_variant else {}),
