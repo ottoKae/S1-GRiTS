@@ -16,6 +16,8 @@ Web 表单将所选参数交给同一 CLI：生产保存 YAML，工具保存 req
 
 ## 新用户从哪里开始
 
+下面的具名 skill 示例适用于已安装对应 skill 的环境。新克隆仓库或只安装 wheel 的用户，可以直接让 Agent 先阅读本文及对应命令指南，再通过同一 CLI 执行；无需先安装一个未提供的 skill 包。可用性和版本核对见文末。
+
 没有 Cube、准备生产数据时，向 Agent 提供区域、时间范围、升降轨方向、需要的产品和输出目录。例如：
 
 > 使用 s1grits-cube，为指定瓦片生成 2026 年 1 月的升轨月产品。先生成并检查 YAML，输出到我指定的新目录。
@@ -56,10 +58,17 @@ python -m s1grits catalog inspect --output-dir /data/output
 父版本改变时旧视图需要明确处理；缺 generation 的父数据只提供元数据检查，不能保证发现像元原位修改。
 本地 CCDC 尚未实现；本地 LT-rs／CUSUM 依赖另装的实验后端，不能因缺少依赖自动改用 GEE。
 
-## Skills 的安装与维护
+## Skills 的可用性、版本与维护
 
 当前规范源位于工作区 `.agents/skills/s1grits-cube/` 与 `.agents/skills/s1grits-analysis/`。
-它们不属于 Python wheel 的自动安装内容；修改后，Agent 的发现列表可能需要新会话才刷新。
-公开交付的技能应由规范源生成并记录哈希，不维护另一份可编辑副本。没有 Agent 的用户可以完整使用相同 CLI／Python 能力。
+这两个目录不在本软件仓库中，Python wheel 也不会安装它们；当前仓库未提供其公开安装包。工作区已安装的 skill 可直接使用，修改后 Agent 的发现列表可能需要新会话才刷新。
+
+公开用户现阶段可以：
+
+- 让 Agent 读取本文、[入口支持矩阵](entry_points.md)和当前命令 `--help`，执行相同任务。
+- 直接使用 CLI／Python／Web；已有 Cube 从[小样本教程](getting_started_existing_cube_ZH.md)开始。
+- 数据交接任务可直接指定本仓库的 [s1-data-handoff](../agents/skills/s1-data-handoff/SKILL.md)；它链接到同一公开交接指南，自动发现取决于 Agent 配置。
+
+本文和两类通用 skill 对应 V4.0.0 候选功能。执行前核对 `python -m s1grits --version`、`s1grits.__file__` 和所需子命令帮助；V3 安装不因能读取 skill 就具备 V4 功能。未来公开导出应从上述规范源生成，随导出记录源码哈希及适用的软件版本，不另维护可编辑副本。
 
 本轮操作验收包含真实单景小窗口的视图／物化重放，以及受控离线 COG 的配置／生产入口／续跑；后者不等同于在线下载或大规模生产验收。

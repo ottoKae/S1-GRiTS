@@ -4,6 +4,36 @@
 
 S1-GRiTS generates **analysis-ready data products** in three formats: Zarr (primary), COG (optional), and Preview PNG (optional).
 
+### Current production layout
+
+The scenes workflow writes `scenes` and, when enabled, per-track `smonthly`
+products. The standalone `monthly` workflow was removed in V3; its
+`{TILE}_{DIR}/zarr/S1_monthly.zarr` layout below is retained only as a legacy reference.
+
+```text
+{base_dir}/
+  catalog.parquet
+  {TILE}/
+    catalog.parquet
+    {scenes_product_label}/zarr/s1grits_scenes_{TILE}_{DIR}_TK{track}.zarr/
+    {smonthly_product_label}/zarr/s1grits_smonthly_{TILE}_{DIR}_TK{track}.zarr/
+    static_{DIR}/zarr/<static-store>.zarr/
+```
+
+For the default mosaic strategy, the scene label is `scenes_{DIR}` plus optional
+filter and feature suffixes; the monthly label is `smonthly_{DIR}` plus feature
+suffixes. For example, Ratio enabled without spatial filtering gives
+`scenes_DESCENDING_Ratio` and `smonthly_DESCENDING_Ratio`. Optional intra-pass
+strategies add their method and processing signature to the scene label.
+Use the Catalog's `product_label`, `zarr_path` and `item_id` to locate a selected
+instance rather than constructing paths from a filename template.
+
+Within each product directory, optional exports use sibling `cog/` and `preview/`
+directories. `TK{track}` identifies the relative orbit track; changing burst counts
+are provenance and do not split a scene/monthly time series into new stores.
+Static outputs are present only when requested. Production writes Parquet catalogs
+and product metadata; STAC files require the explicit export described below.
+
 ### Resuming existing Zarr products
 
 Resume requires the stored CRS, affine transform and pixel coordinates to match
@@ -65,7 +95,11 @@ When `processing.texture_features.enabled: true`, additional texture metrics are
 
 ### Zarr Data Cube Specifications
 
-#### Monthly Workflow Zarr
+#### Legacy standalone Monthly Workflow Zarr
+
+This Zarr v2 layout and the following example describe historical `monthly`
+products, not the current per-track `smonthly` writer. Keep existing archives
+readable; use the current layout above for new production.
 
 **Path:** `{base_dir}/{TILE}_{DIR}/zarr/S1_monthly.zarr`
 
@@ -120,12 +154,12 @@ print(ds)
 
 #### Scenes Workflow Zarr
 
-**Path:** `{base_dir}/{TILE}/scenes_{DIR}_{bands}/zarr/s1grits_scenes_{TILE}_{DIR}_TK{track}.zarr`
+**Path:** `{base_dir}/{TILE}/{scenes_product_label}/zarr/s1grits_scenes_{TILE}_{DIR}_TK{track}.zarr`
 
 **Per-Track Organization:**
 - Each acquisition group (track) produces **one Zarr store**
 - Time dimension accumulates all acquisitions for that track
-- Perfect spatial alignment within each track
+- A shared CRS, affine transform and pixel grid within each store; this does not guarantee subpixel registration
 
 **Example:**
 ```
@@ -137,6 +171,16 @@ print(ds)
       ├── Dimensions: (time: 4, y: 3660, x: 3660)
       └── Acquisitions: 2026-01-02, 01-08, 01-14, 01-20
 ```
+
+#### Per-track Monthly (`smonthly`) Zarr
+
+**Path:** `{base_dir}/{TILE}/{smonthly_product_label}/zarr/s1grits_smonthly_{TILE}_{DIR}_TK{track}.zarr`
+
+Enable `processing.monthly.enabled` in the scenes configuration. Each store keeps
+one track's monthly time series, with `(time, y, x)` science arrays and the
+Zarr-only `n_obs` support band. `processing.monthly.only` can omit scene outputs.
+Current scenes and smonthly writers create Zarr v3 stores (`zarr.json` metadata),
+unlike the historical `.zgroup`/`.zarray` example above.
 
 #### Static Workflow Zarr
 
@@ -170,7 +214,13 @@ sharing the dynamic data root and Catalog.
 
 **Naming Conventions:**
 
-**Monthly workflow:**
+**Current per-track monthly products:**
+```
+s1grits_smonthly_{TILE}_{DIR}_TK{track}_{YYYY-MM}.tif
+Example: s1grits_smonthly_17MQV_DESCENDING_TK142_2026-01.tif
+```
+
+**Legacy standalone monthly workflow:**
 ```
 {TILE}_S1_Monthly_{DIR}_{YYYY-MM}.tif
 Example: 17MPV_S1_Monthly_ASCENDING_2024-01.tif
@@ -178,8 +228,8 @@ Example: 17MPV_S1_Monthly_ASCENDING_2024-01.tif
 
 **Scenes workflow:**
 ```
-s1grits_scenes_{TILE}_{DIR}_TK{track}_{DATE}.tif
-Example: s1grits_scenes_17MQV_DESCENDING_TK142_20260103.tif
+s1grits_scenes_{TILE}_{DIR}_TK{track}_{YYYYMMDDTHHMMSS}.tif
+Example: s1grits_scenes_17MQV_DESCENDING_TK142_20260103T120000.tif
 ```
 
 **Static workflow:**
@@ -203,11 +253,21 @@ Example: 17MQV_DESCENDING_TK142_N07_local_inc_angle.tif
 
 **File Size:** ~1-2 MB per tile per month
 
-### STAC Metadata
+### Optional STAC Export
 
-S1-GRiTS auto-generates **STAC 1.1.0**-compliant metadata kept in sync with Parquet catalogs.
+Default production output is a hierarchical product directory with Parquet catalogs
+and provenance metadata. It is not automatically a STAC directory. Export STAC from
+the existing products explicitly:
 
-**Standard:** STAC 1.1.0 + DataCube extension v2.3.0
+```bash
+s1grits catalog resync --output-dir ./output
+```
+
+The exporter declares **STAC 1.1.0**, with the DataCube v2.3.0 extension on Items.
+The JSON paths below describe this explicit export, not files promised by every
+production run. Check the export diagnostics and actual assets before distributing
+a catalog. The optional GeoParquet export stores Items in
+`collections/{collection_id}/items.parquet` instead of individual JSON files.
 
 #### Root Catalog
 
@@ -230,7 +290,7 @@ S1-GRiTS auto-generates **STAC 1.1.0**-compliant metadata kept in sync with Parq
     },
     {
       "rel": "child",
-      "href": "./collections/s1grits-monthly/collection.json",
+      "href": "./collections/s1grits-smonthly/collection.json",
       "type": "application/json",
       "title": "S1-GRiTS Monthly Composites"
     },
@@ -246,7 +306,8 @@ S1-GRiTS auto-generates **STAC 1.1.0**-compliant metadata kept in sync with Parq
 
 #### Collections
 
-**Monthly:** `collections/s1grits-monthly/collection.json`
+**Per-track monthly:** `collections/s1grits-smonthly/collection.json`
+**Legacy monthly:** `collections/s1grits-monthly/collection.json` (if present)
 **Scenes:** `collections/s1grits-scenes/collection.json`
 **Static:** `collections/s1grits-static/collection.json`
 
@@ -254,21 +315,22 @@ Each collection defines:
 - Spatial extent (all tiles combined)
 - Temporal extent (date range)
 - License and providers
-- Datacube dimensions and variables
+- Product summaries; datacube dimensions and variables are declared on Items
 
 #### STAC Items
 
 **One Item per product:**
-- Monthly: One Item per tile × direction × month
+- Per-track monthly: One Item per tile × direction × track × month × product variant
 - Scenes: One Item per tile × direction × acquisition date × track
 - Static: One Item per tile × direction × track (no temporal info)
 
 **Item paths:**
 ```
-{TILE}/items/scenes_{DIR}_{bands}/{TILE}_{DIR}_{DATE}.json
-{TILE}/items/smonthly_{DIR}_{bands}/{TILE}_{DIR}_{YYYY-MM}.json
-{TILE}/items/static_{DIR}/{TILE}_{DIR}_TK{track}_N{bursts}_static.json
+{TILE}/items/{product_label}/{item_id}.json
 ```
+
+Use the exported Catalog's `item_path` for the exact filename. Historical and
+optional strategy products can have different identity suffixes.
 
 **Assets in each Item:**
 - `zarr`: Link to Zarr store (primary asset)
@@ -283,16 +345,16 @@ Fast metadata queries without loading full STAC JSON.
 
 **Path:** `{base_dir}/catalog.parquet`
 
-**Schema:** 30 columns including:
+**Schema:** The versioned canonical schema includes:
 - `tile_id`: MGRS tile identifier
-- `direction`: ASCENDING or DESCENDING
+- `flight_direction`: ASCENDING or DESCENDING
 - `datetime`: Acquisition or composite date
-- `product_type`: scenes, monthly, static
+- `product_type`: scenes, smonthly, static (and legacy monthly)
 - `zarr_path`: Path to Zarr store
 - `cog_path`: Path to COG file
-- `geometry`: Tile bounding box (WKT)
-- `bands`: List of band names
-- `spatial_resolution`: 30.0
+- `bands`: JSON-encoded list of band names
+- `crs`, `transform`, `width`, `height`: Product grid
+- `resolution_x`, `resolution_y`: Pixel size
 - `processing_level`: ARDC or hARDCp
 
 **Query example:**
@@ -304,14 +366,15 @@ df = pd.read_parquet("output/catalog.parquet")
 jan_2024 = df[(df['datetime'] >= '2024-01-01') & (df['datetime'] < '2024-02-01')]
 
 # Find all ASCENDING data for tile 17MPV
-tile_data = df[(df['tile_id'] == '17MPV') & (df['direction'] == 'ASCENDING')]
+tile_data = df[(df['tile_id'] == '17MPV') & (df['flight_direction'] == 'ASCENDING')]
 ```
 
 #### Tile-Level Catalog
 
-**Path:** `{base_dir}/{TILE}/catalog.parquet` or `{base_dir}/{TILE}_{DIR}/catalog.parquet`
+**Current path:** `{base_dir}/{TILE}/catalog.parquet`; historical archives may use
+`{base_dir}/{TILE}_{DIR}/catalog.parquet`.
 
-Same schema as global catalog, but filtered to single tile/direction.
+Same schema as the global catalog, limited to the products in that tile directory.
 
 **Purpose:**
 - Faster queries for single-tile analysis
@@ -320,7 +383,10 @@ Same schema as global catalog, but filtered to single tile/direction.
 
 ### Complete Directory Trees
 
-#### Monthly Workflow
+#### Legacy standalone Monthly Workflow (historical reference)
+
+This complete tree illustrates an older archive with STAC files. It is not the
+directory template for new scenes or smonthly production.
 
 ```
 output/
@@ -354,7 +420,11 @@ output/
     └── ...                                   # Separate directory per orbit
 ```
 
-#### Scenes Workflow
+#### Current Scenes Workflow with Optional Monthly and STAC Outputs
+
+This example enables Ratio without spatial filtering. `catalog.json`,
+`collections/` and `items/` appear only after the explicit JSON STAC export;
+`cog/`, `preview/` and monthly outputs depend on the requested configuration.
 
 ```
 output/
@@ -371,14 +441,13 @@ output/
 │   │   │   │   ├── Ratio/ (time, y, x)      # All acquisitions for track 142
 │   │   │   │   ├── VV_dB/ (time, y, x)
 │   │   │   │   ├── VH_dB/ (time, y, x)
-│   │   │   │   ├── RVI/ (time, y, x)
 │   │   │   │   └── time/ [2026-01-03, 2026-01-09, ...]
 │   │   │   └── s1grits_scenes_17MQV_DESCENDING_TK40.zarr/
 │   │   │       └── ...                       # All acquisitions for track 40
 │   │   ├── cog/
-│   │   │   ├── s1grits_scenes_17MQV_DESCENDING_TK142_20260103.tif
-│   │   │   ├── s1grits_scenes_17MQV_DESCENDING_TK142_20260109.tif
-│   │   │   ├── s1grits_scenes_17MQV_DESCENDING_TK40_20260102.tif
+│   │   │   ├── s1grits_scenes_17MQV_DESCENDING_TK142_20260103T120000.tif
+│   │   │   ├── s1grits_scenes_17MQV_DESCENDING_TK142_20260109T120000.tif
+│   │   │   ├── s1grits_scenes_17MQV_DESCENDING_TK40_20260102T120000.tif
 │   │   │   └── ...
 │   │   └── preview/
 │   │       └── ...
@@ -392,10 +461,10 @@ output/
 │   │       └── ...
 │   └── items/
 │       ├── scenes_DESCENDING_Ratio/
-│       │   ├── 17MQV_DESCENDING_20260103.json
+│       │   ├── <scene_item_id>.json
 │       │   └── ...
 │       └── smonthly_DESCENDING_Ratio/
-│           ├── 17MQV_DESCENDING_2026-01.json
+│           ├── <monthly_item_id>.json
 │           └── ...
 └── ...
 ```

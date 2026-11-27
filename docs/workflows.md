@@ -39,6 +39,11 @@ Produce per-acquisition scene outputs suitable for:
 
 #### Output Structure
 
+The tree includes optional STAC exports. Production writes Parquet catalogs and
+product metadata; `catalog.json`, `collections/` and `items/` are created by an
+explicit `s1grits catalog resync --output-dir <base_dir>`. See
+[current output layout](outputs.md) for product labels and historical layouts.
+
 ```
 {base_dir}/
   catalog.json

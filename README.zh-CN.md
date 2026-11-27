@@ -12,7 +12,7 @@
 </p>
 <p align="center"><a href="README.md">English</a> | <strong>简体中文</strong></p>
 <p align="center">
-  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.12+-blue.svg" /></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.12-blue.svg" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20NC-green.svg" /></a>
   <a href="https://github.com/ottoKae/S1-GRiTS"><img src="https://img.shields.io/badge/version-4.0.0-orange.svg" /></a>
 </p>
@@ -22,6 +22,8 @@
 <p align="center">
   S1-GRiTS（Sentinel-1 Gridded RTC Time Series）是一个 Python 软件包，用于从 ASF OPERA RTC-S1 产品构建可直接分析的 Sentinel-1 SAR 时序数据立方体。它将 burst 级观测转换为按 MGRS 对齐、时间一致的 Zarr 数据立方体，并可按需导出 COG。
 </p>
+
+新环境先看[安装指南](docs/installation.md)，使用已有 Cube 先看[本地小样本教程](docs/getting_started_existing_cube_ZH.md)，选择 CLI、Python、Web 或 Agent 请看[入口与支持范围](docs/entry_points.md)。本分支对应 **V4.0.0 开发候选**，版本徽章不代表 PyPI 已发布 V4；使用前核对实际安装版本和命令帮助。
 
 ## 已有数据的实验使用与交接
 
@@ -136,10 +138,10 @@ S1-GRiTS 面向需要开展大范围、长时序 SAR 分析，同时希望避免
 6. **标准化 Gamma0 辐射量**：基于经过辐射地形校正的 OPERA RTC-S1。
 7. **双重斑点抑制**：时间中值合成与可选 TV-Bregman 空间滤波。
 8. **时序增量更新**：新数据追加到 Zarr，无需重建历史数据。
-9. **STAC 1.1.0 元数据**：配合 Parquet 目录实现快速检索。
+9. **分层目录与元数据溯源**：使用 Parquet 目录快速检索，通过 [`catalog resync`](docs/cli.md#resync-catalog) 显式导出 STAC。
 10. **分析 API**：提供数据读取、时间序列提取、可视化和验证等模块。
 
-**典型应用：** 长期形变监测、农作物分类、森林变化检测、洪涝灾害评估、土地利用与覆盖制图。
+**典型应用：** 长期后向散射变化监测、农作物分类、森林变化检测、洪涝灾害评估、土地利用与覆盖制图。
 
 ![MGRS 镶嵌示例](notebooks/S1-GRiTS-f1-exmaple.png)
 **图 1：** 中国武汉地区的 burst 优先 MGRS 格网镶嵌。
@@ -154,8 +156,10 @@ S1-GRiTS 面向需要开展大范围、长时序 SAR 分析，同时希望避免
 
 ## 快速开始
 
+下面的安装命令获取已发布的软件包；体验本分支的 V4 候选功能，请按[源码安装说明](docs/installation.md)安装当前 checkout。
+
 ```bash
-# 1. 安装并包含正式中文 Web 控制台（Python 3.12）
+# 1. 安装已发布的软件包及 Web 依赖（Python 3.12）
 pip install "s1grits[web]"
 
 # 2. 可选：为 ASF 下载配置 Earthdata 认证
@@ -219,6 +223,7 @@ s1grits static ensure --output-dir /path/to/output --product-label smonthly_ASCE
 |---|---|
 | 安装并完成首次检查 | [安装](docs/installation.md) |
 | 选择 CLI／Agent／Web，了解各入口支持范围 | [入口支持矩阵](docs/entry_points.md) |
+| 让 Agent 执行可重放任务，确认 skill 是否可用 | [YAML、命令与 skills](docs/agent_workflows_ZH.md) |
 | 从 V3 迁移到 V4 开发候选 | [迁移与兼容说明](docs/migration_v4.md)、[发布范围](docs/release.md#v4-scope) |
 | 下载逐景／月度影像及配套 static | [工作流](docs/workflows.md)、[网页界面](docs/webapp.md)、[配置参考](docs/configuration.md) |
 | 理解并交接已有数据 | [输出结构](docs/outputs.md)、[数据交接](docs/DATA_HANDOFF_ZH.md) |
@@ -230,7 +235,7 @@ s1grits static ensure --output-dir /path/to/output --product-label smonthly_ASCE
 | 排查问题 | [常见问题](docs/faq.md) |
 
 技术与维护参考：[命令行](docs/cli.md)、[目标格网与插值](docs/target-grid-resampling-v1.md)、
-[架构](docs/architecture.md)、[功能调用关系](docs/call_flow.md)、[分块内存](docs/scenes_blockwise_architecture.md)、
+[架构](docs/architecture.md)、[仓库目录职责](docs/entry_points.md#repository-layout)、[功能调用关系](docs/call_flow.md)、[分块内存](docs/scenes_blockwise_architecture.md)、
 [发布流程](docs/release.md)和[更新日志](CHANGELOG.md)。
 
 ## 许可证与引用

@@ -142,7 +142,7 @@ notebook = [
     "ipywidgets>=8.0.0",
 ]
 web = [
-    # v3 canonical Chinese web console: `s1grits serve` (see docs/webapp.md)
+    # Bilingual web console: `s1grits serve` (see docs/webapp.md)
     "fastapi>=0.110.0",
     "uvicorn>=0.29.0",
     "python-multipart>=0.0.9",
@@ -170,7 +170,7 @@ where = ["src"]
     "py.typed",
 ]
 "s1grits.webapp" = [
-    # v3 canonical Chinese frontend (zero-build static SPA)
+    # Bilingual frontend (zero-build static SPA)
     "static/*.html",
     "static/*.css",
     "static/*.js",

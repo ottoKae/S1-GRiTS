@@ -2,20 +2,26 @@
 
 ## Quick Start
 
-Get your first S1-GRiTS output in **5 minutes**.
+Install S1-GRiTS, create a configuration, and validate it before a first run.
+For an existing Cube, start with the [small local tutorial](getting_started_existing_cube_ZH.md).
+
+This checkout describes the V4 development candidate. A PyPI installation or a
+clone of `main` does not install unpublished changes; use the reviewed candidate
+checkout or wheel when testing V4. See [migration and compatibility](migration_v4.md).
 
 ### Prerequisites
 
-- **Python:** >= 3.12
+- **Python:** 3.12 (`>=3.12,<3.13`)
 - **RAM:** >= 16 GB (64 GB+ recommended for large regions)
-- **OS:** Windows or Linux
+- **OS:** Windows, Linux or macOS
 - **Network:** Access to ASF (asf.alaska.edu) and AWS S3
 
 ### Step 1: Installation
 
-> **Important:** Do not install in conda base environment. S1-GRiTS requires Python 3.12 and compiled extensions. Always create a dedicated environment first.
+Use a dedicated Python 3.12 environment. S1-GRiTS itself is pure Python and ships
+a universal wheel; its geospatial dependencies contain native libraries.
 
-#### Option A: pip install from PyPI (recommended)
+#### Option A: Install the published package from PyPI
 
 ```bash
 # 1. Create dedicated Python 3.12 environment
@@ -25,7 +31,7 @@ conda activate s1grits
 # 2. Install geospatial core libraries via conda-forge (optional but recommended on Windows)
 conda install -c conda-forge rasterio geopandas rioxarray pyproj shapely
 
-# 3. Install s1grits from PyPI, including the canonical Chinese web console
+# 3. Install s1grits from PyPI, including the bilingual web console
 pip install "s1grits[web]"
 ```
 
@@ -44,9 +50,26 @@ conda install -n base conda-libmamba-solver
 conda env create -f environment.yml --solver=libmamba
 conda activate py312_s1grits
 
-# Install package
-pip install .
+# Install this checkout, including the optional web console
+pip install -e ".[web]"
 ```
+
+If you already have the reviewed V4 checkout, start from that directory and skip
+the clone step. Confirm the active installation with `python -m s1grits --version`
+and `python -c "import s1grits; print(s1grits.__file__)"`.
+
+#### Optional: GRiTS-Resolver for existing-Cube access
+
+GRiTS-Resolver is installed separately for the Catalog/Resolver-based analysis
+and spatial readers. The compatible candidate used by this checkout's CI is
+`0.3.1rc1`, pinned to a public source commit:
+
+```bash
+python -m pip install "grits-resolver @ git+https://github.com/ottoKae/GRiTS-Resolver.git@9a92523d8cdbf20ec0b3b377c2265875a6521d73"
+```
+
+Install it in the same environment as S1-GRiTS. See [spatial products](spatial-products.md)
+and the [entry-point support matrix](entry_points.md) for the relevant workflows.
 
 #### Optional: Jupyter notebook support
 
@@ -56,7 +79,7 @@ python -m ipykernel install --user --name py312_s1grits --display-name "Python (
 jupyter lab
 ```
 
-#### Chinese web console
+#### Bilingual web console
 
 ```bash
 pip install "s1grits[web]"
@@ -64,11 +87,19 @@ mkdir s1grits-output
 s1grits serve --root s1grits-output --port 5556  # see docs/webapp.md
 ```
 
+The public **S1-GRiTS Data Cube Console / S1-GRiTS 数据立方体控制台** supports
+switching between English and Chinese on the same page. See the [Web guide](webapp.md).
+
 #### Install all extras
 
 ```bash
 pip install "s1grits[all]"
 ```
+
+This extra covers the dependencies listed in `pyproject.toml`; it does not install
+GRiTS-Resolver or the separately documented temporal backends. GDAL Python bindings
+(`osgeo`) are also required for [grid mosaics](grid_mosaic.md); the repository's
+Conda environment supplies them. Rasterio's bundled GDAL does not supply `osgeo`.
 
 ### Step 2: Earthdata Authentication (optional)
 
@@ -142,8 +173,8 @@ output:
 ### Step 3.5: Validate before long runs — `s1grits doctor`
 
 ```bash
-s1grits doctor --config config/s1grits_scenes.yaml            # fast, offline
-s1grits doctor --config config/s1grits_scenes.yaml --network  # + ASF reachability
+s1grits doctor --config my_run.yaml            # fast, offline
+s1grits doctor --config my_run.yaml --network  # + ASF reachability
 ```
 
 `doctor` finds in seconds the problems that would otherwise kill a multi-hour
@@ -160,7 +191,7 @@ every long or production run.
 
 ```bash
 # Per-scene workflow (+ monthly composites via processing.monthly)
-s1grits process_scenes --config config/s1grits_scenes.yaml
+s1grits process_scenes --config my_run.yaml
 
 # Static layers workflow
 s1grits static ensure --output-dir ./output --product-label smonthly_ASCENDING
@@ -170,9 +201,10 @@ s1grits static ensure --output-dir ./output --product-label smonthly_ASCENDING
 - ASF metadata query for ROI and time range
 - S3 streaming download (no local zip files)
 - Multi-burst mosaic per MGRS tile
-- Speckle reduction (temporal + optional spatial)
+- Optional spatial speckle filtering and monthly compositing
 - Feature extraction (Ratio, RVI, optional GLCM)
 - Zarr data cube + COG + preview generation
-- STAC catalog + Parquet index creation
+- Hierarchical metadata and Parquet catalog creation; STAC export is an explicit
+  `s1grits catalog resync` step, described in [workflows](workflows.md)
 
 ---

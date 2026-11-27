@@ -15,7 +15,7 @@
 <p align="center"><strong>English</strong> | <a href="README.zh-CN.md">简体中文</a></p>
 <p align="center">
   <a href="https://www.python.org/downloads/">
-    <img src="https://img.shields.io/badge/python-3.12+-blue.svg" />
+    <img src="https://img.shields.io/badge/python-3.12-blue.svg" />
   </a>
   <a href="LICENSE">
     <img src="https://img.shields.io/badge/license-PolyForm%20NC-green.svg" />
@@ -32,6 +32,12 @@
   It converts burst-level observations into MGRS-aligned, temporally consistent Zarr data cubes, with optional COG exports.
 </p>
 
+
+Start with [installation](docs/installation.md) for a new environment, the
+[small existing-Cube tutorial](docs/getting_started_existing_cube_ZH.md) for local analysis,
+or [entry points and support](docs/entry_points.md) to choose CLI, Python, Web or Agent.
+This checkout describes the **V4.0.0 development candidate**; its version badge does not
+mean V4 is published on PyPI. Check the installed version and command help before use.
 
 ## Using and handing off an existing dataset
 
@@ -191,12 +197,12 @@ S1-GRiTS is designed for researchers and practitioners who need **large-scale, l
 6. **Standardized Gamma0 Radiometry** — Built on OPERA RTC-S1 with radiometric terrain correction
 7. **Dual Speckle Suppression** — Temporal median compositing + optional spatial TV-Bregman filtering
 8. **Incremental Time-Series Updates** — Zarr supports append-only updates without reprocessing
-9. **STAC 1.1.0 Metadata** — Full STAC compliance with Parquet catalogs for fast queries
+9. **Hierarchical Catalog and Metadata Provenance** — Parquet catalogs for fast queries, with explicit STAC export through [`catalog resync`](docs/cli.md#resync-catalog)
 10. **Rich Analysis API** — 8 analysis submodules for data loading, time series extraction, visualization, validation
 
 **Typical Use Cases:**
 
-- Long-term deformation monitoring
+- Long-term backscatter change monitoring
 - Agricultural crop classification
 - Forest change detection
 - Flood disaster assessment
@@ -217,8 +223,11 @@ S1-GRiTS is designed for researchers and practitioners who need **large-scale, l
 
 ## Quick Start
 
+The command below installs the published package. To try this V4 candidate, use
+the [source installation instructions](docs/installation.md) with this checkout instead.
+
 ```bash
-# 1. Install with the canonical Chinese web console (Python 3.12)
+# 1. Install the published package with Web dependencies (Python 3.12)
 pip install "s1grits[web]"
 
 # 2. (Optional) Earthdata auth for ASF downloads — ~/.netrc with your
@@ -231,7 +240,7 @@ s1grits init my_run.yaml
 s1grits doctor --config my_run.yaml
 s1grits process_scenes --config my_run.yaml
 
-# 5. 启动中文下载与目录检索控制台（workspace 是安全输出根）
+# 5. Launch the console with an explicit output workspace
 s1grits serve /path/to/output --port 5556
 ```
 
@@ -284,6 +293,7 @@ Start with the task you need; the detailed references can be read as needed.
 |---|---|
 | Install and run the first check | [Installation](docs/installation.md) |
 | Choose CLI, Agent or Web; check supported capabilities | [Entry points and support](docs/entry_points.md) |
+| Give an Agent a reproducible task; check skill availability | [YAML, commands and skills](docs/agent_workflows_ZH.md) |
 | Move from V3 to the V4 development candidate | [Migration and compatibility](docs/migration_v4.md), [release scope](docs/release.md#v4-scope) |
 | Produce scenes, monthly composites and paired static layers | [Workflows](docs/workflows.md), [Web interface](docs/webapp.md), [Configuration](docs/configuration.md) |
 | Understand and hand off a dataset | [Output structure](docs/outputs.md), [Data handoff](docs/DATA_HANDOFF_ZH.md) |
@@ -296,7 +306,7 @@ Start with the task you need; the detailed references can be read as needed.
 
 Technical and maintainer references: [CLI](docs/cli.md),
 [Grid and resampling](docs/target-grid-resampling-v1.md), [Architecture](docs/architecture.md),
-[Blockwise memory](docs/scenes_blockwise_architecture.md), [Runtime call paths](docs/call_flow.md), [Release process](docs/release.md)
+[Blockwise memory](docs/scenes_blockwise_architecture.md), [Repository layout](docs/entry_points.md#repository-layout), [Runtime call paths](docs/call_flow.md), [Release process](docs/release.md)
 and [Changelog](CHANGELOG.md).
 
 

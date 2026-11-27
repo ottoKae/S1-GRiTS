@@ -20,7 +20,9 @@ Upgrading an existing installation? Start with [migration and compatibility](mig
 | Repeat a task / 需要重放或自动化 | 使用同一解释器运行已保存的 CLI／Python；生产读取 YAML | 输入及依赖位置、科学参数、执行记录；新派生使用新输出目录 |
 
 No Agent is required. The [Agent workflow guide](agent_workflows_ZH.md) explains the
-two generic skills; they are separate from the Python wheel. For a graphical route,
+two generic skills. They are workspace-maintained and are not included in this
+checkout or Python wheel. If they are unavailable, ask an Agent to read that guide
+and the matching command help; named skills are optional. For a graphical route,
 install the Web extra and run `python -m s1grits serve <workspace>`; add `--catalog-root`
 for existing read-only data. Views additionally need `s1grits[views]`. Optional temporal
 backends and GDAL are described in their own guides, not installed by opening a form.
@@ -132,3 +134,30 @@ Only local small-sample and offline integration checks are claimed here. The pub
 does not add continental scheduling or prove temporal detection accuracy. Remote CI,
 online download and GEE execution require separate evidence; they are not implied by a
 successful local page or command.
+
+<a id="repository-layout"></a>
+
+## Repository layout / 仓库目录职责
+
+Source layout and output layout serve different purposes. See [output structure](outputs.md)
+for a delivered Cube and [runtime call paths](call_flow.md) for how the interfaces share code.
+
+| Directory / 目录 | Responsibility / 职责 |
+| --- | --- |
+| `src/s1grits/` | Installed runtime code, CLI and packaged Web assets / 正式运行代码与打包资源 |
+| `src/s1grits/data/` | Bundled lookup tables required by the package / 程序必需查找表，不是研究数据目录 |
+| `tests/`, `benchmarks/` | Tracked regression tests and benchmark helpers, including helpers used by tests / 可复用验证代码，不能整体忽略 |
+| `config/` | Public example configurations / 可公开模板；实际运行配置与输出、日志共同保留 |
+| `docs/` | Public usage, API and maintenance guides / 使用、接口和维护说明 |
+| `scripts/`, `tools/` | Standalone audit/maintenance utilities and development/release helpers / 辅助入口，不由运行包导入 |
+| `agents/skills/` | Public data-handoff reference; generic Cube/analysis skills are maintained separately / 公开交接说明入口，通用 skills 的可用性见 Agent 指南 |
+| `notebooks/`, `assets/` | Tutorials and referenced illustrations / 教程与文档引用素材 |
+| `.github/` | CI and release workflows / 持续集成及发布流程 |
+
+`docs/_work/`, `tooling/diagnostics/`, `.test-tmp/`, local environments and Web job
+ledgers stay outside Git. Keep disposable data in a dedicated test run directory;
+retain acceptance evidence separately. Manuscripts and research datasets do not belong
+in Python distributions. An ignored path is not permission to delete its contents.
+
+本地忽略目录不代表可随意删除：真实验收证据、运行配置与论文数据需要独立保留。
+公开文档不依赖 `docs/_work/`，测试源码不随临时测试数据一起清理。

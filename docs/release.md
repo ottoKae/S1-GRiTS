@@ -149,9 +149,10 @@ python -m venv .venv-release-smoke
 .\.venv-release-smoke\Scripts\python -m pip install --upgrade pip
 .\.venv-release-smoke\Scripts\python -m pip install "s1grits[web]==4.0.0"
 .\.venv-release-smoke\Scripts\s1grits --version
-.\.venv-release-smoke\Scripts\s1grits init smoke.yaml
-.\.venv-release-smoke\Scripts\s1grits doctor --config smoke.yaml
-.\.venv-release-smoke\Scripts\s1grits serve smoke-output --port 5556
+New-Item -ItemType Directory -Path .test-tmp/release-smoke -Force
+.\.venv-release-smoke\Scripts\s1grits init .test-tmp/release-smoke/config.yaml
+.\.venv-release-smoke\Scripts\s1grits doctor --config .test-tmp/release-smoke/config.yaml
+.\.venv-release-smoke\Scripts\s1grits serve .test-tmp/release-smoke/output --port 5556
 ```
 
 Confirm that `http://127.0.0.1:5556/` opens S1-GRiTS Data Cube Console /
