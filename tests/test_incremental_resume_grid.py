@@ -23,6 +23,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+import hashlib
 from rasterio.transform import Affine
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -73,6 +74,32 @@ def _append_month(g, when: str):
 # ---------------------------------------------------------------------------
 # Resume-grid adoption
 # ---------------------------------------------------------------------------
+@pytest.mark.parametrize('change', ['origin', 'crs', 'coordinates'])
+def test_same_shape_different_grid_requires_explicit_rebuild(tmp_path, change):
+    grid = _grid(500000.0, 8500000.0, width=3, height=2)
+    path, group = _make_store(tmp_path/'17MPU', grid)
+    _append_month(group, '2026-01-15')
+    transform, _, _, x, y = grid
+    crs = CRS
+    if change == 'origin':
+        transform = Affine.translation(30, 0)*transform
+        x = x+30
+    elif change == 'crs':
+        crs = 'EPSG:32718'
+    else:
+        group['x'][:] = x+30
+    before = hashes(path)
+    args = dict(zarr_path=path, x_coords=x, y_coords=y, target_crs=crs, transform=transform,
+                chunk_y=2, chunk_x=3, processing_level='monthly_ARDC', band_names=BANDS)
+    with pytest.raises(RuntimeError, match='grid mismatch'):
+        _init_zarr_2band(**args)
+    assert hashes(path) == before
+    rebuilt = _init_zarr_2band(**args, rebuild_on_mismatch=True)
+    assert rebuilt['time'].shape == (0,)
+    np.testing.assert_array_equal(rebuilt['x'][:], x)
+    assert rebuilt.attrs['crs'] == crs
+
+
 def test_adopts_locked_grid_from_existing_store(tmp_path):
     tile_dir = tmp_path / "17MPU"
     pilot = _grid(500000.0, 8500000.0, width=64, height=48)  # pilot-month grid
@@ -229,3 +256,8 @@ def test_compatible_store_resumes_in_place_regardless_of_flag(tmp_path):
         # overwrite only authorizes rebuilding INCOMPATIBLE stores; a
         # compatible one is always resumed with its contents intact.
         assert g2["time"].shape[0] == 1
+
+
+def hashes(root):
+    return {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in root.rglob('*') if p.is_file()}
