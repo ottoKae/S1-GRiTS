@@ -35,17 +35,11 @@ from s1grits.logger_config import get_logger
 logger = get_logger(__name__)
 
 
-def create_grid_mosaic(catalog_root, item_ids, output_file, *, target_crs,
-                       resolution, bounds, output_format='VRT') -> str:
-    """Mosaic explicitly selected catalog COGs onto a fixed projected grid.
-
-    Input order defines per-band first-valid priority. This spatial operation
-    does not combine dates or orbit directions. VRT dependencies are permanent.
-    """
-    import json
+def plan_grid_mosaic(catalog_root, item_ids, output_file, *, target_crs,
+                     resolution, bounds, output_format='VRT') -> dict:
+    """Validate the existing fixed-grid contract and COG headers without writing."""
     import math
     from pyproj import CRS
-    from osgeo import gdal
     from s1grits.product_instance import make_processing_signature
 
     crs = CRS.from_user_input(target_crs)
@@ -81,6 +75,25 @@ def create_grid_mosaic(catalog_root, item_ids, output_file, *, target_crs,
         'ordered_item_ids': list(item_ids),
     }
     signature = make_processing_signature(contract)
+    return dict(contract=contract, processing_signature=signature, inputs=records, sources=sources,
+                output=str(output), format=output_format)
+
+
+def create_grid_mosaic(catalog_root, item_ids, output_file, *, target_crs,
+                       resolution, bounds, output_format='VRT') -> str:
+    """Map explicit COGs with per-band first-valid priority; retain VRT dependencies."""
+    import json
+    from pyproj import CRS
+    from osgeo import gdal
+
+    plan = plan_grid_mosaic(catalog_root, item_ids, output_file, target_crs=target_crs,
+                            resolution=resolution, bounds=bounds, output_format=output_format)
+    contract, signature = plan['contract'], plan['processing_signature']
+    records, sources, bands = plan['inputs'], plan['sources'], contract['bands']
+    crs, resolution, bounds = CRS.from_wkt(contract['crs']), contract['resolution_m'], contract['bounds']
+    output, output_format = Path(plan['output']), plan['format']
+    dependencies = output.with_name(output.name + '.sources')
+    receipt = output.with_suffix(output.suffix + '.json')
     dependencies.mkdir(parents=True)
     warped = []
     for index, source in enumerate(sources):

@@ -7,11 +7,10 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import zarr
 from rasterio.transform import Affine
 
 from s1grits.asf_array_processing import compute_glcm_texture_bands, despeckle_2d, _get_texture_band_names
-from s1grits.asf_io import NODATA_SENTINEL
+from s1grits.analysis.cube_ops import clean_backscatter, dual_pol_features, mask_values, parent_masks, select_parent
 from s1grits.canonical_catalog_schema import normalize_catalog_record
 from s1grits.product_instance import make_processing_signature, make_product_variant
 from s1grits.resolver import CubeResolver
@@ -31,10 +30,10 @@ def derive_cube(catalog_root, item_id, output_root, *, start, end, features=('ra
 
     The catalog item selects the store/instance, not just its catalog timestamp.
     Window is (x offset, y offset, width, height) in the parent's native grid.
-    Output is a new Cube root; no downloading, appending or parent modification.
+    Output is a new Cube root; a nested root is also registered in its source collection.
     """
     root, destination = Path(catalog_root).resolve(), Path(output_root).resolve()
-    if destination.is_relative_to(root) or root.is_relative_to(destination):
+    if root.is_relative_to(destination):
         raise ValueError('Derived output must be separate from the source Cube root')
     if destination.exists():
         raise FileExistsError('Use a new derived output root; existing products are never overwritten')
@@ -78,43 +77,35 @@ def derive_cube(catalog_root, item_id, output_root, *, start, end, features=('ra
         raise ValueError('Monthly derivation requires a scenes Cube with a declared orbit track')
     if not parent.get('processing_signature') or not parent.get('grid_id'):
         raise ValueError('Parent processing signature and grid identity are required')
-    path = root/parent['zarr_path']
-    if not path.exists():
-        path = root/parent['tile_id']/parent['zarr_path']
-    group = zarr.open_group(str(path), mode='r')
-    if temporal and any(f'{prefix}_interpolated_mask' in group for prefix in ('VV', 'VH')):
+    path = resolver._asset_path(parent).resolve()
+    if destination.is_relative_to(path) or path.is_relative_to(destination):
+        raise ValueError('Derived output must be separate from the referenced source store')
+    if any((ancestor/'zarr.json').exists() or (ancestor/'.zgroup').exists()
+           for ancestor in destination.parents):
+        raise ValueError('Derived output must be separate from existing Zarr stores')
+    group = resolver.open_group(parent)
+    if temporal and any(f'{prefix}_{kind}_mask' in group for prefix in ('VV', 'VH')
+                        for kind in ('observed', 'interpolated')):
         raise ValueError('Select the pre-interpolation parent to recompute gaps; filled values are not new observations')
     with resolver.open(parent, chunks={'time': 1, 'y': chunk_size, 'x': chunk_size}) as dataset:
-        return _derive_store(dataset, group, parent, path, destination, start, end,
-                             features, spatial_filter, monthly, window, chunk_size, temporal)
+        record = _derive_store(dataset, group, parent, path, destination, start, end,
+                               features, spatial_filter, monthly, window, chunk_size, temporal)
+    if destination.is_relative_to(root):
+        from s1grits.catalog_registration import register_product
+        register_product(root, record, source_root=destination)
+    return record
 
 
 def _derive_store(dataset, group, parent, path, destination, start, end,
                   features, spatial_filter, monthly, window, chunk, temporal):
-    for band in ('VV_dB', 'VH_dB'):
-        if band not in dataset or set(dataset[band].dims) != {'time', 'y', 'x'}:
-            raise ValueError('Parent must expose VV_dB/VH_dB with named time/y/x dimensions')
-    times = pd.to_datetime(dataset.time.values, utc=True, errors='coerce')
-    if times.isna().any() or times.has_duplicates or not times.is_monotonic_increasing:
-        raise ValueError('Parent timestamps must be valid, unique and increasing')
-    indices = np.flatnonzero((times >= start) & (times <= end)).tolist()
-    if not indices:
-        raise ValueError('No parent observations in the selected interval')
-    height, width = dataset.sizes['y'], dataset.sizes['x']
-    if window is None:
-        window = [0, 0, width, height]
-    if (len(window) != 4 or any(not isinstance(v, int) for v in window)
-            or min(window[:2]) < 0 or min(window[2:]) < 1
-            or window[0]+window[2] > width or window[1]+window[3] > height):
-        raise ValueError('window must be integer x/y offset and positive width/height inside the parent')
+    times, indices, window, native = select_parent(dataset, group.attrs, start, end, window)
+    masks = parent_masks(dataset)
+    if masks and (spatial_filter != 'none' or monthly or 'glcm' in features):
+        raise ValueError('Parent mask propagation is defined only for copy/crop and Ratio/RVI; '
+                         'use the pre-interpolation parent for filtering, GLCM or monthly compositing')
     x0, y0, width, height = window
-    native = Affine(*group.attrs['transform'][:6])
     crs = group.attrs['crs']
     x, y = dataset.x.values, dataset.y.values
-    if (native.b != 0 or native.d != 0 or native.a <= 0 or native.e >= 0
-            or not np.allclose(x, native.c+(np.arange(len(x))+.5)*native.a, rtol=0, atol=1e-7)
-            or not np.allclose(y, native.f+(np.arange(len(y))+.5)*native.e, rtol=0, atol=1e-7)):
-        raise ValueError('Parent coordinates must match its north-up affine grid')
     halo = GLCM_BLOCK_HALO if 'glcm' in features else 0
     support = [max(0, x0-halo), max(0, y0-halo), min(len(x), x0+width+halo), min(len(y), y0+height+halo)]
     data = [dataset[b].transpose('time', 'y', 'x') for b in ('VV_dB', 'VH_dB')]
@@ -124,13 +115,12 @@ def _derive_store(dataset, group, parent, path, destination, start, end,
     def read_db(selected, ys, xs):
         values = []
         for array, fill in zip(data, fill_values):
-            value = np.array(array.isel(time=selected, y=ys, x=xs).values, dtype='f4', copy=True)
-            invalid = ~np.isfinite(value) | (value == NODATA_SENTINEL)
-            if fill is not None and np.isfinite(fill):
-                invalid |= value == fill
-            value[invalid] = np.nan
-            values.append(value)
+            values.append(clean_backscatter(array.isel(time=selected, y=ys, x=xs).values, fill))
         return values
+
+    def read_masks(selected, ys, xs):
+        return {name: mask.isel(time=selected, y=ys, x=xs).transpose('time', 'y', 'x').values
+                for name, mask in masks.items()}
 
     # Fixed strips make the decoded-input fingerprint independent of output chunks.
     digest = hashlib.sha256(json.dumps({'times_ns': times[indices].asi8.tolist(),
@@ -139,6 +129,8 @@ def _derive_store(dataset, group, parent, path, destination, start, end,
         for row in range(support[1], support[3], 128):
             for array in read_db([index], slice(row, min(row+128, support[3])), slice(support[0], support[2])):
                 digest.update(array.astype('<f4', copy=False).tobytes())
+            for array in read_masks([index], slice(row, min(row+128, support[3])), slice(support[0], support[2])).values():
+                digest.update(mask_values(array).tobytes())
     texture = dict(enabled=True, inputs=['VV_dB', 'VH_dB'],
                    metrics=['contrast', 'homogeneity', 'entropy', 'correlation'],
                    window_size=5, distance=1, angles=[0, 90], average_angles=True, levels=16,
@@ -162,6 +154,9 @@ def _derive_store(dataset, group, parent, path, destination, start, end,
         contract['temporal_interpolation'] = temporal
         contract['operator_order'] = ['parent_dB', 'temporal_interpolation', 'crop']
         contract['filter_support'] = None
+    if masks:
+        contract.update(contract_version='cube_derivative_v2', parent_mask_names=list(masks),
+                        mask_propagation='preserve_per_band_at_selected_times_and_pixels')
     signature = make_processing_signature(contract)
     product = 'smonthly' if monthly else parent['product_type']
     label = f'{product}_{parent["flight_direction"]}_derived_{signature}'
@@ -190,6 +185,11 @@ def _derive_store(dataset, group, parent, path, destination, start, end,
                     'description': '1 = valid value in selected parent; not a raw observation count' if kind == 'observed'
                                    else '1 = missing parent value filled by this interpolation run'})
                 bands.append(name)
+    for name in masks:
+        mask = create_zarr_array(output, name, shape=(0, height, width), chunks=(1, chunk, chunk),
+            dtype='uint8', fill_value=0, dimension_names=['time', 'y', 'x'])
+        mask.attrs.update(dict(masks[name].attrs, _ARRAY_DIMENSIONS=['time', 'y', 'x']))
+        bands.append(name)
     variant = 'derived_' + make_product_variant(product, {
         'processing.spatial_despeckle': spatial_filter != 'none',
         'processing.despeckle_method': spatial_filter,
@@ -203,7 +203,9 @@ def _derive_store(dataset, group, parent, path, destination, start, end,
         'geometry_group_id': parent.get('geometry_group_id'), 'parent_reference_item': parent,
         'parent_zarr': str(path.resolve()), 'parent_snapshot_sha256': digest.hexdigest(),
         'parent_generation': group.attrs.get('generation_id'),
-        'parent_snapshot_scope': 'Decoded selected VV/VH, support grid and timestamps; source must be quiescent.'})
+        'parent_snapshot_scope': 'Decoded selected VV/VH, support grid and timestamps'
+                                 + (', including per-band masks' if masks else '')
+                                 + '; source must be quiescent.'})
     if monthly:
         periods = pd.period_range(start.tz_localize(None), end.tz_localize(None), freq='M')
         groups = [(p.start_time, [i for i in indices if times[i].strftime('%Y-%m') == str(p)]) for p in periods]
@@ -249,18 +251,15 @@ def _derive_store(dataset, group, parent, path, destination, start, end,
                     a, b = [v[fy, fx] for v in filtered]
                     n = counts[fy, fx] if monthly else None
                 values = {'VV_dB': a, 'VH_dB': b}
-                with np.errstate(over='ignore', invalid='ignore', divide='ignore'):
-                    av, bv = np.power(np.float32(10), a/10), np.power(np.float32(10), b/10)
-                    valid = np.isfinite(av) & np.isfinite(bv) & (av > 0) & (bv > 0)
-                    if 'ratio' in features:
-                        values['Ratio'] = np.where(valid, bv/av, np.nan)
-                    if 'rvi' in features:
-                        values['RVI'] = np.where(valid, 4*bv/(av+bv), np.nan)
+                values.update(dual_pol_features(a, b, features))
                 if 'glcm' in features:
                     arrays, names = compute_glcm_texture_bands(a, b, texture)
                     values.update(zip(names, arrays))
                 if monthly:
                     values['n_obs'] = n
+                if masks:
+                    values.update({name: value[0] for name, value in
+                                   read_masks(selected, slice(ey0, ey1), slice(ex0, ex1)).items()})
                 crop = (slice(y0+ys.start-ey0, y0+ys.stop-ey0), slice(x0+xs.start-ex0, x0+xs.stop-ex0))
                 _write_smonthly_block_bands(output, time_index, ys, xs, bands,
                                              {name: value[crop] for name, value in values.items()})

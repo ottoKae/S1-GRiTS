@@ -60,12 +60,10 @@ def analyze_cusum(catalog_root, item_id, output_root, *, band, history_start, hi
         raise ValueError('CUSUM requires a time-varying Cube')
     if not parent.get('processing_signature') or not parent.get('grid_id'):
         raise ValueError('Parent processing signature and grid identity are required')
-    path = root/parent['zarr_path']
-    if not path.exists():
-        path = root/parent['tile_id']/parent['zarr_path']
+    path = resolver._asset_path(parent)
     if destination.is_relative_to(path.resolve()) or path.resolve().is_relative_to(destination):
         raise ValueError('Analysis output must be separate from the referenced source store')
-    group = zarr.open_group(str(path), mode='r')
+    group = resolver.open_group(parent)
     with resolver.open(parent, chunks={'time': 1, 'y': chunk_size, 'x': chunk_size}) as ds:
         if band not in ds or set(ds[band].dims) != {'time', 'y', 'x'}:
             raise ValueError('Selected band needs named time/y/x dimensions')

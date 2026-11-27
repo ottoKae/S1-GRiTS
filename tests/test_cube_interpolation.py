@@ -161,3 +161,112 @@ def test_cli(tmp_path):
     with CubeResolver(tmp_path/'out').open(record) as ds:
         np.testing.assert_allclose(ds.VV_dB.values[1, 0, 0], 10/3, atol=1e-6)
         assert ds.VV_interpolated_mask.values[1, 0, 0] == 1
+
+
+@pytest.mark.parametrize('features', [[], ['ratio', 'rvi']])
+@pytest.mark.parametrize('crop', [False, True])
+def test_derivative_preserves_masks_and_analysis_observations(tmp_path, features, crop):
+    from s1grits.analysis.segmentation import _read_point
+    root, filled = tmp_path/'in', tmp_path/'filled'
+    parent(root)
+    rec, interpolated = run(root, filled)
+    before = hashes(root), hashes(filled)
+    start, end = ('2026-01-02', '2026-01-04') if crop else ('2026-01-01', '2026-01-08')
+    window = [4, 0, 2, 1] if crop else [0, 0, 8, 3]
+    dest = tmp_path/'derived'
+    result = derive_cube(filled, rec['item_id'], dest, start=start, end=end,
+                         features=features, window=window, chunk_size=1)
+    output = zarr.open_group(str(dest/result['tile_id']/result['zarr_path']), mode='r')
+    x, y, w, h = window
+    time_slice = slice(1, 3) if crop else slice(None)
+    bands = ['VV_dB', 'VH_dB'] + [f'{p}_{kind}_mask' for p in ('VV', 'VH')
+                                 for kind in ('observed', 'interpolated')]
+    for name in bands:
+        np.testing.assert_array_equal(output[name][:], interpolated[name][time_slice, y:y+h, x:x+w])
+        assert name in json.loads(result['bands'])
+    frame, _, lineage, _ = _read_point(dest, result['item_id'], tmp_path/'analysis',
+                                       'VV_dB', [0, 0], start, end)
+    assert frame.value_db.notna().sum() == (1 if crop else 3)
+    assert lineage['observed_mask'] == 'VV_observed_mask'
+    assert (hashes(root), hashes(filled)) == before
+    assert resync_catalog_from_filesystem(dest, write_stac=False)['success']
+    with CubeResolver(dest).open(CubeResolver(dest).catalog.iloc[0]) as ds:
+        np.testing.assert_array_equal(ds.VV_observed_mask, output['VV_observed_mask'][:])
+
+
+@pytest.mark.parametrize('options', [dict(monthly='mean'), dict(monthly='median'),
+    dict(spatial_filter='tv_bregman'), dict(spatial_filter='nlm'), dict(features=['glcm'])])
+def test_masked_parent_rejects_undefined_mask_propagation(tmp_path, options):
+    root, filled = tmp_path/'in', tmp_path/'filled'
+    parent(root)
+    rec, _ = run(root, filled)
+    before = hashes(filled)
+    with pytest.raises(ValueError, match='mask propagation'):
+        derive_cube(filled, rec['item_id'], tmp_path/'bad', start='2026-01-01', end='2026-01-08',
+                    **{'features': [], **options})
+    assert not (tmp_path/'bad').exists()
+    assert hashes(filled) == before
+
+
+def test_mask_only_change_changes_identity_but_chunk_size_does_not(tmp_path):
+    root, filled = tmp_path/'in', tmp_path/'filled'
+    parent(root)
+    rec, _ = run(root, filled)
+    signatures = []
+    for label, chunk in [('a', 1), ('b', 32), ('changed', 32)]:
+        if label == 'changed':
+            group = zarr.open_group(str(filled/rec['tile_id']/rec['zarr_path']), mode='r+')
+            group['VV_observed_mask'][1, 0, 0] = 1
+            group['VV_interpolated_mask'][1, 0, 0] = 0
+        result = derive_cube(filled, rec['item_id'], tmp_path/label,
+                             start='2026-01-01', end='2026-01-08', features=[], chunk_size=chunk)
+        signatures.append(result['processing_signature'])
+    assert signatures[0] == signatures[1] != signatures[2]
+
+
+@pytest.mark.parametrize('problem', ['missing_observed', 'nonbinary', 'dimensions'])
+def test_invalid_parent_masks_fail_before_output(tmp_path, problem):
+    root, filled = tmp_path/'in', tmp_path/'filled'
+    parent(root)
+    rec, _ = run(root, filled)
+    group = zarr.open_group(str(filled/rec['tile_id']/rec['zarr_path']), mode='r+')
+    if problem == 'missing_observed':
+        del group['VV_observed_mask']
+    elif problem == 'nonbinary':
+        group['VV_observed_mask'][0, 0, 0] = 2
+    else:
+        del group['VV_observed_mask']
+        group.create_array('VV_observed_mask', data=np.ones((3, 8), dtype='u1'), dimension_names=['y', 'x'])
+    before = hashes(filled)
+    with pytest.raises(ValueError, match='mask'):
+        derive_cube(filled, rec['item_id'], tmp_path/'bad', start='2026-01-01', end='2026-01-08', features=[])
+    assert not (tmp_path/'bad').exists()
+    assert hashes(filled) == before
+
+
+def test_observed_only_yxt_mask_survives_repeated_derivation(tmp_path):
+    from s1grits.analysis.segmentation import _read_point
+    from s1grits.zarr_encoding import create_zarr_array
+    root = tmp_path/'in'
+    group, vv, _ = source(root, layout='yxt')
+    observed = np.ones(vv.shape, dtype='u1')
+    observed[1, 0, 0] = 0
+    create_zarr_array(group, 'VV_observed_mask', data=observed.transpose(1, 2, 0),
+                      dimension_names=['y', 'x', 'time'])
+    item = 'parent'
+    for label in ('first', 'second'):
+        before = hashes(root)
+        destination = tmp_path/label
+        record = derive_cube(root, item, destination, start='2026-01-01', end='2026-03-01',
+                             features=[], window=[0, 0, 2, 2])
+        assert hashes(root) == before
+        with CubeResolver(destination).open(record) as ds:
+            np.testing.assert_array_equal(ds.VV_observed_mask, observed[:, :2, :2])
+        root, item = destination, record['item_id']
+    frame, _, _, _ = _read_point(root, item, tmp_path/'analysis', 'VV_dB', [0, 0],
+                                 '2026-01-01', '2026-03-01')
+    assert frame.value_db.notna().sum() == 3
+    with pytest.raises(ValueError, match='pre-interpolation'):
+        derive_cube(root, item, tmp_path/'refill', start='2026-01-01', end='2026-03-01',
+                    features=[], interpolation='linear', interpolation_domain='db', max_gap_days=30)
+    assert not (tmp_path/'refill').exists()

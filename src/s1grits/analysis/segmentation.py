@@ -1,4 +1,4 @@
-"""Single-pixel CCDC and LandTrendr via the explicitly selected Earth Engine backend."""
+"""Single-pixel segmentation with local LandTrendr or explicit Earth Engine."""
 from __future__ import annotations
 
 import hashlib
@@ -9,23 +9,26 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from rasterio.transform import Affine
-import zarr
 
 from s1grits.asf_io import NODATA_SENTINEL
 from s1grits.product_instance import make_processing_signature
 from s1grits.resolver import CubeResolver
 
 
-def analyze_segments(catalog_root, item_id, output_root, *, algorithm, backend, band, pixel,
+def analyze_segments(catalog_root, item_id, output_root, *, algorithm, backend='local', band, pixel,
                      start, end, project=None, annual_method=None, annual_domain=None,
                      disturbance_direction=None, min_annual_observations=1):
-    """Analyze one native-grid (column, row), sending only values/dates to Earth Engine.
+    """Analyze one native-grid (column, row); Earth Engine is explicitly selected.
 
     The first version uses recorded algorithm presets and an independent result
     directory. LandTrendr requires explicit annual aggregation and sign choices.
     """
-    if backend != 'earthengine' or algorithm not in ('ccdc', 'landtrendr'):
-        raise ValueError('Select backend=earthengine and algorithm=ccdc or landtrendr')
+    if backend not in ('local', 'earthengine') or algorithm not in ('ccdc', 'landtrendr'):
+        raise ValueError('Select backend=local/earthengine and algorithm=ccdc/landtrendr')
+    if backend == 'local' and algorithm == 'ccdc':
+        raise ValueError('Local CCDC is not implemented; Earth Engine requires explicit backend=earthengine')
+    if backend == 'local' and project is not None:
+        raise ValueError('project applies only to backend=earthengine')
     if algorithm == 'landtrendr':
         if annual_method not in ('mean', 'median') or annual_domain not in ('db', 'linear_power'):
             raise ValueError('LandTrendr requires annual_method=mean/median and annual_domain=db/linear_power')
@@ -36,10 +39,13 @@ def analyze_segments(catalog_root, item_id, output_root, *, algorithm, backend, 
     elif any(v is not None for v in (annual_method, annual_domain, disturbance_direction)) or min_annual_observations != 1:
         raise ValueError('Annual aggregation and direction settings apply only to LandTrendr')
     frame, parent, lineage, destination = _read_point(catalog_root, item_id, output_root, band, pixel, start, end)
+    distribution = 'landtrendr' if backend == 'local' else 'earthengine-api'
     try:
-        client_version = version('earthengine-api')
+        client_version = version(distribution)
     except PackageNotFoundError as exc:
-        raise ImportError('Install the optional earthengine-api client; see docs/segmentation.md') from exc
+        raise ImportError(f'Install the optional {distribution} backend; see docs/segmentation.md') from exc
+    if backend == 'local' and client_version != '0.4.0':
+        raise ImportError('Local LandTrendr is verified with nthh/LT-rs landtrendr==0.4.0; see docs/segmentation.md')
     sign = -1 if disturbance_direction == 'decrease' else 1
     if algorithm == 'landtrendr':
         model_input = _annual_series(frame, start, end, annual_method, annual_domain, min_annual_observations)
@@ -47,6 +53,12 @@ def analyze_segments(catalog_root, item_id, output_root, *, algorithm, backend, 
         parameters = dict(maxSegments=6, spikeThreshold=.9, vertexCountOvershoot=3,
             preventOneYearRecovery=False, recoveryThreshold=.25, pvalThreshold=.1,
             bestModelProportion=.75, minObservationsNeeded=6)
+        if backend == 'local':
+            # LT-rs expects disturbance DOWN; GEE and the result tables use UP.
+            model_input['signal'] = -sign*model_input.value_db
+            parameters = dict(max_segments=6, spike_threshold=.9, vertex_count_overshoot=3,
+                prevent_one_year_recovery=False, recovery_threshold=.25, p_value_threshold=.1,
+                best_model_proportion=.75, min_observations_needed=6)
     else:
         model_input = frame.assign(signal=frame.value_db)
         parameters = dict(minObservations=6, chiSquareProbability=.99,
@@ -58,12 +70,23 @@ def analyze_segments(catalog_root, item_id, output_root, *, algorithm, backend, 
         min_annual_observations=min_annual_observations if algorithm == 'landtrendr' else None,
         disturbance_direction=disturbance_direction, model_value_domain='dB', signal_multiplier=sign,
         interpolation='none', transmission='valid_values_and_UTC_millisecond_dates_at_virtual_point')
+    if backend == 'local':
+        contract.update(contract_version='local_lt_point_v1', implementation='nthh/LT-rs.pixel',
+            implementation_status='experimental', service_version=None,
+            backend_version=client_version, numpy_version=version('numpy'),
+            signal_multiplier=-sign, result_direction_multiplier=sign,
+            model_dtype='float32', year_dtype='int32', transmission='none',
+            missing_years='omitted_from_backend_and_fitted_table')
     signature = make_processing_signature(contract)
     valid = model_input[np.isfinite(model_input.signal)]
+    if backend == 'local' and len(valid) > 128:
+        raise ValueError('LT-rs 0.4.0 supports at most 128 valid annual observations')
     receipt = dict(status='building', processing_signature=signature, contract=contract,
         parent_reference_item=parent, selected_observations=len(frame), valid_observations=int(frame.value_db.notna().sum()),
         model_observations=len(valid), project=project, project_selection='explicit' if project else 'credential_default',
         started_utc=pd.Timestamp.now(tz='UTC').isoformat())
+    if backend == 'local':
+        receipt['project_selection'] = 'not_applicable'
     destination.mkdir(parents=True)
     frame.to_parquet(destination/'input.parquet', index=False)
     model_input.to_parquet(destination/'model_input.parquet', index=False)
@@ -72,6 +95,15 @@ def analyze_segments(catalog_root, item_id, output_root, *, algorithm, backend, 
     try:
         if len(valid) < 6:
             raw, state = {}, 'insufficient_observations'
+        elif backend == 'local':
+            import landtrendr
+
+            values = np.ascontiguousarray(valid.signal, dtype='f4')
+            years = np.ascontiguousarray(valid.year, dtype='i4')
+            fitted_values, vertices, rmse = landtrendr.pixel(values, years, **parameters)
+            raw = dict(years=years.tolist(), signal=values.tolist(), fitted=fitted_values.tolist(),
+                       is_vertex=vertices.tolist(), rmse=float(rmse))
+            state = 'fitted' if np.count_nonzero(vertices) >= 2 else 'no_fit'
         else:
             import ee
 
@@ -88,7 +120,13 @@ def analyze_segments(catalog_root, item_id, output_root, *, algorithm, backend, 
             support = raw.get('tStart') if algorithm == 'ccdc' else (raw.get('LandTrendr') or [[]])[0]
             state = 'fitted' if support else 'no_fit'
         (destination/'raw_response.json').write_text(json.dumps(raw, indent=2), encoding='utf-8')
-        segments, fitted = _result_tables(raw, algorithm, sign)
+        table_input = raw
+        if backend == 'local' and state == 'fitted':
+            table_input = dict(LandTrendr=[raw['years'], (-values).tolist(),
+                               (-fitted_values).tolist(), raw['is_vertex']], rmse=raw['rmse'])
+        elif backend == 'local':
+            table_input = {}
+        segments, fitted = _result_tables(table_input, algorithm, sign)
         segments.to_parquet(destination/'segments.parquet', index=False)
         if fitted is not None:
             fitted.to_parquet(destination/'annual_fitted.parquet', index=False)
@@ -104,19 +142,12 @@ def analyze_segments(catalog_root, item_id, output_root, *, algorithm, backend, 
         raise
 
 
-def _read_point(catalog_root, item_id, output_root, band, pixel, start, end):
+def _read_parent(catalog_root, item_id, output_root):
     root, destination = Path(catalog_root).resolve(), Path(output_root).resolve()
     if destination.is_relative_to(root) or root.is_relative_to(destination):
         raise ValueError('Analysis output must be separate from the source Cube root')
     if destination.exists():
         raise FileExistsError('Use a new analysis output root')
-    if band not in ('VV_dB', 'VH_dB'):
-        raise ValueError('Select VV_dB or VH_dB')
-    if len(pixel) != 2 or any(not isinstance(v, int) or v < 0 for v in pixel):
-        raise ValueError('pixel must contain nonnegative integer column and row')
-    start, end = pd.to_datetime(start, utc=True), pd.to_datetime(end, utc=True)
-    if pd.isna(start) or pd.isna(end) or start > end:
-        raise ValueError('Provide a valid inclusive UTC start/end interval')
     resolver = CubeResolver(root)
     matches = resolver.catalog[resolver.catalog.item_id == item_id]
     if len(matches) != 1:
@@ -126,12 +157,22 @@ def _read_point(catalog_root, item_id, output_root, band, pixel, start, end):
         raise ValueError('Segmentation requires a time-varying Cube')
     if not parent.get('processing_signature') or not parent.get('grid_id'):
         raise ValueError('Parent processing signature and grid identity are required')
-    path = root/parent['zarr_path']
-    if not path.exists():
-        path = root/parent['tile_id']/parent['zarr_path']
+    path = resolver._asset_path(parent)
     if destination.is_relative_to(path.resolve()) or path.resolve().is_relative_to(destination):
         raise ValueError('Analysis output must be separate from the referenced source store')
-    group = zarr.open_group(str(path), mode='r')
+    return resolver, parent, path, destination
+
+
+def _read_point(catalog_root, item_id, output_root, band, pixel, start, end):
+    if band not in ('VV_dB', 'VH_dB'):
+        raise ValueError('Select VV_dB or VH_dB')
+    if len(pixel) != 2 or any(not isinstance(v, int) or v < 0 for v in pixel):
+        raise ValueError('pixel must contain nonnegative integer column and row')
+    start, end = pd.to_datetime(start, utc=True), pd.to_datetime(end, utc=True)
+    if pd.isna(start) or pd.isna(end) or start > end:
+        raise ValueError('Provide a valid inclusive UTC start/end interval')
+    resolver, parent, path, destination = _read_parent(catalog_root, item_id, output_root)
+    group = resolver.open_group(parent)
     with resolver.open(parent) as ds:
         if band not in ds or set(ds[band].dims) != {'time', 'y', 'x'}:
             raise ValueError('Selected band needs named time/y/x dimensions')

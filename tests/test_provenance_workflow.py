@@ -44,7 +44,7 @@ def _tables(root):
     return pointer, read_tables(root / "provenance/releases" / pointer["metadata_release_id"])
 
 
-def _seed(root):
+def _seed(root, track_token="18"):
     """Create a genuine tiny historical store whose locked grid can be adopted."""
     set_stac_output_enabled(False)
     record = _write_smonthly_one_track(
@@ -60,7 +60,7 @@ def _seed(root):
         transform=TRANSFORM, width=4, height=3,
         x_coords=TRANSFORM.c + (np.arange(4) + 0.5) * 30,
         y_coords=TRANSFORM.f - (np.arange(3) + 0.5) * 30,
-        tile_clip=False, track_token="18",
+        tile_clip=False, track_token=track_token,
     )
     frame = pd.DataFrame(record)
     atomic_write_parquet(frame, root / TILE / "catalog.parquet")

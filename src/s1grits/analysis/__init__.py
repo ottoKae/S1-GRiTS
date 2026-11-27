@@ -24,8 +24,12 @@ Example:
 """
 
 from .derive import derive_cube
+from .views import define_view, register_view, materialize_view
+from .multitrack import define_multitrack_view
+from s1grits.catalog_registration import register_product
 from .cusum import analyze_cusum
 from .segmentation import analyze_segments
+from .segmentation_batch import analyze_segments_batch
 
 from .io import (
     load_zarr_dataset,
@@ -80,6 +84,10 @@ from .reporting import (
 )
 
 __all__ = [
+    'define_view', 'register_view', 'materialize_view',
+    'define_multitrack_view',
+    'register_product',
+    'analyze_segments_batch',
     "analyze_cusum",
     "analyze_segments",
     "derive_cube",

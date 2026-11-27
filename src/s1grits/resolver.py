@@ -144,6 +144,7 @@ class CubeResolver:
         require_same_processing: bool = True,
         geometry_group_id: str | None = None,
         track: int | None = None,
+        direction: str | None = None,
     ) -> dict[str, pd.DataFrame]:
         """
         Return products aligned for stacking on a tile.
@@ -160,6 +161,7 @@ class CubeResolver:
         Args:
             tile_id: MGRS tile.
             product_types: Optional list of product types to include.
+            direction: Optional flight direction, selected before grid grouping.
             require_same_grid: If True, raises ValueError when the selected
                 products (including static) do not all share one grid_id.
                 Static normally differs, so this is for callers that need a
@@ -180,6 +182,7 @@ class CubeResolver:
             tile_id=tile_id,
             geometry_group_id=geometry_group_id,
             track=track,
+            direction=direction,
         )
         if product_types:
             df = df[df["product_type"].isin(product_types)]
@@ -276,23 +279,19 @@ class CubeResolver:
         Returns:
             xarray Dataset.
         """
-        _zp = record.get("zarr_path") if isinstance(record, dict) else record["zarr_path"]
-        if not _zp:
-            raise ValueError("Record has no zarr_path")
-        _full = self.root / _zp
-        if not _full.exists():
-            # Global catalogs hold asset paths relative to the TILE directory
-            # (resync/workflows write them relative_to(tile_dir)), so resolve
-            # against {root}/{tile_id}/ when the root-relative path is absent.
-            _tid = record.get("tile_id") if isinstance(record, dict) else record.get("tile_id", None)
-            if _tid:
-                _cand = self.root / str(_tid) / _zp
-                if _cand.exists():
-                    _full = _cand
+        _view = record.get('view_path')
+        if pd.notna(_view) and _view:
+            from s1grits.analysis.views import open_view
+            ds = open_view(self._asset_path(record), chunks=chunks)
+            if any(ds.attrs[key] != record.get(key) for key in ('item_id', 'processing_signature', 'grid_id')):
+                ds.close()
+                raise ValueError('View definition differs from its catalog identity; register the new definition')
+            return ds
+        _full = self._asset_path(record)
         logger.info("Opening %s", _full)
 
         try:
-            ds = xr.open_zarr(str(_full), chunks=chunks, consolidated=False)
+            ds = xr.open_zarr(str(_full), group=self._group_name(record), chunks=chunks, consolidated=False)
         except (ValueError, KeyError) as _xr_err:
             logger.warning(
                 "xr.open_zarr failed (%s), falling back to manual construction for %s",
@@ -300,9 +299,52 @@ class CubeResolver:
             )
             ds = self._open_manual(str(_full), record, chunks)
 
+        if not ds.attrs.get('crs') and record.get('crs'):
+            ds.attrs['crs'] = record['crs']
         if broadcast_static:
             ds = self._maybe_broadcast(ds, record, reference_time)
         return ds
+
+    def _asset_path(self, record: pd.Series | dict) -> Path:
+        path = record.get('view_path')
+        if pd.isna(path) or not path:
+            path = record.get("zarr_path")
+        if not path or pd.isna(path):
+            raise ValueError("Record has no zarr_path or view_path")
+        full = self.root / path
+        # Global catalogs may keep asset paths relative to the tile directory.
+        if not full.exists():
+            tile = record.get("tile_id")
+            if tile:
+                candidate = self.root / str(tile) / path
+                if candidate.exists():
+                    full = candidate
+        return full
+
+    def _single_asset_record(self, records: pd.DataFrame, label: str) -> pd.Series:
+        assets = set()
+        for _, record in records.iterrows():
+            assets.add((self._asset_path(record).resolve(), self._group_name(record)))
+        if len(assets) > 1:
+            raise ValueError(
+                f"Multiple Zarr assets match '{label}' ({len(assets)} path/group pairs). "
+                "Select one product with query(...) and open(record), or narrow "
+                "the geometry_group_id/track/direction filters. Assets are not concatenated."
+            )
+        return records.iloc[0]
+
+    @staticmethod
+    def _group_name(record: pd.Series | dict) -> str:
+        group = record.get('zarr_group')
+        return '' if pd.isna(group) else str(group).strip('/')
+
+    def open_group(self, record: pd.Series | dict):
+        """Read metadata/arrays from the same path and group selected by open()."""
+        import zarr
+
+        if pd.notna(record.get('view_path')) and record.get('view_path'):
+            raise ValueError('Virtual views have no Zarr group; use open(record) or materialize first')
+        return zarr.open_group(str(self._asset_path(record)), path=self._group_name(record), mode='r')
 
     def _open_manual(
         self, path: str, record: pd.Series | dict, chunks: dict | None = None
@@ -310,8 +352,9 @@ class CubeResolver:
         """Fallback: manually construct xarray.Dataset from zarr arrays."""
         import zarr
         import numpy as np
+        from xarray.backends.zarr import FillValueCoder
 
-        g = zarr.open_group(path, mode="r")
+        g = zarr.open_group(path, path=self._group_name(record), mode="r")
         product_type = record.get("product_type") if isinstance(record, dict) else record.get("product_type", "")
         is_static = str(product_type).lower() == "static"
 
@@ -321,11 +364,15 @@ class CubeResolver:
 
         for name in g:
             arr = g[name]
-            if not hasattr(arr, "attrs"):
+            if not hasattr(arr, "shape"):
                 continue
 
             # Read dimension names: try dimension_names first, then _ARRAY_DIMENSIONS
-            dims = arr.attrs.get("dimension_names") or arr.attrs.get("_ARRAY_DIMENSIONS")
+            dims = getattr(arr.metadata, 'dimension_names', None)
+            if dims is None:
+                dims = arr.attrs.get("dimension_names", arr.attrs.get("_ARRAY_DIMENSIONS"))
+            if dims is None and arr.ndim == 0:
+                dims = ()
             if dims is None:
                 continue
 
@@ -333,8 +380,11 @@ class CubeResolver:
             if is_static and "time" in dims:
                 dims = [d for d in dims if d != "time"]
 
-            data = arr[:] if chunks is None else arr
-            da = xr.DataArray(data, dims=list(dims), name=name)
+            data = arr[...] if chunks is None else arr
+            attrs = dict(arr.attrs)
+            if arr.dtype.kind == 'f' and isinstance(attrs.get('_FillValue'), str):
+                attrs['_FillValue'] = FillValueCoder.decode(attrs['_FillValue'], arr.dtype)
+            da = xr.DataArray(data, dims=list(dims), name=name, attrs=attrs)
 
             if name in ("x", "y", "time"):
                 coords[name] = da
@@ -347,13 +397,14 @@ class CubeResolver:
         # Ensure time coordinate for non-static products
         if not is_static and "time" in dims_seen:
             if "time" in coords:
-                coords["time"] = coords["time"].astype("datetime64[ns]")
+                if not coords['time'].attrs.get('units'):
+                    coords["time"] = coords["time"].astype("datetime64[ns]")
             else:
                 coords["time"] = xr.DataArray(
                     np.array([], dtype="datetime64[ns]"), dims=["time"]
                 )
 
-        return xr.Dataset(data_vars=data_vars, coords=coords)
+        return xr.decode_cf(xr.Dataset(data_vars=data_vars, coords=coords, attrs=dict(g.attrs)))
 
     def _maybe_broadcast(
         self, ds: xr.Dataset, record: pd.Series | dict, reference_time=None
@@ -379,7 +430,7 @@ class CubeResolver:
             if name != "time":
                 new_vars[name] = da
         new_vars["time"] = xr.DataArray(ref_time, dims=["time"])
-        return xr.Dataset(new_vars)
+        return xr.Dataset(new_vars, attrs=dict(ds.attrs))
 
     def open_stack(
         self,
@@ -401,7 +452,8 @@ class CubeResolver:
 
         Merge rules:
           - time-varying + static → merge (static remains 2-D by default)
-          - multiple time-varying with SAME time axis → merge
+          - products with duplicate variable names → return dict
+          - multiple time-varying with SAME time axis and distinct variables → merge
           - multiple time-varying with DIFFERENT time axes → return dict
             (scenes has irregular ~6d; smonthly has monthly; they cannot be
             automatically merged without temporal semantics)
@@ -422,8 +474,10 @@ class CubeResolver:
 
         Returns:
             xr.Dataset if all products can be merged into one.
-            dict[str, xr.Dataset] if time axes are incompatible
-            (keys are product_type names).
+            dict[str, xr.Dataset] if time axes are incompatible or variable names
+            conflict (keys are product_type or product_type:signature).
+            Multiple assets within one group raise ValueError; select a record
+            explicitly with query(...) and open(record).
 
         Example:
             # Merge scenes + static (most common use case)
@@ -441,23 +495,13 @@ class CubeResolver:
             require_same_processing=require_same_processing,
             geometry_group_id=geometry_group_id,
             track=track,
+            direction=direction,
         )
         if not aligned:
-            raise ValueError(f"No aligned products found for tile '{tile_id}'")
-
-        # Apply direction filter if specified
-        if direction:
-            aligned = {
-                k: df[df["flight_direction"] == direction].reset_index(drop=True)
-                if "flight_direction" in df.columns else df
-                for k, df in aligned.items()
-            }
-            aligned = {k: df for k, df in aligned.items() if not df.empty}
-            if not aligned:
-                raise ValueError(
-                    f"No products found for tile '{tile_id}' "
-                    f"with direction '{direction}'"
-                )
+            raise ValueError(
+                f"No aligned products found for tile '{tile_id}'"
+                + (f" with direction '{direction}'" if direction else "")
+            )
 
         # Never pair the first scenes row with the first static row across
         # different tracks. A geometry group is the physical acquisition
@@ -485,21 +529,20 @@ class CubeResolver:
 
         # Open all products
         opened: dict[str, xr.Dataset] = {}
-        static_datasets: list[xr.Dataset] = []
+        static_datasets: dict[str, xr.Dataset] = {}
         time_varying_datasets: dict[str, xr.Dataset] = {}
 
         for pt, df in aligned.items():
-            # Use the first record for each product_type (they share the same Zarr)
-            record = df.iloc[0]
+            record = self._single_asset_record(df, pt)
             ds = self.open(record, chunks=chunks)
+            opened[pt] = ds
 
             # Classify as static or time-varying
             _pt_name = pt.split(":")[0] if ":" in pt else pt
             if _pt_name == "static":
-                static_datasets.append(ds)
+                static_datasets[pt] = ds
             else:
                 time_varying_datasets[pt] = ds
-                opened[pt] = ds
 
         # Determine the reference dynamic dataset (its time axis AND spatial
         # grid) for static alignment. Use the first time-varying product.
@@ -517,19 +560,16 @@ class CubeResolver:
         # never a resample. Keep static 2-D unless compatibility broadcasting
         # was explicitly requested.
         if static_datasets and reference_ds is not None:
-            for static_ds in static_datasets:
+            for pt, static_ds in static_datasets.items():
                 _aligned_static = self._align_static_grid(static_ds, reference_ds)
                 if broadcast_static:
                     _aligned_static = self._broadcast_static_ds(
                         _aligned_static, reference_time, reference_ds=reference_ds
                     )
-                opened["static"] = _aligned_static
+                opened[pt] = _aligned_static
 
         # Attempt merge
         if len(opened) == 0:
-            # Only static, no time-varying
-            if static_datasets:
-                return _stamp_geometry(static_datasets[0])
             raise ValueError(f"No datasets could be opened for tile '{tile_id}'")
 
         if len(opened) == 1:
@@ -541,7 +581,8 @@ class CubeResolver:
             if "time" in ds.dims:
                 _time_axes[pt] = ds.time.values
 
-        _can_merge = True
+        _names = [name for ds in opened.values() for name in ds.data_vars]
+        _can_merge = len(_names) == len(set(_names))
         if len(_time_axes) > 1:
             _ref = list(_time_axes.values())[0]
             for _other in list(_time_axes.values())[1:]:
@@ -556,9 +597,9 @@ class CubeResolver:
             merged = xr.merge(list(opened.values()), compat="override")
             return _stamp_geometry(merged)
         else:
-            # Different time axes → return dict, let user decide
+            # Keep each product's values and identity when a merge is ambiguous.
             logger.info(
-                "open_stack: products have different time axes, "
+                "open_stack: products have different time axes or duplicate variable names, "
                 "returning dict instead of merged Dataset. "
                 "Products: %s", list(opened.keys())
             )
@@ -606,7 +647,7 @@ class CubeResolver:
             if name != "time":
                 new_vars[name] = da
         new_vars["time"] = xr.DataArray(ref_time, dims=["time"])
-        return xr.Dataset(new_vars)
+        return xr.Dataset(new_vars, attrs=dict(ds.attrs))
 
     @staticmethod
     def _align_static_grid(ds: xr.Dataset, reference_ds: xr.Dataset) -> xr.Dataset:
@@ -617,6 +658,12 @@ class CubeResolver:
         are accepted only when their resolution and origin offset prove they
         occupy the same integer pixel lattice.
         """
+        from pyproj import CRS
+
+        if not ds.attrs.get('crs') or not reference_ds.attrs.get('crs'):
+            raise ValueError('Static and dynamic CRS metadata is required to verify pixel alignment')
+        if CRS.from_user_input(ds.attrs['crs']) != CRS.from_user_input(reference_ds.attrs['crs']):
+            raise ValueError('Static and dynamic CRS differ; resolver alignment does not reproject')
         sx = np.asarray(ds["x"].values, dtype=np.float64)
         sy = np.asarray(ds["y"].values, dtype=np.float64)
         rx = np.asarray(reference_ds["x"].values, dtype=np.float64)
@@ -725,7 +772,9 @@ class CubeResolver:
                 f"Multiple geometry groups match tile '{tile_id}': {list(_dyn_groups)}. "
                 "Pass geometry_group_id=... or track=...."
             )
-        dyn_rec = dyn_df.iloc[0]
+        dyn_rec = self._single_asset_record(dyn_df, dynamic_product_type)
+        if pd.notna(dyn_rec.get('view_path')) and dyn_rec.get('view_path'):
+            raise ValueError('Materialize the virtual view with materialize_view before creating a training cube')
         ggid = dyn_rec.get("geometry_group_id")
 
         # Geometry-correct static: match the dynamic product's geometry group
@@ -744,7 +793,7 @@ class CubeResolver:
                 f"No static product for tile '{tile_id}' geometry group "
                 f"'{ggid}' — run the static workflow for this tile/direction."
             )
-        stat_rec = stat_df.iloc[0]
+        stat_rec = self._single_asset_record(stat_df, "static")
 
         dyn = self.open(dyn_rec, chunks=chunks)
         stat = self.open(stat_rec)
@@ -785,6 +834,8 @@ class CubeResolver:
         g.attrs["s1grits:static_bands"] = list(stat.data_vars)
         g.attrs["s1grits:source_dynamic_zarr"] = str(dyn_rec.get("zarr_path") or "")
         g.attrs["s1grits:source_static_zarr"] = str(stat_rec.get("zarr_path") or "")
+        g.attrs["s1grits:source_dynamic_group"] = self._group_name(dyn_rec)
+        g.attrs["s1grits:source_static_group"] = self._group_name(stat_rec)
         for _k in ("crs", "grid_id"):
             _v = dyn_rec.get(_k)
             if _v is not None and not pd.isna(_v):

@@ -10,7 +10,7 @@ from rasterio.transform import Affine
 from s1grits.scenes.smonthly_writer import _write_smonthly_one_track
 from s1grits.stac_builder import set_stac_output_enabled, stac_output_enabled
 from s1grits.stac_builder import build_stac_item_dict
-from test_incremental_resume_grid import hashes
+from test_cube_derivatives import hashes
 
 
 def monthly_inputs(tile_dir, method):

@@ -638,6 +638,14 @@ def _resync_locked(output_root, _skip_dirs, write_stac, stac_format) -> Dict[str
         set_stac_output_enabled,
     )
     from s1grits.catalog_sync import update_root_catalog
+    from s1grits.atomic_write import atomic_write_parquet
+    from s1grits.catalog_registration import load_registered_products, merge_registered_products, _relative_path
+    from s1grits.resolver import CubeResolver
+
+    try:
+        registered = load_registered_products(output_root)
+    except (ValueError, KeyError, OSError) as error:
+        return {'success': False, 'message': f'Invalid product registration: {error}'}
 
     # resync is the ONLY place that writes STAC. Workflows always leave the
     # process-level switch OFF, so enable it here when write_stac is requested
@@ -646,7 +654,8 @@ def _resync_locked(output_root, _skip_dirs, write_stac, stac_format) -> Dict[str
 
     tile_dirs = sorted(d for d in output_root.iterdir()
                        if d.is_dir() and not d.name.startswith('.')
-                       and d.name not in _skip_dirs)
+                       and d.name not in _skip_dirs
+                       and not (d/'zarr.json').exists() and not (d/'.zgroup').exists())
 
     # Preserve record creation time across authoritative rebuilds. The Zarr
     # path is the stable physical identity; stamping every scan with "now"
@@ -668,6 +677,7 @@ def _resync_locked(output_root, _skip_dirs, write_stac, stac_format) -> Dict[str
             logger.warning("Could not preserve existing catalog timestamps: %s", _e)
 
     all_catalogs = []
+    tile_catalogs = {}
 
     for tile_dir in tile_dirs:
         tile_id = tile_dir.name
@@ -845,17 +855,39 @@ def _resync_locked(output_root, _skip_dirs, write_stac, stac_format) -> Dict[str
         if catalog_records:
             df_tile = pd.DataFrame(catalog_records)
             tile_catalog_path = tile_dir / 'catalog.parquet'
-            df_tile.to_parquet(tile_catalog_path, index=False)
+            tile_catalogs[tile_dir] = df_tile
             all_catalogs.append(df_tile)
             logger.info("Tile catalog: %s (%d rows)", tile_catalog_path, len(df_tile))
 
     # Merge global catalog
-    if not all_catalogs:
+    if not all_catalogs and registered.empty:
         return {'success': False, 'message': 'No Zarr stores found to catalog.'}
 
-    df_global = pd.concat(all_catalogs, ignore_index=True)
+    df_global = pd.concat(all_catalogs, ignore_index=True) if all_catalogs else pd.DataFrame()
+    try:
+        df_global = merge_registered_products(output_root, df_global, registered)
+    except ValueError as error:
+        return {'success': False, 'message': str(error)}
+    if not registered.empty:
+        resolver = CubeResolver(output_root)
+        for tile_id in registered.tile_id.unique():
+            tile_dir = output_root/tile_id
+            frame = df_global[df_global.tile_id == tile_id].copy()
+            mask = frame.registration_path.notna()
+            frame.loc[mask, 'registration_path'] = _relative_path(output_root/'.s1grits-registrations.json', tile_dir)
+            for field in ('zarr_path', 'view_path', 'cog_path', 'preview_path'):
+                for index, row in frame.iterrows():
+                    if row.get(field) and not pd.isna(row[field]):
+                        path = resolver._asset_path(dict(row, view_path=None, zarr_path=row[field])).resolve()
+                        frame.at[index, field] = _relative_path(path, tile_dir)
+            tile_catalogs[tile_dir] = frame
+            if tile_dir not in tile_dirs:
+                tile_dirs.append(tile_dir)
+    for tile_dir, frame in tile_catalogs.items():
+        tile_dir.mkdir(parents=True, exist_ok=True)
+        atomic_write_parquet(frame, tile_dir/'catalog.parquet')
     global_path = output_root / 'catalog.parquet'
-    df_global.to_parquet(global_path, index=False)
+    atomic_write_parquet(df_global, global_path)
 
     # Geometry-group sibling index for STAC `related` cross-links.
     _sib_index = _geometry_group_sibling_index(df_global)
@@ -934,13 +966,13 @@ def _resync_locked(output_root, _skip_dirs, write_stac, stac_format) -> Dict[str
     return {
         'success': True,
         'message': (
-            f'Resynced {len(df_global)} records from {len(all_catalogs)} tile(s)'
+            f'Resynced {len(df_global)} records from {df_global.tile_id.nunique()} tile(s)'
             + ('' if write_stac else ' (catalog-only: STAC removed)')
             + (f' [STAC: {stac_format}]' if write_stac else '')
         ),
         'catalog_path': str(global_path),
         'total_records': len(df_global),
-        'tile_count': len(all_catalogs),
+        'tile_count': int(df_global.tile_id.nunique()),
         'stac': write_stac,
         'stac_format': stac_format if write_stac else None,
         'collections': sorted(present_cids),

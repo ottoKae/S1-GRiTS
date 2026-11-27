@@ -71,6 +71,25 @@ def hashes(root):
             for p in root.rglob('*') if p.is_file()}
 
 
+@pytest.mark.parametrize('relative', [False, True])
+def test_external_source_store_cannot_contain_derived_output(tmp_path, relative):
+    assets, catalog = tmp_path/'assets', tmp_path/'catalog'
+    group, _, _ = source(assets)
+    store = assets/'17MPU/scenes_ASCENDING/zarr/parent.zarr'
+    catalog.mkdir()
+    frame = pd.read_parquet(assets/'catalog.parquet')
+    frame['zarr_path'] = os.path.relpath(store, catalog) if relative else str(store)
+    frame.to_parquet(catalog/'catalog.parquet')
+    before = hashes(assets), hashes(catalog)
+    with pytest.raises(ValueError, match='referenced source store'):
+        run(catalog, store/'inside', features=[])
+    assert (hashes(assets), hashes(catalog)) == before
+    assert not (store/'inside').exists()
+    _, output = run(catalog, tmp_path/'legal', features=[])
+    assert output['VV_dB'][0, 0, 0] == group['VV_dB'][0, 0, 0] == 0
+    assert (hashes(assets), hashes(catalog)) == before
+
+
 @pytest.mark.parametrize('layout', ['tyx', 'yxt'])
 def test_axes(tmp_path, layout):
     root = tmp_path/'in'
@@ -220,7 +239,7 @@ def test_reject(tmp_path):
             run(root, tmp_path/'bad', **kwargs)
         assert not (tmp_path/'bad').exists()
     with pytest.raises(ValueError, match='separate'):
-        run(root, root/'out')
+        run(root, root)
     run(root, tmp_path/'out', end='2026-01-01', features=[])
     before = hashes(tmp_path/'out')
     with pytest.raises(FileExistsError):

@@ -53,11 +53,12 @@ def generate_coverage_report(output_dir: Union[str, Path]) -> Dict[str, Any]:
         # Load catalog
         df = pd.read_parquet(catalog_path)
         df['datetime'] = pd.to_datetime(df['datetime'])
+        tile_col = 'tile_id' if 'tile_id' in df.columns else 'mgrs_tile_id'
 
         # Overall statistics
         overall = {
             'total_records': len(df),
-            'tile_count': df['mgrs_tile_id'].nunique(),
+            'tile_count': df[tile_col].nunique(),
             'date_range': (
                 df['datetime'].min().strftime('%Y-%m-%d'),
                 df['datetime'].max().strftime('%Y-%m-%d')
@@ -75,8 +76,8 @@ def generate_coverage_report(output_dir: Union[str, Path]) -> Dict[str, Any]:
         tile_coverage = []
         direction_col = 'direction' if 'direction' in df.columns else 'flight_direction'
 
-        for tile_id in sorted(df['mgrs_tile_id'].unique()):
-            tile_df = df[df['mgrs_tile_id'] == tile_id]
+        for tile_id in sorted(df[tile_col].unique()):
+            tile_df = df[df[tile_col] == tile_id]
 
             if direction_col in df.columns:
                 directions = sorted(tile_df[direction_col].unique())
