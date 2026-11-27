@@ -153,6 +153,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install --only-binary=:all: -e ".[dev]"
+          pip install --no-deps "grits-resolver @ git+https://github.com/ottoKae/GRiTS-Resolver.git@9a92523d8cdbf20ec0b3b377c2265875a6521d73"
 
       - name: Import and CLI smoke test
         run: |

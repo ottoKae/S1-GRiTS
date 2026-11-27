@@ -105,6 +105,7 @@ KNOWN_KEYS: dict = {
         "tile_clip": None,
         "target_resolution": None,
         "resampling_method": None,
+        "intra_pass_mosaic": {"method": None, "looks_directory": None},
         "zarr_chunks": {"y": None, "x": None},
         "cog_block_size": None,
         "despeckle": None,  # method + free-form kwargs

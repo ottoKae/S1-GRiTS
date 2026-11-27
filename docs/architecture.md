@@ -2,18 +2,18 @@
 
 ## Architecture
 
-S1-GRiTS is built on a **Zarr-first data cube architecture** with three specialized processing workflows for different temporal analysis needs.
+S1-GRiTS uses a **Zarr-first data cube architecture**, with the existing production workflow and explicit optional analysis tools. See the [V4 runtime call paths](call_flow.md) for CLI/Python ownership and the distinction between production, views and derived outputs. The existing Web is retained; its new integrations are deferred to a separate branch.
 
 ### Zarr-First Philosophy
 
 **Zarr is the authoritative primary product** — a time-series data cube that accumulates all acquisitions incrementally. COG and preview files are **optional derivative exports** generated from Zarr.
 
 **Why Zarr-first matters:**
-- **Temporal alignment:** All time steps share the same spatial grid and CRS, ensuring perfect temporal alignment across acquisitions
+- **Shared grid:** All time steps in a store share the same spatial grid and CRS, allowing pixel-wise time-series access
 - **Incremental updates:** New acquisitions append to existing Zarr stores without reprocessing historical data
 - **Cloud-optimized:** Chunked storage (512×512 pixels) enables efficient parallel reads via Dask/xarray
 - **Multi-dimensional:** Direct access to time-series slicing, spatial subsetting, and statistical aggregation
-- **Future-proof:** COG files can be regenerated from Zarr, but Zarr cannot be recovered from COGs
+- **Reproducible exports:** COG files can be regenerated from Zarr; COGs alone do not preserve the complete Cube metadata and support arrays
 
 **Product Hierarchy:**
 ```
@@ -33,12 +33,13 @@ Preview PNG (TERTIARY - optional)
 
 ### Acquisition Group Strategy
 
-S1-GRiTS uses an **acquisition group strategy** to ensure geometric consistency within time-series data cubes.
+S1-GRiTS uses an **acquisition group strategy** to keep observations from different
+relative orbit tracks separate while mapping each store to a fixed target grid.
 
 **How it works:**
 1. **Burst enumeration:** Query ASF for all RTC-S1 bursts intersecting the MGRS tile
-2. **Group by acquisition geometry:** Bursts are grouped by `(orbit_pass, track_number, frame_number)` — this is the **acquisition group**
-3. **One Zarr store per group:** Each acquisition group produces one Zarr data cube, ensuring all time steps share identical geometry
+2. **Group acquisitions:** Bursts from the same acquisition are mosaicked together, preserving their relative orbit track and flight direction
+3. **One Zarr store per track:** Within a tile, direction and product variant, each relative orbit track has its own Zarr store; acquisitions append as time steps on the store's fixed grid
 
 **Example:**
 ```
@@ -57,10 +58,15 @@ MGRS Tile 17MQV, DESCENDING orbit:
 ```
 
 **Benefits:**
-- Perfect spatial alignment across all time steps within a group
-- No geometric reprojection artifacts
-- Temporal coherence for interferometric applications
-- Efficient append-only updates
+- A consistent output grid across time steps within a store
+- Separate track identity and acquisition provenance
+- Incremental updates when grid and processing identity remain compatible
+
+Grid alignment does not guarantee subpixel registration or eliminate reprojection
+effects. The default 30 m route uses exact coordinate transformation and nearest-neighbor
+resampling where mapping is needed; see the [grid and resampling contract](target-grid-resampling-v1.md).
+The input is RTC backscatter intensity, so this architecture does not provide the
+complex phase data required for interferometric coherence analysis.
 
 ### Workflow Comparison
 

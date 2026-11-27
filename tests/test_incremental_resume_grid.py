@@ -23,7 +23,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
-import hashlib
+from test_cube_derivatives import hashes
 from rasterio.transform import Affine
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -256,8 +256,3 @@ def test_compatible_store_resumes_in_place_regardless_of_flag(tmp_path):
         # overwrite only authorizes rebuilding INCOMPATIBLE stores; a
         # compatible one is always resumed with its contents intact.
         assert g2["time"].shape[0] == 1
-
-
-def hashes(root):
-    return {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
-            for p in root.rglob('*') if p.is_file()}

@@ -137,7 +137,9 @@ def _build_stac_item(
                 },
                 "spectral": {
                     "type": "bands",
-                    "values": bands,
+                    "values": (variant_properties.get('s1grits:bands')
+                               if any(b in (variant_properties.get('s1grits:bands') or []) for b in ('n_contributors', 'source_index'))
+                               else bands),
                 },
             },
         },
@@ -206,6 +208,7 @@ def _write_scene_stac_item(
     opera_ids: list[str] | None = None,
     pass_id: int | None = None,
     track: int | None = None,
+    item_id_override: str | None = None,
 ) -> str:
     """
     Write a STAC Item JSON for a single acquisition (per-pass scene).
@@ -217,7 +220,7 @@ def _write_scene_stac_item(
     if not stac_output_enabled():
         return None
     dt_str = acq_ts.strftime('%Y%m%dT%H%M%S')
-    item_id = f"{mgrs_tile_id}_{direction_label}_{dt_str}"
+    item_id = item_id_override or f"{mgrs_tile_id}_{direction_label}_{dt_str}"
     datetime_str = acq_ts.strftime('%Y-%m-%dT%H:%M:%SZ')
 
     variant_properties = {

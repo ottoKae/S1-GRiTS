@@ -4,6 +4,8 @@
 
 S1-GRiTS provides **10+ commands** covering the full workflow: processing, catalog management, analysis, and mosaicking.
 
+For a local synthetic Cube walkthrough, see the [existing-Cube quickstart (中文)](getting_started_existing_cube_ZH.md). It uses the development candidate's existing CLI without downloads or cloud services.
+
 ### Command Overview
 
 | Command | Purpose | Workflow |
@@ -19,6 +21,15 @@ S1-GRiTS provides **10+ commands** covering the full workflow: processing, catal
 | `s1grits tile inspect` | Single-tile temporal completeness | All |
 | `s1grits mosaic` | Multi-tile monthly mosaic | Monthly |
 | `s1grits mosaic_scenes` | Multi-tile per-scene mosaic | Scenes |
+| `s1grits derive_cube` | [Existing-Cube features, filters and monthly composites](cube_derivatives.md); [temporal interpolation](temporal_interpolation.md) | Analysis |
+| `s1grits view create / materialize` | [Local virtual products and explicit saving](cube_views.md) | Analysis |
+| `s1grits view multitrack` | [Ordered single-track monthly product combinations](multitrack_monthly.md) | Analysis |
+| `s1grits analyze_cusum` | [Optional public CUSUM backend; local experimental adapter](cusum.md) | Analysis |
+| `s1grits analyze_segments` | [Local LandTrendr (default backend), or explicit Earth Engine CCDC/LandTrendr, for one Cube pixel](segmentation.md) | Analysis |
+| `s1grits analyze_segments_batch` | [Experimental local LandTrendr for a small native-grid point set or window](segmentation.md#small-local-point-sets-and-windows) | Analysis |
+| `s1grits grid build/query` | [Build/query stand and geographic-cell indexes](stand-geographic-grid.md) | Spatial |
+| `s1grits points extract` / `s1grits regions export` | [Extract existing local Zarr products](spatial-products.md) | Spatial |
+| `python -m s1grits.opera_spatial plan/update/repair` | [Read OPERA assets into independent point or region products](opera-spatial.md) | Spatial |
 
 ### Help
 
@@ -314,8 +325,10 @@ mosaic_scenes_20240115_ASCENDING.tif
 
 ### Web interface
 
-Launch the browser UI — interactive data discovery, coverage reports, tile/scene
-inspection, mosaic creation, and time-series visualization. See `docs/webapp.md`.
+Launch the retained Chinese Web interface. See [the Web guide](webapp.md)
+for its existing workflows. Bilingual switching, new V4 tool forms and Web fixes
+are deferred to `feature/web-console-v4`; the commands above remain available
+through CLI/Python without the Web update.
 
 ```bash
 s1grits serve --root <workspace>

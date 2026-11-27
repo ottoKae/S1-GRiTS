@@ -9,6 +9,7 @@ this also guards against accidental removal of a documented command.
 from __future__ import annotations
 
 import sys
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -49,6 +50,18 @@ def test_version_matches_package(capsys):
     assert code == 0
     assert __version__ in text, f"--version must report {__version__}, got: {text!r}"
     assert "1.0.0" not in text  # the old hard-coded value is gone
+
+
+def test_core_help_without_web_dependencies():
+    script = (
+        "import sys, runpy; "
+        "sys.modules.update(dict.fromkeys(('fastapi', 'uvicorn', 'httpx', 'multipart'))); "
+        "sys.argv = ['s1grits', '--help']; "
+        "runpy.run_module('s1grits', run_name='__main__')"
+    )
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert "process_scenes" in result.stdout
 
 
 def test_top_level_help_lists_retained_commands(capsys):

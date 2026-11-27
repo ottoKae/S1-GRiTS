@@ -1,0 +1,21 @@
+spatial:
+  mode: points
+input:
+  path: D:/research/samples.geojson
+  id_column: sample_id
+source:
+  root: D:/research/s1_cube
+  product_type: smonthly
+  processing_signature: null
+selection:
+  flight_directions: [ASCENDING, DESCENDING]
+  track_numbers: []
+time:
+  years: [2024]
+  months: [1, 2]
+variables: [VV_dB, VH_dB, n_obs]
+include_static: false
+output:
+  base_dir: D:/research/s1_spatial_points
+  existing_store: resume
+  export_csv: false

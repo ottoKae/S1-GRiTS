@@ -1,2 +1,4 @@
 # The vendored contract is pinned by its exact bytes on every platform.
 src/s1grits/provenance_contract.py text eol=lf
+# Generated skills retain the canonical bytes used by the published hashes.
+agents/skills/s1grits-*/SKILL.md text eol=lf

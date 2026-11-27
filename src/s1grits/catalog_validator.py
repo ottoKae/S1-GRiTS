@@ -86,6 +86,8 @@ def validate_catalog_integrity(
 
     # Filter to complete, schema-compatible records
     from s1grits.canonical_catalog_schema import filter_complete_records
+    from s1grits.resolver import CubeResolver
+    resolver = CubeResolver(output_root)
     df = filter_complete_records(df, require_grid=True)
     if len(df) == 0:
         result.errors.append("No complete, schema-compatible records found")
@@ -93,31 +95,40 @@ def validate_catalog_integrity(
 
     # ---- Check 1: zarr_path exists ----
     for _, row in df.iterrows():
+        if pd.notna(row.get('view_path')) and row.get('view_path'):
+            from s1grits.catalog_registration import _validate_record
+            try:
+                _validate_record(output_root, row)
+            except (ValueError, KeyError, OSError) as error:
+                result.errors.append(f"Invalid view {row.get('item_id')}: {error}")
+            continue
         _zp = row.get("zarr_path")
-        if not _zp:
+        if not _zp or pd.isna(_zp):
             result.warnings.append(f"Record {row.get('item_id','?')}: zarr_path is null")
             continue
-        _zarr_full = output_root / _zp
+        _zarr_full = resolver._asset_path(row)
         if not _zarr_full.exists():
             msg = f"Zarr missing: {_zp}"
             result.errors.append(msg) if strict else result.warnings.append(msg)
 
     # ---- Check 2+3: Zarr attrs vs catalog ----
-    import zarr
     _zarr_checked = set()
     for _, row in df.iterrows():
         _zp = row.get("zarr_path")
-        if not _zp or _zp in _zarr_checked:
+        if not _zp or pd.isna(_zp):
             continue
-        _zarr_checked.add(_zp)
-        _zarr_full = output_root / _zp
+        _zarr_full = resolver._asset_path(row)
+        _key = (str(_zarr_full.resolve()), resolver._group_name(row))
+        if _key in _zarr_checked:
+            continue
+        _zarr_checked.add(_key)
         if not _zarr_full.exists():
             continue
 
         try:
-            g = zarr.open_group(str(_zarr_full), mode="r")
+            g = resolver.open_group(row)
         except Exception as e:
-            result.errors.append(f"Cannot open Zarr {_zp}: {e}")
+            result.errors.append(f"Cannot open Zarr {_zp} group '{_key[1]}': {e}")
             continue
 
         # Check attrs
@@ -147,7 +158,7 @@ def validate_catalog_integrity(
             _ip = _infer_item_path(row)
         if not _ip:
             continue
-        _item_full = output_root / _ip
+        _item_full = resolver._asset_path(dict(row, view_path=None, zarr_path=_ip))
         if not _item_full.exists():
             msg = f"STAC item missing: {_ip}"
             if strict:
@@ -162,7 +173,7 @@ def validate_catalog_integrity(
             _ip = _infer_item_path(row)
         if not _ip:
             continue
-        _item_full = output_root / _ip
+        _item_full = resolver._asset_path(dict(row, view_path=None, zarr_path=_ip))
         if not _item_full.exists():
             continue
         try:
@@ -252,7 +263,7 @@ def validate_catalog_integrity(
             _ip = _infer_item_path(row)
         if not _ip:
             continue
-        _item_full = output_root / _ip
+        _item_full = resolver._asset_path(dict(row, view_path=None, zarr_path=_ip))
         if not _item_full.exists():
             continue
         _cat_sig = row.get("processing_signature")
@@ -291,11 +302,17 @@ def validate_catalog_integrity(
         except Exception:
             pass
 
-    # ---- Check 9: Same Zarr store must have same processing_signature ----
+    # ---- Check 9: Same Zarr asset (path/group) must have one signature ----
     if "processing_signature" in df.columns and "zarr_path" in df.columns:
+        _signature_rows = df[
+            df["processing_signature"].notna()
+            & df["zarr_path"].notna() & df["zarr_path"].ne("")
+        ].copy()
+        _signature_rows['_asset'] = [
+            (str(resolver._asset_path(row).resolve()), resolver._group_name(row))
+            for _, row in _signature_rows.iterrows()]
         _zarr_sig_groups = (
-            df[df["processing_signature"].notna() & df["zarr_path"].notna()]
-            .groupby("zarr_path")["processing_signature"]
+            _signature_rows.groupby('_asset')["processing_signature"]
             .nunique()
         )
         _mixed = _zarr_sig_groups[_zarr_sig_groups > 1]

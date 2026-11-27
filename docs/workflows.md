@@ -39,6 +39,11 @@ Produce per-acquisition scene outputs suitable for:
 
 #### Output Structure
 
+The tree includes optional STAC exports. Production writes Parquet catalogs and
+product metadata; `catalog.json`, `collections/` and `items/` are created by an
+explicit `s1grits catalog resync --output-dir <base_dir>`. See
+[current output layout](outputs.md) for product labels and historical layouts.
+
 ```
 {base_dir}/
   catalog.json
@@ -199,6 +204,82 @@ lazy compatibility view. New stores use the identical-grid path. Legacy
 tile-grid stores require an integer-pixel lattice match; the resolver does
 not resample their values. Ambiguous tracks or geometry groups are rejected.
 
+Static and dynamic layers must also have equivalent CRS definitions before
+coordinate matching. Equal x/y numbers in different CRSs are not aligned;
+both stack reading and training-store creation reject that combination.
+
+Direction and track filters are applied before choosing the common grid.
+With no direction filter, the existing majority-grid rule still applies.
+`open_stack` merges products only when their time axes are compatible and
+their data variable names are distinct. Otherwise it returns a dictionary
+keyed by product type (or `product_type:processing_signature` when multiple
+signatures are explicitly allowed with `require_same_processing=False`).
+For example, two versions of `VV_dB` remain separate; neither replaces the other.
+
+Multiple catalog dates referencing the same Zarr asset open as one store.
+If one selected product group references different assets, `open_stack` and
+`materialize_training_cube` raise an ambiguity error. Narrow the geometry
+selection, or inspect `r.query(...)`, select the desired record and call
+`r.open(record)` for individual access. These methods do not concatenate
+independent stores automatically.
+
+Catalog records may now identify a product with `zarr_path` and optional
+`zarr_group`. Missing, null or empty group means the store root, preserving old
+catalog reads. `CubeResolver.open(record)` reads that group's variables;
+`open_group(record)` opens the same group read-only for attributes and raw arrays.
+Derivation, segmentation and CUSUM use that group's CRS, transform and generation,
+not attributes from its containing root. Catalog validation treats different
+groups as separate assets while still rejecting mixed signatures within one asset.
+
+To retain explicit references to existing local products across catalog rebuilds,
+register them in the collection. This stores metadata and locators, without copying
+or modifying the referenced arrays:
+
+```python
+from s1grits.analysis import register_product
+from s1grits.resolver import CubeResolver
+
+source = CubeResolver('/data/existing')
+record = source.catalog[source.catalog.item_id == 'PRODUCT_ID'].iloc[0]
+register_product('/data/collection', record, source_root=source.root)
+```
+
+For a manually described group, supply its canonical product record including
+`item_id`, `tile_id`, `product_type`, `zarr_path`, `zarr_group`, CRS/transform/shape,
+bands, time range and `processing_signature`. Metadata must describe the selected
+group. The CLI accepts the same record as a JSON object:
+
+```bash
+s1grits catalog register --output-dir /data/collection --record product.json --source-root /data/existing
+s1grits catalog resync --output-dir /data/collection
+```
+
+Registration atomically updates `.s1grits-registrations.json` and the root catalog
+under the existing output lock. `resync` validates this manifest before writing,
+scans the usual production directories, then merges explicit records. Explicit
+metadata takes precedence over directory guesses for the same path/group; item ID
+conflicts and mixed processing signatures for one asset are rejected. Unregistered
+orphan rows still disappear. Missing or invalid registered assets stop the rebuild
+with an error, preserving the prior catalog. To retire a reference, deliberately
+remove its manifest entry and resync; this does not delete the source data.
+
+Locators are stored relative to the collection where possible, so moving a collection
+and its referenced assets together preserves access. Moving only the collection
+requires updating its references. `registration_path` identifies the manifest;
+JSON and GeoParquet STAC preserve the registered item ID and Zarr group locator.
+Registration itself updates the root catalog; resync refreshes per-tile catalogs
+and STAC. In-place source revision requires reviewing the registered metadata.
+
+The same catalog can also register local virtual definitions via `view_path`.
+`CubeResolver.open(record)` returns a lazy Dataset for such records; use explicit
+materialization when a saved Zarr is needed. See [local virtual products](cube_views.md)
+for selection, Ratio/RVI, parent-version limits and CLI examples.
+
+Arbitrary writes into shared stores remain outside this entry point. Existing
+training-store root/static writing remains available and records its source group
+locators. New derivatives may use distinct nested roots within one collection;
+see [sibling outputs](cube_derivatives.md#output-and-lineage).
+
 To write a training store with dynamic arrays at the root and 2-D static
 arrays under `static/`:
 
@@ -208,6 +289,10 @@ r.materialize_training_cube(
     direction="DESCENDING", track=40,
 )
 ```
+
+Use the [multi-track monthly view](multitrack_monthly.md) when combining comparable
+single-track monthly products. This optional operation retains the production
+pipeline's default burst and monthly behavior.
 
 Cross-sensor reading and versioned processing evidence use the separate
 [GRiTS-Resolver package](https://github.com/ottoKae/GRiTS-Resolver).

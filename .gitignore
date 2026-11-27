@@ -31,6 +31,7 @@ MANIFEST
 # Virtual environments
 .env
 .venv
+/.venv-*/
 env/
 venv/
 ENV/
@@ -79,6 +80,7 @@ desktop.ini
 output*/
 output_*/
 webapp_output/
+.webapp/
 logs/
 *.log
 *.tif
@@ -110,3 +112,9 @@ scripts/sftp_ecuador*
 
 # Local plans and execution records; public guides stay in docs/.
 /docs/_work/
+
+# Local diagnostic runs and manuscript work; keep reusable tests tracked.
+/tooling/diagnostics/
+/manuscript_analysis_scripts/
+/manuscript_review/
+/Latex/

@@ -257,6 +257,8 @@ def run_scenes_workflow(config_path: str | Path, overrides: dict | None = None) 
     )
     config = load_config(config_path)
     config = apply_output_overrides_and_stac(config, overrides)
+    from s1grits.scenes.average import validate_intra_pass_config
+    intra_pass_method = validate_intra_pass_config(config)
     from s1grits.config_schema import monthly_method_name
     _monthly = config.get('processing', {}).get('monthly', {})
     if _monthly.get('enabled', False):
@@ -329,6 +331,8 @@ def run_scenes_workflow(config_path: str | Path, overrides: dict | None = None) 
 
     # Output root: base_dir directly, no suffix appended
     output_root = Path(config.get('output', {}).get('base_dir', './output'))
+    if intra_pass_method != 'first_valid_pixel':
+        output_root = output_root / 'derived' / f'intra_pass_{intra_pass_method}'
     output_root.mkdir(parents=True, exist_ok=True)
 
     polarization = config.get('roi', {}).get('polarization', 'VV+VH')
@@ -522,6 +526,8 @@ def run_scenes_workflow(config_path: str | Path, overrides: dict | None = None) 
                             'datetime', 'product_type', 'month']
                 if k in df_global.columns
             ]
+            if intra_pass_method != 'first_valid_pixel':
+                _g_dedup_keys += ['processing_signature', 'geometry_group_id']
             if _g_dedup_keys:
                 _g_before = len(df_global)
                 df_global = df_global.drop_duplicates(

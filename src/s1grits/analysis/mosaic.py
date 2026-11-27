@@ -35,6 +35,194 @@ from s1grits.logger_config import get_logger
 logger = get_logger(__name__)
 
 
+def plan_grid_mosaic(catalog_root, item_ids, output_file, *, target_crs,
+                     resolution, bounds, output_format='VRT') -> dict:
+    """Validate the existing fixed-grid contract and COG headers without writing."""
+    import math
+    from pyproj import CRS
+    from s1grits.product_instance import make_processing_signature
+
+    crs = CRS.from_user_input(target_crs)
+    if not crs.is_projected or any(a.unit_conversion_factor != 1 for a in crs.axis_info[:2]):
+        raise ValueError('Grid mosaic requires a projected target CRS in metres')
+    resolution = float(resolution)
+    bounds = tuple(float(v) for v in bounds)
+    if (len(bounds) != 4 or not all(math.isfinite(v) for v in (*bounds, resolution))
+            or resolution <= 0 or bounds[0] >= bounds[2] or bounds[1] >= bounds[3]):
+        raise ValueError('Provide finite ordered bounds and a positive metre resolution')
+    shape = [(bounds[3]-bounds[1])/resolution, (bounds[2]-bounds[0])/resolution]
+    if any(v < 1 or abs(v-round(v)) > 1e-7 for v in shape):
+        raise ValueError('Bounds must define an integer number of target pixels')
+    output_format = output_format.upper()
+    if output_format not in ('VRT', 'COG'):
+        raise ValueError('output_format must be VRT or COG')
+    output = Path(output_file).resolve()
+    if output.is_relative_to(Path(catalog_root).resolve()):
+        raise ValueError('Write the mosaic outside the source Cube root')
+    if output.suffix.lower() != ('.vrt' if output_format == 'VRT' else '.tif'):
+        raise ValueError('Output suffix must be .vrt for VRT or .tif for COG')
+    dependencies = output.with_name(output.name + '.sources')
+    receipt = output.with_suffix(output.suffix + '.json')
+    if any(p.exists() for p in (output, dependencies, receipt)):
+        raise FileExistsError('Use a new output path; grid mosaics never overwrite products')
+    records, sources, bands = _grid_mosaic_inputs(catalog_root, item_ids, crs, resolution, bounds)
+    contract = {
+        'version': 'inter_tile_grid_v1', 'crs': crs.to_wkt(), 'bounds': list(bounds),
+        'resolution_m': resolution, 'shape': [round(v) for v in shape],
+        'resampling': 'nearest', 'transform_tolerance_pixels': 0.0,
+        'overlap': 'first_valid_per_band_in_item_order', 'bands': bands,
+        'parent_processing_signature': records[0]['processing_signature'],
+        'ordered_item_ids': list(item_ids),
+    }
+    signature = make_processing_signature(contract)
+    return dict(contract=contract, processing_signature=signature, inputs=records, sources=sources,
+                output=str(output), format=output_format)
+
+
+def create_grid_mosaic(catalog_root, item_ids, output_file, *, target_crs,
+                       resolution, bounds, output_format='VRT') -> str:
+    """Map explicit COGs with per-band first-valid priority; retain VRT dependencies."""
+    import json
+    from pyproj import CRS
+    from osgeo import gdal
+
+    plan = plan_grid_mosaic(catalog_root, item_ids, output_file, target_crs=target_crs,
+                            resolution=resolution, bounds=bounds, output_format=output_format)
+    contract, signature = plan['contract'], plan['processing_signature']
+    records, sources, bands = plan['inputs'], plan['sources'], contract['bands']
+    crs, resolution, bounds = CRS.from_wkt(contract['crs']), contract['resolution_m'], contract['bounds']
+    output, output_format = Path(plan['output']), plan['format']
+    dependencies = output.with_name(output.name + '.sources')
+    receipt = output.with_suffix(output.suffix + '.json')
+    dependencies.mkdir(parents=True)
+    warped = []
+    for index, source in enumerate(sources):
+        path = dependencies/f'{index:06d}.vrt'
+        ds = gdal.Warp(str(path), source['path'], format='VRT', dstSRS=crs.to_wkt(),
+                       outputBounds=source['target_bounds'], xRes=resolution, yRes=resolution,
+                       resampleAlg='near', errorThreshold=0.0, dstNodata=float('nan'),
+                       outputType=gdal.GDT_Float32, overviewLevel='NONE',
+                       warpOptions=['UNIFIED_SRC_NODATA=NO'], warpMemoryLimit=64)
+        if ds is None:
+            raise RuntimeError(f'Failed to map {source["path"]}; partial outputs retained in {dependencies}')
+        ds = None
+        warped.append(str(path))
+    vrt = output if output_format == 'VRT' else dependencies/'mosaic.vrt'
+    # GDAL gives the last file priority, so reverse the declared first-valid order.
+    ds = gdal.BuildVRT(str(vrt), warped[::-1], options=gdal.BuildVRTOptions(
+        resolution='user', xRes=resolution, yRes=resolution, outputBounds=bounds,
+        resampleAlg='nearest', srcNodata='nan', VRTNodata='nan', strict=True))
+    if ds is None:
+        raise RuntimeError(f'Failed to build mosaic; dependencies retained in {dependencies}')
+    for index, band in enumerate(bands, 1):
+        ds.GetRasterBand(index).SetDescription(band)
+    ds.SetMetadataItem('S1GRITS_MOSAIC_SIGNATURE', signature)
+    ds.FlushCache()
+    ds = None
+    fix_vrt_paths(str(vrt), make_absolute=True)
+    if output_format == 'COG':
+        ds = gdal.Translate(str(output), str(vrt), format='COG', creationOptions=[
+            'COMPRESS=DEFLATE', 'BLOCKSIZE=512', 'BIGTIFF=IF_SAFER', 'RESAMPLING=NEAREST'])
+        if ds is None:
+            raise RuntimeError(f'Failed to materialize COG from {vrt}')
+        ds = None
+    # Check georeferencing without materializing the regional raster.
+    import rasterio
+    with rasterio.open(output) as result:
+        expected = (resolution, 0, bounds[0], 0, -resolution, bounds[3])
+        if (result.shape != tuple(contract['shape']) or tuple(result.transform)[:6] != expected
+                or result.descriptions != tuple(bands)
+                or CRS.from_user_input(result.crs) != crs):
+            raise RuntimeError('Mosaic output does not match the requested grid/bands')
+    receipt.write_text(json.dumps({
+        'status': 'complete', 'processing_signature': signature, 'contract': contract,
+        'catalog_root': str(Path(catalog_root).resolve()), 'inputs': records, 'sources': sources,
+        'output': str(output), 'format': output_format, 'dependencies': str(dependencies),
+        'coverage': 'Selected source footprints intersect bounds; pixel validity is not pre-scanned.',
+        'source_integrity': 'Catalog identities and file size/mtime recorded; source bytes are not hashed.',
+        'gdal_version': gdal.VersionInfo('--version'),
+    }, indent=2, allow_nan=False), encoding='utf-8')
+    return str(output)
+
+
+def _grid_mosaic_inputs(catalog_root, item_ids, crs, resolution, bounds):
+    """Validate selected identities, temporal meaning and headers before writing."""
+    import json
+    import math
+    import pandas as pd
+    import rasterio
+    from rasterio.warp import transform_bounds
+    from s1grits.resolver import CubeResolver
+
+    if (not isinstance(item_ids, list) or not item_ids
+            or any(not isinstance(v, str) or not v for v in item_ids)
+            or len(set(item_ids)) != len(item_ids)):
+        raise ValueError('item_ids must be a nonempty ordered list of distinct catalog IDs')
+    root = Path(catalog_root).resolve()
+    catalog = CubeResolver(root).catalog
+    selected = catalog[catalog['item_id'].isin(item_ids)]
+    if len(selected) != len(item_ids) or selected['item_id'].duplicated().any():
+        raise ValueError('Requested catalog items are missing, incomplete or ambiguous')
+    selected = selected.set_index('item_id').loc[item_ids].reset_index()
+    for field in ('product_type', 'processing_signature', 'flight_direction'):
+        if selected[field].isna().any() or selected[field].nunique() != 1 or not selected.iloc[0][field]:
+            raise ValueError(f'Grid mosaic requires one explicit {field}')
+    product = selected.iloc[0]['product_type']
+    if product not in ('scenes', 'smonthly', 'monthly'):
+        raise ValueError('Grid mosaic supports scientific scenes/monthly COGs only')
+    if selected.iloc[0]['flight_direction'] not in ('ASCENDING', 'DESCENDING'):
+        raise ValueError('Grid mosaic requires one explicit orbit direction')
+    if selected['tile_id'].isna().any() or selected['tile_id'].duplicated().any():
+        raise ValueError('Select exactly one product per tile; inter-pass fusion is separate')
+    if product == 'scenes':
+        dates = pd.to_datetime(selected['datetime'], utc=True, errors='coerce')
+        if dates.isna().any() or dates.nunique() != 1:
+            raise ValueError('Scenes require identical acquisition timestamps; no implicit time window')
+        if selected['track'].isna().any() or selected['track'].nunique() != 1:
+            raise ValueError('Scenes require the same relative orbit track')
+    else:
+        months = selected['month']
+        if months.isna().any() or months.nunique() != 1:
+            raise ValueError('Monthly inputs must describe the same month')
+    records = json.loads(selected.to_json(orient='records', date_format='iso'))
+    sources, bands = [], None
+    for record in records:
+        asset = record.get('cog_path')
+        if not asset:
+            raise ValueError(f'No COG asset for {record["item_id"]}')
+        path = root/asset
+        if not path.exists():
+            path = root/record['tile_id']/asset
+        path = path.resolve()
+        with rasterio.open(path) as src:
+            names = list(src.descriptions)
+            if src.crs is None or any(n is None or n == '' for n in names):
+                raise ValueError(f'COG needs georeferencing and named bands: {path}')
+            if any(t != 'float32' for t in src.dtypes) or any(n is None for n in src.nodatavals):
+                raise ValueError(f'Expected float32 scientific COG with declared NoData: {path}')
+            expected_bands = record.get('bands')
+            if isinstance(expected_bands, str):
+                expected_bands = json.loads(expected_bands)
+            expected_bands = [b for b in (expected_bands or [])
+                              if b not in ('n_obs', 'n_contributors', 'n_candidates', 'source_index', 'weight_sum')]
+            if names != expected_bands or (bands is not None and names != bands):
+                raise ValueError('COG band names/order must match catalog and all selected inputs')
+            bands = names
+            left, bottom, right, top = transform_bounds(src.crs, crs, *src.bounds, densify_pts=21)
+            # Snap each footprint to the requested lattice, keeping VRTs spatially bounded.
+            left = max(bounds[0], bounds[0] + math.floor((left-bounds[0])/resolution)*resolution)
+            right = min(bounds[2], bounds[0] + math.ceil((right-bounds[0])/resolution)*resolution)
+            bottom = max(bounds[1], bounds[1] + math.floor((bottom-bounds[1])/resolution)*resolution)
+            top = min(bounds[3], bounds[1] + math.ceil((top-bounds[1])/resolution)*resolution)
+            if left >= right or bottom >= top:
+                raise ValueError(f'Selected asset does not intersect requested bounds: {path}')
+            stat = path.stat()
+            sources.append({'item_id': record['item_id'], 'path': path.as_posix(),
+                            'bytes': stat.st_size, 'mtime_ns': stat.st_mtime_ns,
+                            'target_bounds': [left, bottom, right, top]})
+    return records, sources, bands
+
+
 def parse_mgrs_from_path(cog_path: str) -> Tuple[str, str]:
     """
     Parse MGRS tile ID and flight direction from COG file path

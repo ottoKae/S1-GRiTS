@@ -12,9 +12,9 @@
 </p>
 <p align="center"><a href="README.md">English</a> | <strong>简体中文</strong></p>
 <p align="center">
-  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.12+-blue.svg" /></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.12-blue.svg" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20NC-green.svg" /></a>
-  <a href="https://github.com/ottoKae/S1-GRiTS"><img src="https://img.shields.io/badge/version-3.0.1rc1-orange.svg" /></a>
+  <a href="https://github.com/ottoKae/S1-GRiTS"><img src="https://img.shields.io/badge/version-4.0.0-orange.svg" /></a>
 </p>
 
 ---
@@ -23,7 +23,11 @@
   S1-GRiTS（Sentinel-1 Gridded RTC Time Series）是一个 Python 软件包，用于从 ASF OPERA RTC-S1 产品构建可直接分析的 Sentinel-1 SAR 时序数据立方体。它将 burst 级观测转换为按 MGRS 对齐、时间一致的 Zarr 数据立方体，并可按需导出 COG。
 </p>
 
+新环境先看[安装指南](docs/installation.md)，使用已有 Cube 先看[本地小样本教程](docs/getting_started_existing_cube_ZH.md)，选择 CLI、Python、Web 或 Agent 请看[入口与支持范围](docs/entry_points.md)。本分支对应 **V4.0.0 开发候选**，版本徽章不代表 PyPI 已发布 V4；使用前核对实际安装版本和命令帮助。
+
 ## 已有数据的实验使用与交接
+
+第一次使用已有 Cube，可先完成[本地小样本上手教程](docs/getting_started_existing_cube_ZH.md)：查看目录、读取时序、生成独立的月度 Ratio／RVI 产品并核对来源。该教程对应当前开发候选；无需 Agent、GEE 或下载 burst。
 
 收到 Zarr 后，先核对这一批数据实际使用的处理流程、数值单位、合成域及来源映射；当前源码和变量名不能替代历史生产证据。参见[数据交接说明](docs/DATA_HANDOFF_ZH.md)和[交接 skill](agents/skills/s1-data-handoff/SKILL.md)。按[只读元数据导出指南](docs/PROVENANCE_READONLY_ZH.md)使用 `python -m s1grits.provenance build` / `verify`，或按[可选月度生产记录指南](docs/PROVENANCE_WORKFLOW_ZH.md)及 [YAML 示例](config/provenance_monthly.example.yaml)记录来源、追加／替换及提交恢复。生产留痕默认关闭，支持范围、可复现检查与局限直接写在使用指南中。每批数据的覆盖、处理证据和未知项应随数据交付。元数据导出不改写影像；已有库可按 [`attach` 入库说明](docs/PROVENANCE_READONLY_ZH.md#attach-historical-metadata)附入经核验的历史 release。完整影像交付尚无自动复制／打包入口。
 
@@ -53,7 +57,7 @@
 | 月度中值合成及瓦片裁剪前 TV-Bregman 去斑 | `asf_io.py`、`asf_array_processing.py` | `process_scenes` 的 `processing.monthly` |
 | 可增量追加的 Zarr、STAC 1.1.0 与 Parquet 目录 | `stac_builder.py`、`catalog_sync.py` | `s1grits catalog inspect` |
 | 静态成像几何图层：LIA、入射角、叠掩/阴影、视数、ANF β0/σ0 | `workflow_static.py` | scenes YAML 或 `s1grits static ensure` |
-| 升降轨后向散射差异及其与 LIA/ANF 的关系 | `manuscript_analysis_scripts/c05_*` | 对应论文脚本 |
+| 升降轨后向散射差异及其与 LIA/ANF 的关系 | `research/paper-analysis` 分支的论文脚本 | 独立研究工作流 |
 
 ### 动态数据与 static 的同目录存储及配对规则
 
@@ -79,7 +83,9 @@ RTC-STATIC 永远采用**原始值对齐**策略。六个源变量不进行去�
 
 ### 复现论文图表
 
-`manuscript_analysis_scripts/` 保存论文使用的脚本：
+论文脚本及研究区边界保留在独立的
+[`research/paper-analysis` 分支](https://github.com/ottoKae/S1-GRiTS/tree/research/paper-analysis/manuscript_analysis_scripts)，
+不属于本软件分支或 Python 发行包。历史脚本与图表的对应关系为：
 
 | 脚本 | 对应结果 |
 |---|---|
@@ -96,7 +102,7 @@ RTC-STATIC 永远采用**原始值对齐**策略。六个源变量不进行去�
 - 多区域扩展性合成产品：[10.5281/zenodo.20604391](https://doi.org/10.5281/zenodo.20604391)
 - 像素级轨道配对统计与静态几何数据：[10.5281/zenodo.20607604](https://doi.org/10.5281/zenodo.20607604)
 
-### 用三条命令复现主要结果
+### 准备论文分析的生产输入
 
 ```bash
 # 1. 生成论文研究瓦片的成像几何一致格网时序
@@ -105,9 +111,10 @@ s1grits process_scenes --config config/s1grits_scenes.yaml
 # 2. 生成用于偏差分析的 static 成像几何图层
 s1grits static ensure --output-dir ./output --product-label smonthly_ASCENDING
 
-# 3. 计算跨轨偏差
-python manuscript_analysis_scripts/c01_f5a_gridded_composites_17MPU.py
 ```
+
+在独立研究检出目录中核对输入路径与研究参数，再运行对应脚本；上述生产命令本身不等于
+已复现论文统计结果。
 
 ---
 
@@ -131,10 +138,10 @@ S1-GRiTS 面向需要开展大范围、长时序 SAR 分析，同时希望避免
 6. **标准化 Gamma0 辐射量**：基于经过辐射地形校正的 OPERA RTC-S1。
 7. **双重斑点抑制**：时间中值合成与可选 TV-Bregman 空间滤波。
 8. **时序增量更新**：新数据追加到 Zarr，无需重建历史数据。
-9. **STAC 1.1.0 元数据**：配合 Parquet 目录实现快速检索。
+9. **分层目录与元数据溯源**：使用 Parquet 目录快速检索，通过 [`catalog resync`](docs/cli.md#resync-catalog) 显式导出 STAC。
 10. **分析 API**：提供数据读取、时间序列提取、可视化和验证等模块。
 
-**典型应用：** 长期形变监测、农作物分类、森林变化检测、洪涝灾害评估、土地利用与覆盖制图。
+**典型应用：** 长期后向散射变化监测、农作物分类、森林变化检测、洪涝灾害评估、土地利用与覆盖制图。
 
 ![MGRS 镶嵌示例](notebooks/S1-GRiTS-f1-exmaple.png)
 **图 1：** 中国武汉地区的 burst 优先 MGRS 格网镶嵌。
@@ -149,8 +156,10 @@ S1-GRiTS 面向需要开展大范围、长时序 SAR 分析，同时希望避免
 
 ## 快速开始
 
+下面的安装命令获取已发布的软件包；体验本分支的 V4 候选功能，请按[源码安装说明](docs/installation.md)安装当前 checkout。
+
 ```bash
-# 1. 安装并包含正式中文 Web 控制台（Python 3.12）
+# 1. 安装已发布的软件包及 Web 依赖（Python 3.12）
 pip install "s1grits[web]"
 
 # 2. 可选：为 ASF 下载配置 Earthdata 认证
@@ -167,9 +176,10 @@ s1grits process_scenes --config my_run.yaml
 s1grits serve --root /path/to/output --port 5556
 ```
 
-当前随 Python 包发布的是 **v3 中文控制台**。已经移除的
-Streamlit/英文原型不再打包或跟踪；以后需要英文界面时，应从同一套中文前端做国际化，
-不再维护第二套相互漂移的页面代码。
+本次 V4 候选保留既有中文 Web，通过 `s1grits serve` 启动。
+双语控制台、新工具表单及 Web 修复独立保存在 `feature/web-console-v4`，
+后续审阅后再合并发布。本次新增工具使用 CLI／Python 或通用 Agent skills；
+这些工具可用不代表既有 Web 已经接入。
 
 conda、源码安装、可选依赖、认证和首次运行说明见 **[安装文档](docs/installation.md)**。
 
@@ -211,14 +221,20 @@ s1grits static ensure --output-dir /path/to/output --product-label smonthly_ASCE
 | 要做什么 | 阅读入口 |
 |---|---|
 | 安装并完成首次检查 | [安装](docs/installation.md) |
+| 选择 CLI／Agent／Web，了解各入口支持范围 | [入口支持矩阵](docs/entry_points.md) |
+| 让 Agent 执行可重放任务 | [Skill 文件与使用方式](agents/skills/README.md)、[YAML 与命令](docs/agent_workflows_ZH.md) |
+| 从 V3 迁移到 V4 开发候选 | [迁移与兼容说明](docs/migration_v4.md)、[发布范围](docs/release.md#v4-scope) |
 | 下载逐景／月度影像及配套 static | [工作流](docs/workflows.md)、[网页界面](docs/webapp.md)、[配置参考](docs/configuration.md) |
 | 理解并交接已有数据 | [输出结构](docs/outputs.md)、[数据交接](docs/DATA_HANDOFF_ZH.md) |
 | 记录或核查处理过程 | [月度生产留痕](docs/PROVENANCE_WORKFLOW_ZH.md)、[历史元数据导出](docs/PROVENANCE_READONLY_ZH.md) |
 | 读取数据、准备分析输入 | [Python API](docs/python_api.md)、[示例](docs/examples.md) |
+| 将选定科学 COG 拼接到明确的目标格网 | [固定格网拼接](docs/grid_mosaic.md) |
+| 从已有 Cube 独立生成派生波段、滤波或月度产品 | [已有 Cube 派生工具](docs/cube_derivatives.md) |
+| 提取点／区域并建立小班索引 | [本地空间产品](docs/spatial-products.md)、[小班格网](docs/stand-geographic-grid.md)、[直接读取 OPERA](docs/opera-spatial.md) |
 | 排查问题 | [常见问题](docs/faq.md) |
 
 技术与维护参考：[命令行](docs/cli.md)、[目标格网与插值](docs/target-grid-resampling-v1.md)、
-[架构](docs/architecture.md)、[分块内存](docs/scenes_blockwise_architecture.md)、
+[架构](docs/architecture.md)、[仓库目录职责](docs/entry_points.md#repository-layout)、[功能调用关系](docs/call_flow.md)、[分块内存](docs/scenes_blockwise_architecture.md)、
 [发布流程](docs/release.md)和[更新日志](CHANGELOG.md)。
 
 ## 许可证与引用
