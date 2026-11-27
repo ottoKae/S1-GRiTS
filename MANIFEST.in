@@ -6,3 +6,8 @@ include tools/create_demo_cube.py
 include config/spatial_points.example.yaml
 include config/spatial_regions.example.yaml
 prune docs/_work
+include tests/README.md
+prune tooling/diagnostics
+prune manuscript_analysis_scripts
+prune manuscript_review
+prune Latex

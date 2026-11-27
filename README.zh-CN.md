@@ -55,7 +55,7 @@
 | 月度中值合成及瓦片裁剪前 TV-Bregman 去斑 | `asf_io.py`、`asf_array_processing.py` | `process_scenes` 的 `processing.monthly` |
 | 可增量追加的 Zarr、STAC 1.1.0 与 Parquet 目录 | `stac_builder.py`、`catalog_sync.py` | `s1grits catalog inspect` |
 | 静态成像几何图层：LIA、入射角、叠掩/阴影、视数、ANF β0/σ0 | `workflow_static.py` | scenes YAML 或 `s1grits static ensure` |
-| 升降轨后向散射差异及其与 LIA/ANF 的关系 | `manuscript_analysis_scripts/c05_*` | 对应论文脚本 |
+| 升降轨后向散射差异及其与 LIA/ANF 的关系 | `research/paper-analysis` 分支的论文脚本 | 独立研究工作流 |
 
 ### 动态数据与 static 的同目录存储及配对规则
 
@@ -81,7 +81,9 @@ RTC-STATIC 永远采用**原始值对齐**策略。六个源变量不进行去�
 
 ### 复现论文图表
 
-`manuscript_analysis_scripts/` 保存论文使用的脚本：
+论文脚本及研究区边界保留在独立的
+[`research/paper-analysis` 分支](https://github.com/ottoKae/S1-GRiTS/tree/research/paper-analysis/manuscript_analysis_scripts)，
+不属于本软件分支或 Python 发行包。历史脚本与图表的对应关系为：
 
 | 脚本 | 对应结果 |
 |---|---|
@@ -98,7 +100,7 @@ RTC-STATIC 永远采用**原始值对齐**策略。六个源变量不进行去�
 - 多区域扩展性合成产品：[10.5281/zenodo.20604391](https://doi.org/10.5281/zenodo.20604391)
 - 像素级轨道配对统计与静态几何数据：[10.5281/zenodo.20607604](https://doi.org/10.5281/zenodo.20607604)
 
-### 用三条命令复现主要结果
+### 准备论文分析的生产输入
 
 ```bash
 # 1. 生成论文研究瓦片的成像几何一致格网时序
@@ -107,9 +109,10 @@ s1grits process_scenes --config config/s1grits_scenes.yaml
 # 2. 生成用于偏差分析的 static 成像几何图层
 s1grits static ensure --output-dir ./output --product-label smonthly_ASCENDING
 
-# 3. 计算跨轨偏差
-python manuscript_analysis_scripts/c01_f5a_gridded_composites_17MPU.py
 ```
+
+在独立研究检出目录中核对输入路径与研究参数，再运行对应脚本；上述生产命令本身不等于
+已复现论文统计结果。
 
 ---
 
@@ -227,7 +230,7 @@ s1grits static ensure --output-dir /path/to/output --product-label smonthly_ASCE
 | 排查问题 | [常见问题](docs/faq.md) |
 
 技术与维护参考：[命令行](docs/cli.md)、[目标格网与插值](docs/target-grid-resampling-v1.md)、
-[架构](docs/architecture.md)、[分块内存](docs/scenes_blockwise_architecture.md)、
+[架构](docs/architecture.md)、[功能调用关系](docs/call_flow.md)、[分块内存](docs/scenes_blockwise_architecture.md)、
 [发布流程](docs/release.md)和[更新日志](CHANGELOG.md)。
 
 ## 许可证与引用

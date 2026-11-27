@@ -86,7 +86,7 @@ Each row links a core methodological claim in the paper to the module/function a
 | **Temporal median compositing + TV-Bregman despeckle before tile-clip** (§3.2) | `asf_io.py` → `load_and_despeckle_rtc_strict` (`tv_bregman`), `asf_array_processing.despeckle_2d` | `s1grits process_scenes` (`processing.monthly`) |
 | **Incremental, appendable Zarr cube + STAC 1.1.0 + Parquet catalogs** (§3.2) | `stac_builder.py` (`STAC_VERSION = "1.1.0"`, datacube ext v2.3.0), `catalog_sync.py`, `canonical_catalog_schema.py` | `s1grits catalog inspect` |
 | **Static acquisition-geometry layers** (LIA, inc. angle, layover/shadow, looks, ANF β0/σ0) (§2.2, §4.1) | `workflow_static.py` (`local_inc_angle`, `inc_angle`, `ls_map`, `number_of_looks`, `rtc_anf_beta0`, `rtc_anf_sigma0`) | scenes YAML or `s1grits static ensure` |
-| **Cross-orbit (ASC–DESC) backscatter offset quantification vs. LIA/ANF** (§3.4, §4.3, Table 3) | `manuscript_analysis_scripts/c05_t03_*`, `c05_f07_*` | run scripts (see below) |
+| **Cross-orbit (ASC–DESC) backscatter offset quantification vs. LIA/ANF** (§3.4, §4.3, Table 3) | Paper scripts on `research/paper-analysis` | Separate research workflow (see below) |
 
 ### Dynamic/static co-location and pairing contract
 
@@ -134,7 +134,10 @@ duplicated along the full time axis in the archive.
 
 ### Reproducing the paper's figures & tables
 
-The `manuscript_analysis_scripts/` directory contains the exact scripts used to produce the published results:
+Paper scripts and study boundaries are maintained separately on the
+[`research/paper-analysis` branch](https://github.com/ottoKae/S1-GRiTS/tree/research/paper-analysis/manuscript_analysis_scripts).
+They are not part of this software branch or Python distributions. The historical
+script-to-figure mapping is:
 
 | Script | Reproduces |
 |---|---|
@@ -150,7 +153,7 @@ The `manuscript_analysis_scripts/` directory contains the exact scripts used to 
 - Multi-region scalability composites — [10.5281/zenodo.20604391](https://doi.org/10.5281/zenodo.20604391)
 - Pixel-level orbit-pair statistics & static geometry — [10.5281/zenodo.20607604](https://doi.org/10.5281/zenodo.20607604)
 
-### Reproduce the headline result in 3 commands
+### Prepare production inputs for paper analysis
 
 ```bash
 # 1. Generate the geometry-consistent gridded time series for the paper's study tile
@@ -159,9 +162,11 @@ s1grits process_scenes --config config/s1grits_scenes.yaml      # edit: manual_m
 # 2. Generate the static acquisition-geometry layers (LIA, ANF β0) used in the offset analysis
 s1grits static ensure --output-dir ./output --product-label smonthly_ASCENDING
 
-# 3. Quantify cross-orbit ASC–DESC offsets (paper Table 3 / Fig. 7)
-python manuscript_analysis_scripts/c01_f5a_gridded_composites_17MPU.py
 ```
+
+Run the relevant research script from its separate checkout after reviewing its
+input paths and study parameters. These production commands alone do not reproduce
+the paper's statistics.
 
 ---
 
@@ -291,7 +296,7 @@ Start with the task you need; the detailed references can be read as needed.
 
 Technical and maintainer references: [CLI](docs/cli.md),
 [Grid and resampling](docs/target-grid-resampling-v1.md), [Architecture](docs/architecture.md),
-[Blockwise memory](docs/scenes_blockwise_architecture.md), [Release process](docs/release.md)
+[Blockwise memory](docs/scenes_blockwise_architecture.md), [Runtime call paths](docs/call_flow.md), [Release process](docs/release.md)
 and [Changelog](CHANGELOG.md).
 
 
