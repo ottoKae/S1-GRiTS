@@ -20,9 +20,10 @@ Upgrading an existing installation? Start with [migration and compatibility](mig
 | Repeat a task / 需要重放或自动化 | 使用同一解释器运行已保存的 CLI／Python；生产读取 YAML | 输入及依赖位置、科学参数、执行记录；新派生使用新输出目录 |
 
 No Agent is required. The [Agent workflow guide](agent_workflows_ZH.md) explains the
-two generic skills. They are workspace-maintained and are not included in this
-checkout or Python wheel. If they are unavailable, ask an Agent to read that guide
-and the matching command help; named skills are optional. For a graphical route,
+two generic skills. Generated [skill exports](../agents/skills/README.md) are included
+in this checkout and the source distribution, separately from the Python wheel.
+Point your Agent to the matching skill file, or to that guide and command help;
+named skills are optional. For a graphical route,
 install the Web extra and run `python -m s1grits serve <workspace>`; add `--catalog-root`
 for existing read-only data. Views additionally need `s1grits[views]`. Optional temporal
 backends and GDAL are described in their own guides, not installed by opening a form.
@@ -150,7 +151,7 @@ for a delivered Cube and [runtime call paths](call_flow.md) for how the interfac
 | `config/` | Public example configurations / 可公开模板；实际运行配置与输出、日志共同保留 |
 | `docs/` | Public usage, API and maintenance guides / 使用、接口和维护说明 |
 | `scripts/`, `tools/` | Standalone audit/maintenance utilities and development/release helpers / 辅助入口，不由运行包导入 |
-| `agents/skills/` | Public data-handoff reference; generic Cube/analysis skills are maintained separately / 公开交接说明入口，通用 skills 的可用性见 Agent 指南 |
+| `agents/skills/` | Generated Cube/analysis skill exports and the public handoff reference / 通用 skills 的生成发布副本与交接说明；维护规范源保持唯一 |
 | `notebooks/`, `assets/` | Tutorials and referenced illustrations / 教程与文档引用素材 |
 | `.github/` | CI and release workflows / 持续集成及发布流程 |
 

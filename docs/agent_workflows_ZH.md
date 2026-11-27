@@ -16,7 +16,7 @@ Web 表单将所选参数交给同一 CLI：生产保存 YAML，工具保存 req
 
 ## 新用户从哪里开始
 
-下面的具名 skill 示例适用于已安装对应 skill 的环境。新克隆仓库或只安装 wheel 的用户，可以直接让 Agent 先阅读本文及对应命令指南，再通过同一 CLI 执行；无需先安装一个未提供的 skill 包。可用性和版本核对见文末。
+下面的具名 skill 示例适用于已登记对应 skill 的环境。新克隆仓库的用户可以直接指定 [skill 文件](../agents/skills/README.md)，让 Agent 读取后执行；只安装 wheel 的用户也可以先让 Agent 阅读本文及对应命令指南。获取方式和版本核对见文末。
 
 没有 Cube、准备生产数据时，向 Agent 提供区域、时间范围、升降轨方向、需要的产品和输出目录。例如：
 
@@ -60,15 +60,16 @@ python -m s1grits catalog inspect --output-dir /data/output
 
 ## Skills 的可用性、版本与维护
 
-当前规范源位于工作区 `.agents/skills/s1grits-cube/` 与 `.agents/skills/s1grits-analysis/`。
-这两个目录不在本软件仓库中，Python wheel 也不会安装它们；当前仓库未提供其公开安装包。工作区已安装的 skill 可直接使用，修改后 Agent 的发现列表可能需要新会话才刷新。
+当前规范源位于维护工作区 `.agents/skills/s1grits-cube/` 与 `.agents/skills/s1grits-analysis/`。
+本仓库和源码包的 [`agents/skills/`](../agents/skills/README.md) 提供由规范源生成的发布副本，版本与 SHA-256 记录在 [manifest.json](../agents/skills/manifest.json)。Python wheel 不安装 skills，也不修改 Agent 配置；本候选尚未发布，不能据此认定 PyPI 上已有对应源码包。
 
 公开用户现阶段可以：
 
-- 让 Agent 读取本文、[入口支持矩阵](entry_points.md)和当前命令 `--help`，执行相同任务。
+- 取得与软件匹配的仓库或源码包，显式让 Agent 读取 `agents/skills/s1grits-cube/SKILL.md` 或 `agents/skills/s1grits-analysis/SKILL.md`。若需要自动发现，按所用 Agent 的配置登记该路径。
+- 也可让 Agent 读取本文、[入口支持矩阵](entry_points.md)和当前命令 `--help`，执行相同任务。
 - 直接使用 CLI／Python／Web；已有 Cube 从[小样本教程](getting_started_existing_cube_ZH.md)开始。
 - 数据交接任务可直接指定本仓库的 [s1-data-handoff](../agents/skills/s1-data-handoff/SKILL.md)；它链接到同一公开交接指南，自动发现取决于 Agent 配置。
 
-本文和两类通用 skill 对应 V4.0.0 候选功能。执行前核对 `python -m s1grits --version`、`s1grits.__file__` 和所需子命令帮助；V3 安装不因能读取 skill 就具备 V4 功能。未来公开导出应从上述规范源生成，随导出记录源码哈希及适用的软件版本，不另维护可编辑副本。
+本文和两类通用 skill 对应 V4.0.0 候选功能。执行前核对 `python -m s1grits --version`、`s1grits.__file__` 和所需子命令帮助；V3 安装不因能读取 skill 就具备 V4 功能。发布副本不要手改；更新规范源后运行 `tools/export_agent_skills.py` 重新生成，方法见 skills README。已经使用规范源的本工作区无需再次安装发布副本。
 
 本轮操作验收包含真实单景小窗口的视图／物化重放，以及受控离线 COG 的配置／生产入口／续跑；后者不等同于在线下载或大规模生产验收。

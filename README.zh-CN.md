@@ -223,7 +223,7 @@ s1grits static ensure --output-dir /path/to/output --product-label smonthly_ASCE
 |---|---|
 | 安装并完成首次检查 | [安装](docs/installation.md) |
 | 选择 CLI／Agent／Web，了解各入口支持范围 | [入口支持矩阵](docs/entry_points.md) |
-| 让 Agent 执行可重放任务，确认 skill 是否可用 | [YAML、命令与 skills](docs/agent_workflows_ZH.md) |
+| 让 Agent 执行可重放任务 | [Skill 文件与使用方式](agents/skills/README.md)、[YAML 与命令](docs/agent_workflows_ZH.md) |
 | 从 V3 迁移到 V4 开发候选 | [迁移与兼容说明](docs/migration_v4.md)、[发布范围](docs/release.md#v4-scope) |
 | 下载逐景／月度影像及配套 static | [工作流](docs/workflows.md)、[网页界面](docs/webapp.md)、[配置参考](docs/configuration.md) |
 | 理解并交接已有数据 | [输出结构](docs/outputs.md)、[数据交接](docs/DATA_HANDOFF_ZH.md) |

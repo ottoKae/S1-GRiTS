@@ -41,6 +41,11 @@ Python is currently `>=3.12,<3.13`. The wheel includes the three spatial
 GeoParquet dictionaries and the single canonical bilingual frontend under
 `s1grits/webapp/static/`.
 
+The source distribution also includes the generated Cube/analysis skills and
+their version/hash manifest under `agents/skills/`, plus the existing handoff
+reference. They are not installed by the wheel. Regenerate from the sole editable
+source when skills or the package version change; see the [skill export guide](../agents/skills/README.md).
+
 The retired Streamlit/English prototype is not a second product: it is absent
 from `src/`, package-data rules and the wheel. Chinese and English are selected
 on the same static SPA; there is no parallel `webapp_en` application.
