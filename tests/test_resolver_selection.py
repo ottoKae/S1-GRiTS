@@ -112,6 +112,22 @@ def test_same_store_multiple_rows_and_path_spellings_open_once(tmp_path):
     np.testing.assert_array_equal(result['VV_dB'].values, np.ones((2, 2, 2)))
 
 
+def test_external_asset_reads_before_collection_directory_exists(tmp_path):
+    row = product(tmp_path/'source', 'a', value=9)
+    root = tmp_path/'new-collection'
+    row['zarr_path'] = f'../source/{TILE}/a.zarr'
+    resolver = CubeResolver(root)
+    before = hashes(tmp_path)
+    asset = resolver._asset_path(row)
+    assert asset.parent.is_dir()
+    assert '..' not in asset.parts
+    with resolver.open(row) as dataset:
+        np.testing.assert_array_equal(dataset.VV_dB.values, np.full((2, 2, 2), 9))
+    np.testing.assert_array_equal(resolver.open_group(row)['VV_dB'][:], np.full((2, 2, 2), 9))
+    assert not root.exists()
+    assert hashes(tmp_path) == before
+
+
 def test_distinct_groups_are_distinct_assets(tmp_path):
     a = product(tmp_path, 'a')
     r = resolver(tmp_path, [dict(a, zarr_group='one'), dict(a, zarr_group='two')])

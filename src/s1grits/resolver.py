@@ -311,12 +311,13 @@ class CubeResolver:
             path = record.get("zarr_path")
         if not path or pd.isna(path):
             raise ValueError("Record has no zarr_path or view_path")
-        full = self.root / path
+        # A new registration root may not exist yet; POSIX cannot traverse root/../asset.
+        full = (self.root / path).resolve()
         # Global catalogs may keep asset paths relative to the tile directory.
         if not full.exists():
             tile = record.get("tile_id")
             if tile:
-                candidate = self.root / str(tile) / path
+                candidate = (self.root / str(tile) / path).resolve()
                 if candidate.exists():
                     full = candidate
         return full

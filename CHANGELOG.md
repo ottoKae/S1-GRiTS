@@ -36,6 +36,9 @@ still requires the release gates. See the [migration guide](docs/migration_v4.md
   canonical source remains unique.
 
 ### Data integrity and delivery
+- Resolve external asset paths before reading from a new, not-yet-created
+  collection directory, so relative registration works on Linux and macOS as
+  well as Windows without creating output directories during validation.
 - Reject incompatible grid identity during resume and preserve monthly method
   identity before replacement or provenance writes.
 - Correct Web log pagination and UTF-8 chunk reading; align installed-package
