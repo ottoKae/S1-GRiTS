@@ -1,4 +1,4 @@
-"""FastAPI application factory for the S1-GRiTS web UI (v2.3).
+"""FastAPI application factory for the S1-GRiTS Data Cube Console.
 
 API-first: every capability is an HTTP endpoint (OpenAPI docs at ``/docs``);
 the bundled static SPA is just one client of it. Requires the optional
@@ -28,6 +28,8 @@ from s1grits.templates import DEFAULT_SCENES_CONFIG
 from s1grits.webapp.catalog_api import Workspace
 from s1grits.webapp.cn_api import ChineseConsole
 from s1grits.webapp.jobs import JOB_TYPES, JobManager
+from s1grits.webapp.tool_api import (DeriveRequest, ViewCreateRequest, ViewMaterializeRequest,
+    ViewMultitrackRequest, SegmentsRequest, MosaicRequest, views_available, local_tool_capabilities)
 
 logger = logging.getLogger(__name__)
 
@@ -232,7 +234,7 @@ def create_app(root: Path | str, token: str | None = None,
                 return JSONResponse({"detail": "Invalid or missing token"},
                                     status_code=401)
         response = await call_next(request)
-        if request.url.path in ("/", "/index.html", "/static/app.js", "/static/styles.css"):
+        if request.url.path in ("/", "/index.html", "/static/app.js", "/static/styles.css", "/static/i18n.js"):
             response.headers["Cache-Control"] = "no-cache, must-revalidate"
         return response
 
@@ -266,7 +268,7 @@ def create_app(root: Path | str, token: str | None = None,
         from s1grits.canonical_catalog_schema import SCHEMA_VERSION
 
         return {
-            "service": "S1-GRiTS 中文控制台",
+            "service": "S1-GRiTS 数据立方体控制台",
             "version": __version__,
             "catalog_schema_version": SCHEMA_VERSION,
             "stac_format": "geoparquet",
@@ -275,6 +277,18 @@ def create_app(root: Path | str, token: str | None = None,
             "output_root": str(workspace.root),
             "workflows": ["scenes", "monthly"],
             "workflow_options": {"include_static": True},
+            "production_strategies": {"filters": ["none", "tv_bregman", "nlm"],
+                                      "features": ["ratio", "rvi", "glcm"],
+                                      "monthly": ["median", "mean"],
+                                      "intra_pass": ["first_valid_pixel", "average", "bursts_center", "nlooks_weighted"]},
+            "tools": {"derive_cube": {"input": "physical", "result": "physical", "resume": False,
+                                      "filters": ["none", "tv_bregman", "nlm"], "features": ["ratio", "rvi", "glcm"],
+                                      "monthly": ["mean", "median"], "interpolation": ["none", "linear"]},
+                      "views": {"available": views_available(), "install_extra": "s1grits[views]",
+                                "operations": ["view_create", "view_materialize", "view_multitrack"],
+                                "bands": ["VV_dB", "VH_dB", "Ratio", "RVI"],
+                                "multitrack_methods": ["first_valid_pixel", "mean"], "resume": False},
+                      "local": local_tool_capabilities()},
             "target_grid": {
                 "resolutions_m": [30, 10],
                 "default_m": 30,
@@ -319,6 +333,8 @@ def create_app(root: Path | str, token: str | None = None,
         product_type: str | None = None,
         direction: str | None = None,
         track: int | None = None,
+        item_id: str = "", grid_id: str = "", processing_level: str = "",
+        processing_signature: str = "", product_variant: str = "", representation: str = "",
         month_from: str | None = Query(None, pattern=r"^\d{4}-\d{2}$"),
         month_to: str | None = Query(None, pattern=r"^\d{4}-\d{2}$"),
         limit: int = Query(200, ge=1, le=2000),
@@ -327,6 +343,8 @@ def create_app(root: Path | str, token: str | None = None,
         return workspace.items(
             tile=tile, product_type=product_type, direction=direction,
             track=track, month_from=month_from, month_to=month_to,
+            item_id=item_id, grid_id=grid_id, processing_level=processing_level,
+            processing_signature=processing_signature, product_variant=product_variant, representation=representation,
             limit=limit, offset=offset,
         )
 
@@ -545,6 +563,34 @@ def create_app(root: Path | str, token: str | None = None,
         except (ValueError, FileNotFoundError) as exc:
             raise HTTPException(400, str(exc))
 
+    @app.post("/api/tools/plan", tags=["console"])
+    def create_tool_plan(req: DeriveRequest | ViewCreateRequest | ViewMaterializeRequest | ViewMultitrackRequest | SegmentsRequest | MosaicRequest):
+        try:
+            return console.create_tool_plan(req)
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc))
+        except (ValueError, FileNotFoundError) as exc:
+            raise HTTPException(400, str(exc))
+
+    @app.post("/api/tools/tasks", tags=["console"], status_code=201)
+    def create_tool_task(req: TaskRequest):
+        try:
+            return console.create_tool_task(req.plan_id, req.confirmation)
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc))
+        except (ValueError, FileNotFoundError) as exc:
+            raise HTTPException(400, str(exc))
+
+    @app.get('/api/tools/results/{job_id}', tags=['console'])
+    def tool_result(job_id: str):
+        from .analysis_api import file_result
+        try:
+            return file_result(jobs, job_id)
+        except KeyError:
+            raise HTTPException(404, 'Unknown task')
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
     @app.get("/api/tasks", tags=["console"])
     def list_tasks():
         return console.tasks()
@@ -636,10 +682,15 @@ def create_app(root: Path | str, token: str | None = None,
     @app.get("/api/catalog/map", tags=["console"])
     def catalog_map(output: str = "", root_id: str = "workspace",
                     tile: str = "", product: str = "",
+                    track: int | None = None, item_id: str = "", grid_id: str = "",
+                    processing_level: str = "", processing_signature: str = "",
+                    product_variant: str = "", representation: str = "",
                     direction: str = "", month: str = "", status: str = ""):
         try:
             return console.catalog_map(
                 output, root_id=root_id, tile=tile, product=product,
+                track=track, item_id=item_id, grid_id=grid_id, processing_level=processing_level,
+                processing_signature=processing_signature, product_variant=product_variant, representation=representation,
                 direction=direction, month=month, status=status,
             )
         except ValueError as exc:
@@ -648,13 +699,34 @@ def create_app(root: Path | str, token: str | None = None,
     @app.get("/api/catalog", tags=["console"])
     def catalog_query(output: str = "", root_id: str = "workspace",
                       tile: str = "", product: str = "",
+                      offset: int = Query(0, ge=0), limit: int = Query(500, ge=1, le=2000),
+                      track: int | None = None, item_id: str = "", grid_id: str = "",
+                      processing_level: str = "", processing_signature: str = "",
+                      product_variant: str = "", representation: str = "",
                       direction: str = "", month: str = "", status: str = ""):
         try:
             return console.catalog_query(
                 output, root_id=root_id, tile=tile, product=product,
+                offset=offset, limit=limit, track=track, item_id=item_id, grid_id=grid_id,
+                processing_level=processing_level, processing_signature=processing_signature,
+                product_variant=product_variant, representation=representation,
                 direction=direction, month=month, status=status,
             )
         except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
+    @app.get("/api/catalog/product", tags=["console"])
+    @app.get("/api/catalog/sample", tags=["console"])
+    def catalog_product(item_id: str, output: str = "", root_id: str = "workspace",
+                        band: str | None = None, row: int = Query(0, ge=0), col: int = Query(0, ge=0),
+                        start: str | None = None, end: str | None = None):
+        try:
+            return console.catalog_product(output, item_id, root_id, band=band, row=row, col=col, start=start, end=end)
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc))
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc))
+        except (ValueError, KeyError) as exc:
             raise HTTPException(400, str(exc))
 
     # -- jobs ------------------------------------------------------------

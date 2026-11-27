@@ -4,6 +4,22 @@
 
 S1-GRiTS generates **analysis-ready data products** in three formats: Zarr (primary), COG (optional), and Preview PNG (optional).
 
+### Resuming existing Zarr products
+
+Resume requires the stored CRS, affine transform and pixel coordinates to match
+the requested grid, including when the array dimensions are unchanged. An
+incompatible grid fails before modifying the store. The existing explicit
+`output.existing_store: rebuild-incompatible` policy recreates an incompatible
+store and discards its old timesteps; use a new output location to retain them.
+
+A nonempty per-track monthly store must also have the same processing signature.
+Changing median to mean, for example, requires a new `output.base_dir`; skipping
+or replacing a month must not relabel other stored values. A historical store
+without a processing signature remains readable, but this writer cannot verify
+its processing identity for append. Use a new output location instead of filling
+unknown historical metadata with the current settings. Same-method updates and
+the existing provenance recovery flow remain supported.
+
 ### Product Format Overview
 
 | Format | Purpose | Key Features | Typical Size |

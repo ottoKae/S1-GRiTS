@@ -25,6 +25,8 @@
 
 ## 已有数据的实验使用与交接
 
+第一次使用已有 Cube，可先完成[本地小样本上手教程](docs/getting_started_existing_cube_ZH.md)：查看目录、读取时序、生成独立的月度 Ratio／RVI 产品并核对来源。该教程对应当前开发候选；无需 Agent、GEE 或下载 burst。
+
 收到 Zarr 后，先核对这一批数据实际使用的处理流程、数值单位、合成域及来源映射；当前源码和变量名不能替代历史生产证据。参见[数据交接说明](docs/DATA_HANDOFF_ZH.md)和[交接 skill](agents/skills/s1-data-handoff/SKILL.md)。按[只读元数据导出指南](docs/PROVENANCE_READONLY_ZH.md)使用 `python -m s1grits.provenance build` / `verify`，或按[可选月度生产记录指南](docs/PROVENANCE_WORKFLOW_ZH.md)及 [YAML 示例](config/provenance_monthly.example.yaml)记录来源、追加／替换及提交恢复。生产留痕默认关闭，支持范围、可复现检查与局限直接写在使用指南中。每批数据的覆盖、处理证据和未知项应随数据交付。元数据导出不改写影像；已有库可按 [`attach` 入库说明](docs/PROVENANCE_READONLY_ZH.md#attach-historical-metadata)附入经核验的历史 release。完整影像交付尚无自动复制／打包入口。
 
 3.0.1rc1 对带逐代次历史说明的新包采用发布语义 v2，配套使用 GRiTS-Resolver 0.3.1rc1；旧 v1 仍可读取，表契约和 data_revision 算法不变。当前历史库无需为软件更新立即重发。大批次生产前请先查看[月度工作流与性能边界](docs/PROVENANCE_WORKFLOW_ZH.md)。
@@ -167,9 +169,11 @@ s1grits process_scenes --config my_run.yaml
 s1grits serve --root /path/to/output --port 5556
 ```
 
-当前随 Python 包发布的是 **v3 中文控制台**。已经移除的
-Streamlit/英文原型不再打包或跟踪；以后需要英文界面时，应从同一套中文前端做国际化，
-不再维护第二套相互漂移的页面代码。
+唯一随 Python 包提供的 Web 为 **S1-GRiTS 数据立方体控制台**
+（**S1-GRiTS Data Cube Console**），统一使用 `s1grits serve` 启动。
+支持同页中文／English 切换。首次按浏览器语言选择（非中文回落英文），之后记住手动选择。
+早期 Streamlit 和英文 Workspace 界面保留在 [Git 历史索引](docs/web-history.md)，
+不作为另一个应用打包或维护。
 
 conda、源码安装、可选依赖、认证和首次运行说明见 **[安装文档](docs/installation.md)**。
 
@@ -211,6 +215,7 @@ s1grits static ensure --output-dir /path/to/output --product-label smonthly_ASCE
 | 要做什么 | 阅读入口 |
 |---|---|
 | 安装并完成首次检查 | [安装](docs/installation.md) |
+| 选择 CLI／Agent／Web，了解各入口支持范围 | [入口支持矩阵](docs/entry_points.md) |
 | 下载逐景／月度影像及配套 static | [工作流](docs/workflows.md)、[网页界面](docs/webapp.md)、[配置参考](docs/configuration.md) |
 | 理解并交接已有数据 | [输出结构](docs/outputs.md)、[数据交接](docs/DATA_HANDOFF_ZH.md) |
 | 记录或核查处理过程 | [月度生产留痕](docs/PROVENANCE_WORKFLOW_ZH.md)、[历史元数据导出](docs/PROVENANCE_READONLY_ZH.md) |

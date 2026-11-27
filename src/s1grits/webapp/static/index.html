@@ -3,146 +3,157 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>S1-GRiTS 中国区数据立方体下载控制台</title>
+  <title data-i18n="S1-GRiTS 数据立方体控制台">S1-GRiTS 数据立方体控制台</title>
   <link rel="stylesheet" href="/static/leaflet/leaflet.css">
-  <link rel="stylesheet" href="/static/styles.css?v=20260823-folder-browser-v3">
+  <link rel="stylesheet" href="/static/styles.css?v=r6c">
   </head>
 <body>
   <header class="topbar">
     <div class="brand-mark"><img class="brand-logo" src="/static/logo-mark.png?v=2" alt="S1-GRiTS"></div>
     <div>
-      <h1>S1-GRiTS 数据立方体</h1>
-      <p>Sentinel-1 时序数据准备与本地数据 · 中文控制台</p>
+      <h1><span data-i18n="S1-GRiTS 数据立方体控制台">S1-GRiTS 数据立方体控制台</span></h1>
+      <p><span data-i18n="Sentinel-1 时序数据准备与本地数据 · 中文控制台">Sentinel-1 时序数据准备与本地数据 · 中文控制台</span></p>
     </div>
     <div class="top-actions">
-      <span id="health" class="health">正在连接…</span>
+      <label class="language-picker" for="language">语言 / Language
+        <select id="language" data-language><option value="zh-CN">中文</option><option value="en">English</option></select>
+      </label>
+      <span id="health" class="health"><span data-i18n="正在连接…">正在连接…</span></span>
     </div>
   </header>
 
   <main class="workspace">
     <aside class="planner">
-      <div class="step-head"><span>1</span><div><b>选择产品</b><small>影像产品可附带静态几何层</small></div></div>
+      <div class="step-head"><span>1</span><div><b><span data-i18n="选择产品">选择产品</span></b><small><span data-i18n="影像产品可附带静态几何层">影像产品可附带静态几何层</span></small></div></div>
       <div class="workflow-grid" id="workflow-grid">
-        <button class="choice active" data-workflow="scenes"><b>逐景时序</b><small>Scenes + 可选逐轨月合成</small></button>
-        <button class="choice" data-workflow="monthly"><b>全瓦片月合成</b><small>Monthly median</small></button>
+        <button class="choice active" data-workflow="scenes"><b><span data-i18n="逐景时序">逐景时序</span></b><small><span data-i18n="Scenes + 可选逐轨月合成">Scenes + 可选逐轨月合成</span></small></button>
+        <button class="choice" data-workflow="monthly"><b><span data-i18n="全瓦片月合成">全瓦片月合成</span></b><small>Monthly mean / median</small></button>
       </div>
 
-      <div class="step-head"><span>2</span><div><b>空间与轨道</b><small>EPSG:4326 检索，MGRS 生产格网</small></div></div>
+      <div class="step-head"><span>2</span><div><b><span data-i18n="空间与轨道">空间与轨道</span></b><small><span data-i18n="EPSG:4326 检索，MGRS 生产格网">EPSG:4326 检索，MGRS 生产格网</span></small></div></div>
       <div class="segmented" id="selection-tabs">
-        <button class="active" data-mode="tiles">瓦片选择</button>
-        <button data-mode="aoi">AOI 候选筛选</button>
+        <button class="active" data-mode="tiles"><span data-i18n="瓦片选择">瓦片选择</span></button>
+        <button data-mode="aoi"><span data-i18n="AOI 候选筛选">AOI 候选筛选</span></button>
       </div>
       <div class="selection-summary">
-        <span>最终选择：<b id="selected-count">0</b> 个瓦片</span>
-        <button class="text-button" id="clear-tiles" type="button">清空瓦片</button>
+        <span><span data-i18n="最终选择：">最终选择：</span><b id="selected-count">0</b> <span data-i18n="个瓦片">个瓦片</span></span>
+        <button class="text-button" id="clear-tiles" type="button"><span data-i18n="清空瓦片">清空瓦片</span></button>
       </div>
       <section id="tile-pane">
-        <label>MGRS 瓦片（空格、逗号或换行分隔）</label>
-        <textarea id="tiles" rows="3" placeholder="例如：49RGP 49RGQ"></textarea>
-        <p class="hint">文本输入与地图点击双向同步；再次点击已选瓦片即可取消。刷新本页仍保留本次会话的选择。</p>
+        <label><span data-i18n="MGRS 瓦片（空格、逗号或换行分隔）">MGRS 瓦片（空格、逗号或换行分隔）</span></label>
+        <textarea id="tiles" rows="3" placeholder="例如：49RGP 49RGQ" data-i18n-placeholder="例如：49RGP 49RGQ"></textarea>
+        <p class="hint"><span data-i18n="文本输入与地图点击双向同步；再次点击已选瓦片即可取消。刷新本页仍保留本次会话的选择。">文本输入与地图点击双向同步；再次点击已选瓦片即可取消。刷新本页仍保留本次会话的选择。</span></p>
       </section>
       <section id="aoi-pane" hidden>
-        <label>导入 AOI</label>
-        <label class="file-picker"><span>选择 GeoJSON、Shapefile ZIP，或同时选择 SHP 组件</span><input id="aoi-file" type="file" multiple accept=".geojson,.json,.zip,.shp,.shx,.dbf,.prj,.cpg,application/geo+json,application/zip"></label>
-        <p class="hint">Shapefile 至少需要 .shp、.shx、.dbf、.prj；服务端读取其 CRS 并统一转换到 EPSG:4326。</p>
-        <div class="divider"><span>或输入经纬度矩形</span></div>
+        <label><span data-i18n="导入 AOI">导入 AOI</span></label>
+        <label class="file-picker"><span><span data-i18n="选择 GeoJSON、Shapefile ZIP，或同时选择 SHP 组件">选择 GeoJSON、Shapefile ZIP，或同时选择 SHP 组件</span></span><input id="aoi-file" type="file" multiple accept=".geojson,.json,.zip,.shp,.shx,.dbf,.prj,.cpg,application/geo+json,application/zip"></label>
+        <p class="hint"><span data-i18n="Shapefile 至少需要 .shp、.shx、.dbf、.prj；服务端读取其 CRS 并统一转换到 EPSG:4326。">Shapefile 至少需要 .shp、.shx、.dbf、.prj；服务端读取其 CRS 并统一转换到 EPSG:4326。</span></p>
+        <div class="divider"><span><span data-i18n="或输入经纬度矩形">或输入经纬度矩形</span></span></div>
         <div class="bbox-grid">
-          <label>西 <input id="west" type="number" step="0.0001" value="109"></label>
-          <label>东 <input id="east" type="number" step="0.0001" value="116"></label>
-          <label>南 <input id="south" type="number" step="0.0001" value="29"></label>
-          <label>北 <input id="north" type="number" step="0.0001" value="33.5"></label>
+          <label><span data-i18n="西">西</span> <input id="west" type="number" step="0.0001" value="109"></label>
+          <label><span data-i18n="东">东</span> <input id="east" type="number" step="0.0001" value="116"></label>
+          <label><span data-i18n="南">南</span> <input id="south" type="number" step="0.0001" value="29"></label>
+          <label><span data-i18n="北">北</span> <input id="north" type="number" step="0.0001" value="33.5"></label>
         </div>
-        <button class="secondary wide" id="apply-bbox" type="button">应用矩形 AOI</button>
-        <p id="aoi-status" class="hint">当前未设置 AOI。</p>
+        <button class="secondary wide" id="apply-bbox" type="button"><span data-i18n="应用矩形 AOI">应用矩形 AOI</span></button>
+        <p id="aoi-status" class="hint"><span data-i18n="当前未设置 AOI。">当前未设置 AOI。</span></p>
         <div class="aoi-actions">
-          <button class="secondary" id="select-candidates" type="button" disabled>全选候选</button>
-          <button class="secondary" id="deselect-candidates" type="button" disabled>取消候选选择</button>
-          <button class="secondary" id="clear-aoi" type="button" disabled>清除 AOI</button>
+          <button class="secondary" id="select-candidates" type="button" disabled><span data-i18n="全选候选">全选候选</span></button>
+          <button class="secondary" id="deselect-candidates" type="button" disabled><span data-i18n="取消候选选择">取消候选选择</span></button>
+          <button class="secondary" id="clear-aoi" type="button" disabled><span data-i18n="清除 AOI">清除 AOI</span></button>
         </div>
-        <p class="hint">AOI 只限定候选范围，不遮挡地图点击；清除 AOI 不会清除已选择的瓦片。</p>
+        <p class="hint"><span data-i18n="AOI 只限定候选范围，不遮挡地图点击；清除 AOI 不会清除已选择的瓦片。">AOI 只限定候选范围，不遮挡地图点击；清除 AOI 不会清除已选择的瓦片。</span></p>
       </section>
-      <label>轨道方向</label>
+      <label><span data-i18n="轨道方向">轨道方向</span></label>
       <select id="direction">
-        <option value="BOTH">升降轨（串行处理）</option>
-        <option value="ASCENDING">仅升轨 ASCENDING</option>
-        <option value="DESCENDING">仅降轨 DESCENDING</option>
+        <option value="BOTH"><span data-i18n="升降轨（串行处理）">升降轨（串行处理）</span></option>
+        <option value="ASCENDING"><span data-i18n="仅升轨 ASCENDING">仅升轨 ASCENDING</span></option>
+        <option value="DESCENDING"><span data-i18n="仅降轨 DESCENDING">仅降轨 DESCENDING</span></option>
       </select>
 
-      <div class="step-head"><span>3</span><div><b>时间与输出</b><small>先预检，再确认执行</small></div></div>
+      <div class="step-head"><span>3</span><div><b><span data-i18n="时间与输出">时间与输出</span></b><small><span data-i18n="先预检，再确认执行">先预检，再确认执行</span></small></div></div>
       <section id="time-pane">
-        <label>年份</label>
+        <label><span data-i18n="年份">年份</span></label>
         <div id="years" class="tag-grid"></div>
-        <label>月份</label>
+        <label><span data-i18n="月份">月份</span></label>
         <div id="months" class="tag-grid months"></div>
       </section>
-      <label>数据立方体目录（相对输出根目录）</label>
+      <label><span data-i18n="数据立方体目录（相对输出根目录）">数据立方体目录（相对输出根目录）</span></label>
       <div class="inline">
         <input id="output" value="hubei_s1_cube" autocomplete="off">
-        <button class="secondary" id="browse-output">浏览</button>
+        <button class="secondary" id="browse-output"><span data-i18n="浏览">浏览</span></button>
       </div>
       <div class="options-row">
-        <label><input id="zarr-only" type="checkbox" checked> 仅 Zarr（推荐）</label>
-        <label><input id="include-static" type="checkbox"> 同时生成静态图层</label>
-        <label><input id="smonthly" type="checkbox"> 同时生成逐轨月合成</label>
+        <label><input id="zarr-only" type="checkbox" checked> <span data-i18n="仅 Zarr（推荐）">仅 Zarr（推荐）</span></label>
+        <label><input id="include-static" type="checkbox"> <span data-i18n="同时生成静态图层">同时生成静态图层</span></label>
+        <label><input id="smonthly" type="checkbox"> <span data-i18n="同时生成逐轨月合成">同时生成逐轨月合成</span></label>
       </div>
       <details>
-        <summary>高级处理选项</summary>
+        <summary><span data-i18n="高级处理选项">高级处理选项</span></summary>
         <div class="advanced">
-          <label>目标分辨率
+          <label><span data-i18n="目标分辨率">目标分辨率</span>
             <select id="resolution">
-              <option value="30" selected>30 米（原生兼容）</option>
-              <option value="10">10 米（优化双线性）</option>
+              <option value="30" selected><span data-i18n="30 米（原生兼容）">30 米（原生兼容）</span></option>
+              <option value="10"><span data-i18n="10 米（优化双线性）">10 米（优化双线性）</span></option>
             </select>
           </label>
-          <p id="resampling-note" class="hint">30 米采用最近邻重投影，保持现有产品兼容。</p>
-          <label>并行瓦片数<input id="workers" type="number" min="1" max="8" value="2"></label>
-          <label><input id="despeckle" type="checkbox"> TV 去斑</label>
-          <label><input id="ratio" type="checkbox"> Ratio 波段</label>
-          <label><input id="rvi" type="checkbox"> RVI 波段</label>
+          <p id="resampling-note" class="hint"><span data-i18n="30 米采用最近邻重投影，保持现有产品兼容。">30 米采用最近邻重投影，保持现有产品兼容。</span></p>
+          <label><span data-i18n="并行瓦片数">并行瓦片数</span><input id="workers" type="number" min="1" max="8" value="2"></label>
+          <label><input id="despeckle" type="checkbox"> <span data-i18n="空间去斑">空间去斑</span></label>
+          <label><input id="ratio" type="checkbox"> <span data-i18n="Ratio 波段">Ratio 波段</span></label>
+          <label><input id="rvi" type="checkbox"> <span data-i18n="RVI 波段">RVI 波段</span></label>
+          <details><summary data-i18n="生产可选策略">生产可选策略</summary>
+            <label><span data-i18n="去斑算法（启用时）">去斑算法（启用时）</span><select id="production-filter"><option>tv_bregman</option><option>nlm</option></select></label>
+            <label><input id="production-glcm" type="checkbox"> GLCM</label>
+            <label><span data-i18n="月合成方法（启用时）">月合成方法（启用时）</span><select id="production-monthly"><option>median</option><option>mean</option></select></label>
+            <label><span data-i18n="同次获取内的 burst 拼接">同次获取内的 burst 拼接</span><select id="production-mosaic"><option>first_valid_pixel</option><option>average</option><option>bursts_center</option><option>nlooks_weighted</option></select></label>
+            <label><span data-i18n="Looks 目录（相对工作区）">Looks 目录（相对工作区）</span><input id="production-looks"></label>
+            <p class="hint" data-i18n="非默认拼接仅支持 30 米最近邻，不同时启用去斑、月合成或静态后处理。">非默认拼接仅支持 30 米最近邻，不同时启用去斑、月合成或静态后处理。</p>
+          </details>
           <fieldset id="static-options" hidden>
-            <legend>v3 集成静态层</legend>
-            <p class="hint">与影像共用同一动态参考格网，固定生成六类原始静态层；不能脱离影像单独提交。</p>
-            <label><input type="checkbox" name="static-layer" value="local_inc_angle" checked disabled> 局地入射角</label>
-            <label><input type="checkbox" name="static-layer" value="inc_angle" checked disabled> 入射角</label>
-            <label><input type="checkbox" name="static-layer" value="ls_map" checked disabled> 叠掩/阴影</label>
-            <label><input type="checkbox" name="static-layer" value="number_of_looks" checked disabled> 等效视数</label>
+            <legend><span data-i18n="v3 集成静态层">v3 集成静态层</span></legend>
+            <p class="hint"><span data-i18n="与影像共用同一动态参考格网，固定生成六类原始静态层；不能脱离影像单独提交。">与影像共用同一动态参考格网，固定生成六类原始静态层；不能脱离影像单独提交。</span></p>
+            <label><input type="checkbox" name="static-layer" value="local_inc_angle" checked disabled> <span data-i18n="局地入射角">局地入射角</span></label>
+            <label><input type="checkbox" name="static-layer" value="inc_angle" checked disabled> <span data-i18n="入射角">入射角</span></label>
+            <label><input type="checkbox" name="static-layer" value="ls_map" checked disabled> <span data-i18n="叠掩/阴影">叠掩/阴影</span></label>
+            <label><input type="checkbox" name="static-layer" value="number_of_looks" checked disabled> <span data-i18n="等效视数">等效视数</span></label>
             <label><input type="checkbox" name="static-layer" value="rtc_anf_beta0" checked disabled> ANF β0</label>
             <label><input type="checkbox" name="static-layer" value="rtc_anf_sigma0" checked disabled> ANF σ0</label>
           </fieldset>
         </div>
       </details>
-      <button id="submit" class="primary wide">预检并创建下载任务</button>
+      <button id="submit" class="primary wide"><span data-i18n="预检并创建下载任务">预检并创建下载任务</span></button>
       <p id="form-message" class="message"></p>
     </aside>
 
     <section class="stage">
       <div class="map-card">
         <div class="map-shell">
-          <div id="map" aria-label="中国区域空间预检地图"></div>
+          <div id="map" aria-label="中国区域空间预检地图" data-i18n-aria-label="中国区域空间预检地图"></div>
           <div id="map-error" class="map-error" hidden></div>
           <div id="map-status" class="map-status" role="status" aria-live="polite" hidden></div>
           <div class="basemap-switch" id="basemap-switch">
-            <button class="active" data-basemap="road">道路</button>
-            <button data-basemap="satellite">卫星</button>
-            <button class="active overlay-toggle" id="toggle-mgrs" aria-pressed="true" title="缩放至4级后显示MGRS格网">MGRS格网</button>
-            <button class="overlay-toggle" id="toggle-local-data" aria-pressed="true" hidden>本地数据</button>
+            <button class="active" data-basemap="road"><span data-i18n="道路">道路</span></button>
+            <button data-basemap="satellite"><span data-i18n="卫星">卫星</span></button>
+            <button class="active overlay-toggle" id="toggle-mgrs" aria-pressed="true" title="缩放至4级后显示MGRS格网" data-i18n-title="缩放至4级后显示MGRS格网"><span data-i18n="MGRS格网">MGRS格网</span></button>
+            <button class="overlay-toggle" id="toggle-local-data" aria-pressed="true" hidden><span data-i18n="本地数据">本地数据</span></button>
           </div>
-          <div class="map-layer-legend" aria-label="地图图层图例">
+          <div class="map-layer-legend" aria-label="地图图层图例" data-i18n-aria-label="地图图层图例">
             <span><i class="legend-mgrs"></i>MGRS</span>
-            <span><i class="legend-candidate"></i>AOI候选</span>
-            <span><i class="legend-selected"></i>下载选择</span>
-            <span id="legend-local-data" hidden><i class="legend-catalog"></i>本地数据</span>
+            <span><i class="legend-candidate"></i><span data-i18n="AOI候选">AOI候选</span></span>
+            <span><i class="legend-selected"></i><span data-i18n="下载选择">下载选择</span></span>
+            <span id="legend-local-data" hidden><i class="legend-catalog"></i><span data-i18n="本地数据">本地数据</span></span>
           </div>
         </div>
       </div>
 
       <section class="task-dock">
         <div class="dock-head">
-          <div class="dock-tabs" role="tablist" aria-label="工作区">
-            <button id="tasks-tab" class="active" role="tab" aria-selected="true">任务中心</button>
-            <button id="local-search-tab" role="tab" aria-selected="false">本地数据</button>
+          <div class="dock-tabs" role="tablist" aria-label="工作区" data-i18n-aria-label="工作区">
+            <button id="tasks-tab" class="active" role="tab" aria-selected="true"><span data-i18n="任务中心">任务中心</span></button>
+            <button id="local-search-tab" role="tab" aria-selected="false"><span data-i18n="本地数据">本地数据</span></button>
           </div>
-          <button class="ghost" id="refresh-tasks">刷新任务</button>
+          <button class="ghost" id="refresh-tasks"><span data-i18n="刷新任务">刷新任务</span></button>
         </div>
         <div id="tasks-pane" class="dock-pane" role="tabpanel" aria-labelledby="tasks-tab">
           <div id="tasks" class="task-list"></div>
@@ -152,16 +163,16 @@
           <section id="catalog-empty" class="catalog-empty-state">
             <div class="catalog-folder-icon" aria-hidden="true">📁</div>
             <div class="catalog-empty-copy">
-              <h3>选择本地数据立方体</h3>
-              <p>请选择根目录直接包含 <code>catalog.parquet</code> 的文件夹，选择后将自动校验并显示在地图上。</p>
+              <h3><span data-i18n="选择本地数据立方体">选择本地数据立方体</span></h3>
+              <p><span data-i18n="请选择根目录直接包含">请选择根目录直接包含</span> <code>catalog.parquet</code> <span data-i18n="的文件夹，选择后将自动校验并显示在地图上。">的文件夹，选择后将自动校验并显示在地图上。</span></p>
             </div>
             <div class="catalog-home-actions">
-              <button id="select-catalog-folder" class="primary" type="button">选择数据立方体文件夹</button>
-              <button id="open-manual-catalog" class="secondary" type="button">手动输入路径</button>
+              <button id="select-catalog-folder" class="primary" type="button"><span data-i18n="选择数据立方体文件夹">选择数据立方体文件夹</span></button>
+              <button id="open-manual-catalog" class="secondary" type="button"><span data-i18n="手动输入路径">手动输入路径</span></button>
             </div>
             <p id="catalog-home-message" class="hint" role="status"></p>
             <details id="recent-catalogs" class="recent-catalogs" hidden>
-              <summary>最近使用的数据</summary>
+              <summary><span data-i18n="最近使用的数据">最近使用的数据</span></summary>
               <div id="recent-catalog-list" class="recent-catalog-list"></div>
             </details>
           </section>
@@ -170,42 +181,48 @@
             <div class="catalog-selection-card">
               <div class="catalog-folder-icon small" aria-hidden="true">📁</div>
               <div class="catalog-selection-copy">
-                <b id="catalog-selection-name">本地数据立方体</b>
+                <b id="catalog-selection-name"><span data-i18n="本地数据立方体">本地数据立方体</span></b>
                 <code id="catalog-selection-path"></code>
               </div>
               <div class="catalog-selection-actions">
-                <button id="change-catalog-folder" class="secondary" type="button">更换文件夹</button>
-                <button id="forget-catalog-folder" class="secondary danger" type="button">忘记记录</button>
+                <button id="change-catalog-folder" class="secondary" type="button"><span data-i18n="更换文件夹">更换文件夹</span></button>
+                <button id="forget-catalog-folder" class="secondary danger" type="button"><span data-i18n="忘记记录">忘记记录</span></button>
               </div>
             </div>
 
             <div class="local-search-feedback">
-              <div id="catalog-status" class="catalog-status checking">正在检查本地数据立方体…</div>
+              <div id="catalog-status" class="catalog-status checking"><span data-i18n="正在检查本地数据立方体…">正在检查本地数据立方体…</span></div>
               <p id="catalog-message" class="hint"></p>
             </div>
 
             <section id="catalog-discovery" class="catalog-discovery" hidden>
-              <div><b>当前文件夹没有 Catalog</b><p id="catalog-discovery-message">可以重新选择，或只检查它的一级子目录。</p></div>
-              <div class="catalog-discovery-actions"><button id="scan-catalog-children" class="secondary" type="button">查找一级子目录</button><button id="reselect-catalog-folder" class="primary" type="button">重新选择文件夹</button></div>
+              <div><b><span data-i18n="当前文件夹没有 Catalog">当前文件夹没有 Catalog</span></b><p id="catalog-discovery-message"><span data-i18n="可以重新选择，或只检查它的一级子目录。">可以重新选择，或只检查它的一级子目录。</span></p></div>
+              <div class="catalog-discovery-actions"><button id="scan-catalog-children" class="secondary" type="button"><span data-i18n="查找一级子目录">查找一级子目录</span></button><button id="reselect-catalog-folder" class="primary" type="button"><span data-i18n="重新选择文件夹">重新选择文件夹</span></button></div>
               <div id="catalog-candidate-list" class="catalog-candidate-list"></div>
             </section>
 
             <div id="catalog-ready-tools" hidden>
               <div class="local-search-toolbar">
-                <input id="cat-tile" placeholder="瓦片，如 49RGP">
-                <select id="cat-product"><option value="">全部产品</option><option>scenes</option><option>monthly</option><option>smonthly</option><option>static</option></select>
-                <select id="cat-direction"><option value="">全部轨道</option><option>ASCENDING</option><option>DESCENDING</option></select>
-                <input id="cat-month" placeholder="月份 YYYY-MM">
-                <select id="cat-status"><option value="">全部状态</option><option>complete</option><option>partial</option><option>empty</option><option>failed</option><option>deprecated</option></select>
-                <button id="query-catalog" class="primary" type="button" disabled>检索并上图</button>
-                <button id="report-catalog" class="secondary" type="button" disabled>报告</button>
-                <button id="clear-catalog-map" class="secondary" type="button" disabled>清除图层</button>
+                <input id="cat-tile" placeholder="瓦片，如 49RGP" data-i18n-placeholder="瓦片，如 49RGP">
+                <select id="cat-product"><option value=""><span data-i18n="全部产品">全部产品</span></option><option>scenes</option><option>monthly</option><option>smonthly</option><option>static</option></select>
+                <select id="cat-direction"><option value=""><span data-i18n="全部轨道">全部轨道</span></option><option>ASCENDING</option><option>DESCENDING</option></select>
+                <input id="cat-month" placeholder="月份 YYYY-MM" data-i18n-placeholder="月份 YYYY-MM">
+                <select id="cat-status"><option value=""><span data-i18n="全部状态">全部状态</span></option><option>complete</option><option>partial</option><option>empty</option><option>failed</option><option>deprecated</option></select>
+                  <input id="cat-track" type="number" min="1" placeholder="轨道编号" aria-label="轨道编号" data-i18n-placeholder="轨道编号" data-i18n-aria-label="轨道编号">
+                  <input id="cat-level" placeholder="处理级别" aria-label="处理级别" data-i18n-placeholder="处理级别" data-i18n-aria-label="处理级别">
+                  <input id="cat-signature" placeholder="处理签名" aria-label="处理签名" data-i18n-placeholder="处理签名" data-i18n-aria-label="处理签名">
+                  <input id="cat-variant" placeholder="产品变体" aria-label="产品变体" data-i18n-placeholder="产品变体" data-i18n-aria-label="产品变体">
+                  <select id="cat-representation" aria-label="全部表示类型" data-i18n-aria-label="全部表示类型"><option value="" data-i18n="全部表示类型">全部表示类型</option><option value="physical" data-i18n="实体产品">实体产品</option><option value="virtual" data-i18n="虚拟视图">虚拟视图</option></select>
+                  <button id="list-catalog" class="secondary" type="button" data-i18n="查看产品列表">查看产品列表</button>
+                <button id="query-catalog" class="primary" type="button" disabled><span data-i18n="检索并上图">检索并上图</span></button>
+                <button id="report-catalog" class="secondary" type="button" disabled><span data-i18n="报告">报告</span></button>
+                <button id="clear-catalog-map" class="secondary" type="button" disabled><span data-i18n="清除图层">清除图层</span></button>
               </div>
               <section id="catalog-report" class="catalog-report compact" hidden>
                 <div id="report-summary" class="report-summary"></div>
                 <div class="report-columns">
-                  <div><h3>产品与状态</h3><div id="report-counts"></div></div>
-                  <div><h3>时间完整性</h3><div id="report-gaps"></div></div>
+                  <div><h3><span data-i18n="产品与状态">产品与状态</span></h3><div id="report-counts"></div></div>
+                  <div><h3><span data-i18n="时间完整性">时间完整性</span></h3><div id="report-gaps"></div></div>
                 </div>
               </section>
             </div>
@@ -217,103 +234,250 @@
 
   <dialog id="confirm-dialog">
     <form method="dialog" class="dialog-card">
-      <h2>确认下载规划</h2>
+      <label class="dialog-language">语言 / Language <select data-language><option value="zh-CN">中文</option><option value="en">English</option></select></label>
+      <h2 id="confirm-title"><span data-i18n="确认下载规划">确认下载规划</span></h2>
       <div id="plan-summary"></div>
+      <div id="plan-strategies"></div>
+      <p id="confirm-message" role="status" class="error"></p>
       <section id="phrase-wrap" class="confirmation-gate" hidden>
-        <b>大任务二次确认</b>
+        <b><span data-i18n="大任务二次确认">大任务二次确认</span></b>
         <p id="phrase-reason" class="hint"></p>
-        <div class="confirmation-phrase"><code id="phrase-example"></code><button id="copy-phrase" class="secondary" type="button">复制短语</button></div>
-        <label>请准确输入上方短语<input id="phrase" autocomplete="off"></label>
+        <div class="confirmation-phrase"><code id="phrase-example"></code><button id="copy-phrase" class="secondary" type="button"><span data-i18n="复制短语">复制短语</span></button></div>
+        <label><span data-i18n="请准确输入上方短语">请准确输入上方短语</span><input id="phrase" autocomplete="off"></label>
       </section>
-      <div class="dialog-actions"><button value="cancel" class="secondary">返回修改</button><button value="default" id="confirm-run" class="primary">确认并执行</button></div>
+      <div class="dialog-actions"><button value="cancel" class="secondary"><span data-i18n="返回修改">返回修改</span></button><button value="default" id="confirm-run" class="primary"><span data-i18n="确认并执行">确认并执行</span></button></div>
     </form>
   </dialog>
 
   <dialog id="recovery-dialog" aria-labelledby="recovery-title">
     <div class="dialog-card recovery-card">
-      <h2 id="recovery-title">恢复中断任务</h2>
+      <label class="dialog-language">语言 / Language <select data-language><option value="zh-CN">中文</option><option value="en">English</option></select></label>
+      <h2 id="recovery-title"><span data-i18n="恢复中断任务">恢复中断任务</span></h2>
       <div id="recovery-summary"></div>
-      <div class="dialog-actions"><button id="close-recovery" class="secondary" type="button">取消</button><button id="confirm-recovery" class="primary" type="button" disabled>确认恢复</button></div>
+      <div class="dialog-actions"><button id="close-recovery" class="secondary" type="button"><span data-i18n="取消">取消</span></button><button id="confirm-recovery" class="primary" type="button" disabled><span data-i18n="确认恢复">确认恢复</span></button></div>
     </div>
   </dialog>
 
   <dialog id="output-dialog">
     <div class="dialog-card browser-card">
-      <h2 id="directory-dialog-title">选择输出目录</h2>
-      <p class="hint" id="directory-dialog-hint">服务器输出根：<code id="output-root"></code></p>
-      <div class="crumb"><button id="dir-up" class="ghost">上一级</button><code id="dir-current"></code></div>
+      <label class="dialog-language">语言 / Language <select data-language><option value="zh-CN">中文</option><option value="en">English</option></select></label>
+      <h2 id="directory-dialog-title"><span data-i18n="选择输出目录">选择输出目录</span></h2>
+      <p class="hint" id="directory-dialog-hint"><span data-i18n="服务器输出根：">服务器输出根：</span><code id="output-root"></code></p>
+      <div class="crumb"><button id="dir-up" class="ghost"><span data-i18n="上一级">上一级</span></button><code id="dir-current"></code></div>
       <div id="dir-list" class="dir-list"></div>
-      <div class="inline" id="new-folder-row"><input id="new-folder" placeholder="新建子目录名"><button id="create-folder" class="secondary">新建</button></div>
-      <div class="dialog-actions"><button id="close-output" class="secondary">取消</button><button id="select-output" class="primary">选择当前目录</button></div>
+      <div class="inline" id="new-folder-row"><input id="new-folder" placeholder="新建子目录名" data-i18n-placeholder="新建子目录名"><button id="create-folder" class="secondary"><span data-i18n="新建">新建</span></button></div>
+      <div class="dialog-actions"><button id="close-output" class="secondary"><span data-i18n="取消">取消</span></button><button id="select-output" class="primary"><span data-i18n="选择当前目录">选择当前目录</span></button></div>
     </div>
   </dialog>
 
   <dialog id="catalog-detail-dialog" aria-labelledby="catalog-detail-title">
     <div class="dialog-card catalog-detail-card">
-      <div class="dialog-title"><div><h2 id="catalog-detail-title">本地数据详情</h2><p id="catalog-detail-meta"></p></div><button id="close-catalog-detail" class="dialog-close" type="button" aria-label="关闭本地数据详情">×</button></div>
-      <div class="table-wrap"><table><thead><tr><th>Item</th><th>产品</th><th>轨道</th><th>时间</th><th>Grid ID</th><th>Zarr</th><th>状态</th></tr></thead><tbody id="catalog-detail-body"></tbody></table></div>
+      <label class="dialog-language">语言 / Language <select data-language><option value="zh-CN">中文</option><option value="en">English</option></select></label>
+      <div class="dialog-title"><div><h2 id="catalog-detail-title"><span data-i18n="本地数据详情">本地数据详情</span></h2><p id="catalog-detail-meta"></p></div><button id="close-catalog-detail" class="dialog-close" type="button" aria-label="关闭本地数据详情" data-i18n-aria-label="关闭本地数据详情">×</button></div>
+      <div class="table-wrap"><table><thead><tr><th>Item</th><th><span data-i18n="产品">产品</span></th><th>Direction / Track</th><th><span data-i18n="时间">时间</span></th><th>Grid ID</th><th data-i18n="实例与位置">实例与位置</th><th><span data-i18n="状态">状态</span></th><th data-i18n="读取">读取</th></tr></thead><tbody id="catalog-detail-body"></tbody></table></div>
+      <div class="catalog-pagination"><button id="catalog-prev" class="secondary" type="button" data-i18n="上一页">上一页</button><span id="catalog-page"></span><button id="catalog-next" class="secondary" type="button" data-i18n="下一页">下一页</button></div>
+      <details id="mosaic-panel"><summary data-i18n="邻格栅格镶嵌">邻格栅格镶嵌</summary>
+        <form id="mosaic-form">
+          <p class="hint" data-i18n="同月或同次获取的 COG，按所列顺序逐波段取首个有效像元。目标范围采用目标 CRS 的米坐标；VRT 依赖原始 COG 和 .sources 目录。">同月或同次获取的 COG，按所列顺序逐波段取首个有效像元。目标范围采用目标 CRS 的米坐标；VRT 依赖原始 COG 和 .sources 目录。</p>
+          <label><span data-i18n="有序父实例（同一 Catalog，每行一个）">有序父实例（同一 Catalog，每行一个）</span><textarea id="mosaic-parents" rows="3" required></textarea></label>
+          <div class="product-sample-form">
+            <label>CRS<input id="mosaic-crs" placeholder="EPSG:32717" required></label>
+            <label><span data-i18n="分辨率（米）">分辨率（米）</span><input id="mosaic-resolution" type="number" min="0.001" step="any" value="30" required></label>
+            <label><span data-i18n="目标范围（左 下 右 上）">目标范围（左 下 右 上）</span><input id="mosaic-bounds" required></label>
+            <label><span data-i18n="输出格式">输出格式</span><select id="mosaic-format"><option>VRT</option><option>COG</option></select></label>
+            <label><span data-i18n="新输出目录（相对工作区）">新输出目录（相对工作区）</span><input id="mosaic-output" required></label>
+          </div>
+          <p id="mosaic-message" role="status"></p><button id="plan-mosaic" class="primary" type="submit" data-i18n="预检工具任务">预检工具任务</button>
+        </form>
+      </details>
+      <section id="product-reader" hidden>
+        <h3 data-i18n="选中的产品实例">选中的产品实例</h3>
+        <p id="product-identity"></p>
+        <p id="product-message" role="status"></p>
+        <p id="product-warnings" role="status"></p>
+        <details><summary data-i18n="完整元数据与来源">完整元数据与来源</summary><pre id="product-metadata"></pre></details>
+        <form id="product-sample-form" class="product-sample-form" hidden>
+          <label><span data-i18n="波段">波段</span><select id="sample-band"></select></label>
+          <label><span data-i18n="行（从 0 开始）">行（从 0 开始）</span><input id="sample-row" type="number" min="0" value="0" required></label>
+          <label><span data-i18n="列（从 0 开始）">列（从 0 开始）</span><input id="sample-col" type="number" min="0" value="0" required></label>
+          <label><span data-i18n="开始日期（含）">开始日期（含）</span><input id="sample-start" type="date"></label>
+          <label><span data-i18n="结束日期（含）">结束日期（含）</span><input id="sample-end" type="date"></label>
+          <button id="read-product" class="primary" type="submit" data-i18n="读取像元">读取像元</button>
+        </form>
+        <p data-i18n="仅按需读取所选像元；null 表示缺测。">仅按需读取所选像元；null 表示缺测。</p>
+        <div class="table-wrap"><table><thead><tr><th data-i18n="时间">时间</th><th data-i18n="数值">数值</th></tr></thead><tbody id="product-sample"></tbody></table></div>
+        <details id="analysis-panel" hidden><summary data-i18n="本地 LandTrendr（实验版）">本地 LandTrendr（实验版）</summary>
+          <form id="analysis-form">
+            <p class="hint" data-i18n="使用已有实体产品，最多 64 个像元、128 个有效年份。少于 6 年或未拟合不表示零变化。CUSUM 分发审查未完成，CCDC 本地实现尚不可用；此页面不调用 GEE。">使用已有实体产品，最多 64 个像元、128 个有效年份。少于 6 年或未拟合不表示零变化。CUSUM 分发审查未完成，CCDC 本地实现尚不可用；此页面不调用 GEE。</p>
+            <div class="product-sample-form">
+              <label><span data-i18n="选择方式">选择方式</span><select id="analysis-mode"><option value="pixel" data-i18n="单点">单点</option><option value="window" data-i18n="小窗口">小窗口</option><option value="points" data-i18n="点集">点集</option></select></label>
+              <label><span data-i18n="波段">波段</span><select id="analysis-band"><option>VV_dB</option><option>VH_dB</option></select></label>
+              <label><span data-i18n="开始时间 UTC">开始时间 UTC</span><input id="analysis-start" type="datetime-local" step="1" required></label>
+              <label><span data-i18n="结束时间 UTC">结束时间 UTC</span><input id="analysis-end" type="datetime-local" step="1" required></label>
+            </div>
+            <div id="analysis-grid" class="product-sample-form">
+              <label>X offset<input id="analysis-x" type="number" min="0" value="0" required></label>
+              <label>Y offset<input id="analysis-y" type="number" min="0" value="0" required></label>
+              <label><span data-i18n="宽度（像元）">宽度（像元）</span><input id="analysis-width" type="number" min="1" value="1" required></label>
+              <label><span data-i18n="高度（像元）">高度（像元）</span><input id="analysis-height" type="number" min="1" value="1" required></label>
+            </div>
+            <label id="analysis-point-list" hidden><span data-i18n="点集 JSON（point_id、col、row）">点集 JSON（point_id、col、row）</span><textarea id="analysis-points" rows="3" placeholder='[{"point_id":"p1","col":0,"row":0}]'></textarea></label>
+            <div class="product-sample-form">
+              <label><span data-i18n="年度合成">年度合成</span><select id="analysis-method" required><option value="" data-i18n="请选择">请选择</option><option>mean</option><option>median</option></select></label>
+              <label><span data-i18n="计算域">计算域</span><select id="analysis-domain" required><option value="" data-i18n="请选择">请选择</option><option>db</option><option>linear_power</option></select></label>
+              <label><span data-i18n="扰动方向">扰动方向</span><select id="analysis-direction" required><option value="" data-i18n="请选择">请选择</option><option value="increase" data-i18n="增加">增加</option><option value="decrease" data-i18n="减少">减少</option></select></label>
+              <label><span data-i18n="每年最少观测数">每年最少观测数</span><input id="analysis-minimum" type="number" min="1" value="1" required></label>
+              <label><span data-i18n="新输出目录（相对工作区）">新输出目录（相对工作区）</span><input id="analysis-output" required></label>
+            </div>
+            <p id="analysis-message" role="status"></p><button id="plan-analysis" class="primary" type="submit" data-i18n="预检工具任务">预检工具任务</button>
+          </form>
+        </details>
+        <details id="derive-panel" hidden><summary data-i18n="从此产品创建派生 Cube">从此产品创建派生 Cube</summary>
+          <form id="derive-form">
+            <p class="hint" data-i18n="读取已有实体，写入新目录；不下载数据。时间为 UTC，结束时间包含该时刻。">读取已有实体，写入新目录；不下载数据。时间为 UTC，结束时间包含该时刻。</p>
+            <div class="product-sample-form">
+              <label><span data-i18n="开始时间 UTC">开始时间 UTC</span><input id="derive-start" type="datetime-local" step="1" required></label>
+              <label><span data-i18n="结束时间 UTC">结束时间 UTC</span><input id="derive-end" type="datetime-local" step="1" required></label>
+              <label><span data-i18n="新输出目录（相对工作区）">新输出目录（相对工作区）</span><input id="derive-output" required></label>
+            </div>
+            <div class="product-sample-form">
+              <label>X offset<input id="derive-x" type="number" min="0" value="0" required></label>
+              <label>Y offset<input id="derive-y" type="number" min="0" value="0" required></label>
+              <label><span data-i18n="宽度（像元）">宽度（像元）</span><input id="derive-width" type="number" min="1" required></label>
+              <label><span data-i18n="高度（像元）">高度（像元）</span><input id="derive-height" type="number" min="1" required></label>
+            </div>
+            <div class="product-sample-form">
+              <label><input type="checkbox" name="derive-feature" value="ratio" checked> Ratio</label>
+              <label><input type="checkbox" name="derive-feature" value="rvi" checked> RVI</label>
+              <label><input type="checkbox" name="derive-feature" value="glcm"> GLCM</label>
+              <label><span data-i18n="空间去斑">空间去斑</span><select id="derive-filter"><option>none</option><option>tv_bregman</option><option>nlm</option></select></label>
+              <label><span data-i18n="月合成">月合成</span><select id="derive-monthly"><option value="" data-i18n="不启用">不启用</option><option>mean</option><option>median</option></select></label>
+            </div>
+            <details><summary data-i18n="时间插值（单独执行）">时间插值（单独执行）</summary>
+              <div class="product-sample-form">
+                <label><span data-i18n="方法">方法</span><select id="derive-interpolation"><option value="" data-i18n="不启用">不启用</option><option>none</option><option>linear</option></select></label>
+                <label><span data-i18n="计算域">计算域</span><select id="derive-domain"><option value="" data-i18n="请选择">请选择</option><option>db</option><option>linear_power</option></select></label>
+                <label><span data-i18n="最大间隔（天）">最大间隔（天）</span><input id="derive-gap" type="number" min="0.001" step="any"></label>
+              </div>
+              <p class="hint" data-i18n="仅在现有时间轴上补内部缺测，不外推；不会把插值当作新观测。">仅在现有时间轴上补内部缺测，不外推；不会把插值当作新观测。</p>
+            </details>
+            <p class="hint" data-i18n="派生任务中断后不原地续写。保留已有输出，另选新目录重新提交。">派生任务中断后不原地续写。保留已有输出，另选新目录重新提交。</p>
+            <p id="derive-message" role="status"></p>
+            <button id="plan-derive" class="primary" type="submit" data-i18n="预检派生任务">预检派生任务</button>
+          </form>
+        </details>
+        <details id="view-panel" hidden><summary data-i18n="虚拟视图与显式物化">虚拟视图与显式物化</summary>
+          <form id="view-form">
+            <p class="hint" data-i18n="虚拟视图只保存定义，读取时依赖父数据；物化是独立操作，写入新的实体 Cube。">虚拟视图只保存定义，读取时依赖父数据；物化是独立操作，写入新的实体 Cube。</p>
+            <div class="product-sample-form">
+              <label><span data-i18n="操作">操作</span><select id="view-operation"><option value="view_create" data-i18n="创建选择／特征视图">创建选择／特征视图</option><option value="view_materialize" data-i18n="物化所选虚拟视图">物化所选虚拟视图</option><option value="view_multitrack" data-i18n="创建多轨月产品视图">创建多轨月产品视图</option></select></label>
+              <label><span data-i18n="新输出目录（相对工作区）">新输出目录（相对工作区）</span><input id="view-output" required></label>
+            </div>
+            <div id="view-selection" class="product-sample-form">
+              <label><span data-i18n="开始时间 UTC">开始时间 UTC</span><input id="view-start" type="datetime-local" step="1" required></label>
+              <label><span data-i18n="结束时间 UTC">结束时间 UTC</span><input id="view-end" type="datetime-local" step="1" required></label>
+              <label><input type="checkbox" name="view-band" value="VV_dB" checked> VV_dB</label>
+              <label><input type="checkbox" name="view-band" value="VH_dB" checked> VH_dB</label>
+              <label><input type="checkbox" name="view-band" value="Ratio" checked> Ratio</label>
+              <label><input type="checkbox" name="view-band" value="RVI" checked> RVI</label>
+            </div>
+            <div id="view-multitrack" hidden>
+              <p class="hint" data-i18n="仅支持同格网、同方向且统计范围一致的单轨派生月实体。逐行列出 item ID，顺序即优先级；贡献轨道数不是观测次数。">仅支持同格网、同方向且统计范围一致的单轨派生月实体。逐行列出 item ID，顺序即优先级；贡献轨道数不是观测次数。</p>
+              <label><span data-i18n="有序父实例（同一 Catalog，每行一个）">有序父实例（同一 Catalog，每行一个）</span><textarea id="view-parents" rows="4" required></textarea></label>
+              <button id="view-add-parent" class="secondary" type="button" data-i18n="加入当前实例">加入当前实例</button>
+              <div class="product-sample-form">
+                <label><span data-i18n="开始月份 UTC">开始月份 UTC</span><input id="view-start-month" type="month" required></label>
+                <label><span data-i18n="结束月份 UTC">结束月份 UTC</span><input id="view-end-month" type="month" required></label>
+                <label><span data-i18n="方法">方法</span><select id="view-method"><option>first_valid_pixel</option><option>mean</option></select></label>
+              </div>
+              <p class="hint" data-i18n="mean 在有效双极化配对的线性功率域等权计算，不做入射角归一化。">mean 在有效双极化配对的线性功率域等权计算，不做入射角归一化。</p>
+            </div>
+            <div id="view-window" class="product-sample-form">
+              <label>X offset<input id="view-x" type="number" min="0" value="0" required></label>
+              <label>Y offset<input id="view-y" type="number" min="0" value="0" required></label>
+              <label><span data-i18n="宽度（像元）">宽度（像元）</span><input id="view-width" type="number" min="1" required></label>
+              <label><span data-i18n="高度（像元）">高度（像元）</span><input id="view-height" type="number" min="1" required></label>
+            </div>
+            <p class="hint" data-i18n="派生任务中断后不原地续写。保留已有输出，另选新目录重新提交。">派生任务中断后不原地续写。保留已有输出，另选新目录重新提交。</p>
+            <p id="view-message" role="status"></p>
+            <button id="plan-view" class="primary" type="submit" data-i18n="预检视图任务">预检视图任务</button>
+          </form>
+        </details>
+      </section>
     </div>
   </dialog>
 
+  <dialog id="tool-result-dialog" aria-labelledby="tool-result-title">
+    <div class="dialog-card">
+      <label class="dialog-language">语言 / Language <select data-language><option value="zh-CN">中文</option><option value="en">English</option></select></label>
+      <div class="dialog-title"><h2 id="tool-result-title" data-i18n="工具结果">工具结果</h2><button class="dialog-close" type="button" onclick="document.getElementById('tool-result-dialog').close()" data-i18n-aria-label="关闭" aria-label="关闭">×</button></div>
+      <div id="tool-result-body" role="status"></div>
+    </div>
+  </dialog>
   <dialog id="catalog-folder-dialog" aria-labelledby="catalog-folder-title">
     <div class="dialog-card catalog-folder-card">
+      <label class="dialog-language">语言 / Language <select data-language><option value="zh-CN">中文</option><option value="en">English</option></select></label>
       <div class="dialog-title">
         <div>
-          <h2 id="catalog-folder-title">选择数据立方体文件夹</h2>
-          <p>逐级打开本机文件夹，选择后将检查根目录中的 <code>catalog.parquet</code>。</p>
+          <h2 id="catalog-folder-title"><span data-i18n="选择数据立方体文件夹">选择数据立方体文件夹</span></h2>
+          <p><span data-i18n="逐级打开本机文件夹，选择后将检查根目录中的">逐级打开本机文件夹，选择后将检查根目录中的</span> <code>catalog.parquet</code>。</p>
         </div>
-        <button id="close-catalog-folder" class="dialog-close" type="button" aria-label="关闭文件夹选择器">×</button>
+        <button id="close-catalog-folder" class="dialog-close" type="button" aria-label="关闭文件夹选择器" data-i18n-aria-label="关闭文件夹选择器">×</button>
       </div>
       <div class="catalog-folder-toolbar">
-        <button id="catalog-folder-up" class="secondary" type="button" disabled>上一级</button>
+        <button id="catalog-folder-up" class="secondary" type="button" disabled><span data-i18n="上一级">上一级</span></button>
         <div class="catalog-folder-location">
-          <span>当前位置</span>
-          <code id="catalog-folder-current" title="此电脑">此电脑</code>
+          <span><span data-i18n="当前位置">当前位置</span></span>
+          <code id="catalog-folder-current" title="此电脑" data-i18n-title="此电脑"><span data-i18n="此电脑">此电脑</span></code>
         </div>
       </div>
-      <div id="catalog-folder-status" class="catalog-folder-status" role="status" aria-live="polite">正在读取可用位置…</div>
+      <div id="catalog-folder-status" class="catalog-folder-status" role="status" aria-live="polite"><span data-i18n="正在读取可用位置…">正在读取可用位置…</span></div>
       <div id="catalog-folder-list" class="catalog-folder-list" role="list" aria-busy="true"></div>
-      <button id="retry-catalog-folders" class="secondary catalog-folder-retry" type="button" hidden>重新加载</button>
+      <button id="retry-catalog-folders" class="secondary catalog-folder-retry" type="button" hidden><span data-i18n="重新加载">重新加载</span></button>
       <div class="catalog-folder-alternatives">
-        <span>目录较深时，也可以直接输入路径</span>
-        <button id="manual-catalog-folder" class="secondary" type="button">手动输入绝对路径</button>
+        <span><span data-i18n="目录较深时，也可以直接输入路径">目录较深时，也可以直接输入路径</span></span>
+        <button id="manual-catalog-folder" class="secondary" type="button"><span data-i18n="手动输入绝对路径">手动输入绝对路径</span></button>
       </div>
       <div class="dialog-actions">
-        <button id="cancel-catalog-folder" class="secondary" type="button">取消</button>
-        <button id="select-current-catalog-folder" class="primary" type="button" disabled>选择此文件夹</button>
+        <button id="cancel-catalog-folder" class="secondary" type="button"><span data-i18n="取消">取消</span></button>
+        <button id="select-current-catalog-folder" class="primary" type="button" disabled><span data-i18n="选择此文件夹">选择此文件夹</span></button>
       </div>
     </div>
   </dialog>
 
   <dialog id="catalog-root-dialog" aria-labelledby="catalog-root-title">
     <div class="dialog-card catalog-root-card">
-      <h2 id="catalog-root-title">手动输入数据文件夹</h2>
-      <p class="hint">请输入服务所在电脑上的绝对路径。该目录只用于本地检索，不会成为任务输出位置。</p>
-      <label>文件夹绝对路径<input id="catalog-root-path" autocomplete="off" placeholder="例如 D:\data\s1_cube"></label>
-      <label>显示名称（可选）<input id="catalog-root-label" autocomplete="off" placeholder="例如 湖北历史数据"></label>
+      <label class="dialog-language">语言 / Language <select data-language><option value="zh-CN">中文</option><option value="en">English</option></select></label>
+      <h2 id="catalog-root-title"><span data-i18n="手动输入数据文件夹">手动输入数据文件夹</span></h2>
+      <p class="hint"><span data-i18n="请输入服务所在电脑上的绝对路径。该目录只用于本地检索，不会成为任务输出位置。">请输入服务所在电脑上的绝对路径。该目录只用于本地检索，不会成为任务输出位置。</span></p>
+      <label><span data-i18n="文件夹绝对路径">文件夹绝对路径</span><input id="catalog-root-path" autocomplete="off" placeholder="例如 D:\data\s1_cube" data-i18n-placeholder="例如 D:\data\s1_cube"></label>
+      <label><span data-i18n="显示名称（可选）">显示名称（可选）</span><input id="catalog-root-label" autocomplete="off" placeholder="例如 湖北历史数据" data-i18n-placeholder="例如 湖北历史数据"></label>
       <p id="catalog-root-message" class="message" role="status"></p>
-      <div class="dialog-actions"><button id="close-catalog-root" class="secondary" type="button">取消</button><button id="register-catalog-root" class="primary" type="button">打开文件夹</button></div>
+      <div class="dialog-actions"><button id="close-catalog-root" class="secondary" type="button"><span data-i18n="取消">取消</span></button><button id="register-catalog-root" class="primary" type="button"><span data-i18n="打开文件夹">打开文件夹</span></button></div>
     </div>
   </dialog>
 
   <dialog id="task-log-dialog" aria-labelledby="task-log-title">
     <div class="dialog-card task-log-card">
-      <div class="dialog-title"><div><h2 id="task-log-title">任务日志</h2><p id="task-log-meta">正在读取任务状态…</p></div><button id="close-task-log" class="dialog-close" type="button" aria-label="关闭任务日志">×</button></div>
+      <label class="dialog-language">语言 / Language <select data-language><option value="zh-CN">中文</option><option value="en">English</option></select></label>
+      <div class="dialog-title"><div><h2 id="task-log-title"><span data-i18n="任务日志">任务日志</span></h2><p id="task-log-meta"><span data-i18n="正在读取任务状态…">正在读取任务状态…</span></p></div><button id="close-task-log" class="dialog-close" type="button" aria-label="关闭任务日志" data-i18n-aria-label="关闭任务日志">×</button></div>
       <div id="task-stage-track" class="task-stage-track"></div>
       <div class="log-toolbar">
-        <label><input id="log-follow" type="checkbox" checked> 自动跟随</label>
+        <label><input id="log-follow" type="checkbox" checked> <span data-i18n="自动跟随">自动跟随</span></label>
         <span id="log-size">0 B</span>
-        <button id="refresh-log" class="secondary" type="button">刷新</button>
-        <a id="download-log" class="secondary button-link" href="#" download>下载完整日志</a>
+        <button id="refresh-log" class="secondary" type="button"><span data-i18n="刷新">刷新</span></button>
+        <a id="download-log" class="secondary button-link" href="#" download><span data-i18n="下载完整日志">下载完整日志</span></a>
       </div>
       <div class="log-layout">
-        <section><h3>阶段事件</h3><div id="task-events" class="task-events"></div></section>
-        <section><h3>实时输出</h3><pre id="task-log-output" class="task-log-output"></pre></section>
+        <section><h3><span data-i18n="阶段事件">阶段事件</span></h3><div id="task-events" class="task-events"></div></section>
+        <section><h3><span data-i18n="实时输出">实时输出</span></h3><pre id="task-log-output" class="task-log-output"></pre></section>
       </div>
     </div>
   </dialog>
 
   <script src="/static/leaflet/leaflet.js"></script>
-  <script src="/static/app.js?v=20260823-folder-browser-v3"></script>
+  <script src="/static/i18n.js?v=r6c"></script>
+  <script src="/static/app.js?v=r6c"></script>
+<noscript>请启用 JavaScript / Enable JavaScript to use S1-GRiTS.</noscript>
 </body>
 </html>

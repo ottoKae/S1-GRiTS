@@ -23,9 +23,12 @@ def test_cli_and_web_share_one_valid_template():
     assert parsed["output"]["existing_store"] == "resume"
 
 
-def test_bundled_frontend_is_canonical_chinese_ui():
+def test_bundled_frontend_is_one_bilingual_ui():
     index = (ROOT / "src/s1grits/webapp/static/index.html").read_text(encoding="utf-8")
     assert 'lang="zh-CN"' in index
+    assert 'data-language' in index and '/static/i18n.js' in index
+    assert 'value="en"' in index and 'value="zh-CN"' in index
+    assert (ROOT / 'src/s1grits/webapp/static/i18n.js').is_file()
     tracked = subprocess.run(
         ["git", "ls-files", "src"],
         cwd=ROOT,

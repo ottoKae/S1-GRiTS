@@ -190,6 +190,7 @@ def _source_contract() -> list[Result]:
         "src/s1grits/data/mgrs_burst_lookup_table.parquet",
         "src/s1grits/webapp/static/index.html",
         "src/s1grits/webapp/static/app.js",
+        "src/s1grits/webapp/static/i18n.js",
         "src/s1grits/webapp/static/styles.css",
         "src/s1grits/webapp/static/leaflet/leaflet.js",
         "src/s1grits/webapp/static/leaflet/leaflet.css",
@@ -203,11 +204,13 @@ def _source_contract() -> list[Result]:
     ))
 
     index = (ROOT / "src/s1grits/webapp/static/index.html").read_text(encoding="utf-8")
-    chinese = 'lang="zh-CN"' in index
+    bilingual = all(marker in index for marker in (
+        'lang="zh-CN"', 'data-language', 'value="zh-CN"', 'value="en"', '/static/i18n.js',
+    ))
     results.append(Result(
-        "PASS" if chinese else "FAIL",
+        "PASS" if bilingual else "FAIL",
         "canonical frontend",
-        "bundled SPA declares zh-CN" if chinese else "index.html must declare lang=zh-CN",
+        "one bundled SPA with Chinese/English switching" if bilingual else "bilingual frontend assets or language controls missing",
     ))
 
     tracked = _git("ls-files", "src").stdout.replace("\\", "/").splitlines()

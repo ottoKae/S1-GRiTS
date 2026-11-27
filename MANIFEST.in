@@ -2,6 +2,7 @@ include CHANGELOG.md
 include README.zh-CN.md
 recursive-include docs *.md
 include tools/release_check.py
+include tools/create_demo_cube.py
 include config/spatial_points.example.yaml
 include config/spatial_regions.example.yaml
 prune docs/_work

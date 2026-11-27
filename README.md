@@ -230,10 +230,12 @@ s1grits process_scenes --config my_run.yaml
 s1grits serve /path/to/output --port 5556
 ```
 
-The packaged browser interface is the **Chinese v3 console**. The removed
-Streamlit/English prototype is not shipped or tracked; a future English UI
-will be translated from this single frontend instead of maintained as a second
-implementation.
+The single packaged browser interface is the **S1-GRiTS Data Cube Console**
+(**S1-GRiTS 数据立方体控制台**), launched with `s1grits serve`.
+Switch between English and 中文 in the same page. The first visit follows the
+browser language (Chinese or English fallback); later visits remember your choice.
+Earlier Streamlit and English Workspace interfaces are preserved in
+[Git history](docs/web-history.md), not shipped as alternative applications.
 
 Full installation options (conda, from-source, extras), authentication setup
 and first-run guidance: **[docs/installation.md](docs/installation.md)**.
@@ -276,6 +278,7 @@ Start with the task you need; the detailed references can be read as needed.
 | Task | Read |
 |---|---|
 | Install and run the first check | [Installation](docs/installation.md) |
+| Choose CLI, Agent or Web; check supported capabilities | [Entry points and support](docs/entry_points.md) |
 | Produce scenes, monthly composites and paired static layers | [Workflows](docs/workflows.md), [Web interface](docs/webapp.md), [Configuration](docs/configuration.md) |
 | Understand and hand off a dataset | [Output structure](docs/outputs.md), [Data handoff](docs/DATA_HANDOFF_ZH.md) |
 | Record or inspect processing evidence | [Monthly production records](docs/PROVENANCE_WORKFLOW_ZH.md), [Historical metadata export](docs/PROVENANCE_READONLY_ZH.md) |

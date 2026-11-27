@@ -4,6 +4,41 @@
 
 The verified backend is `nrt==0.3.0`, with NumPy 2.2.6 and Numba 0.61.2 in an isolated Python 3.12 test environment. nrt is EUPL-1.2 licensed. Its source and dependencies are not bundled here or added to an installation extra. **Distribution and licensing review remains pending**; the local experiment does not establish compatibility with this project's licensing or authorize a public release. See [the upstream license](https://github.com/ec-jrc/nrt/blob/master/LICENSE).
 
+The [local backend assessment](local_backends.md) records the current decision: retain separate installation and experimental status. API interoperability is distinct from incorporating upstream code; no blanket incompatibility or distribution clearance is inferred merely from a license name.
+
+## Separate analysis environment
+
+Use Python 3.12 and the matching S1-GRiTS candidate checkout; the released V3.0.0
+package does not provide this adapter. From the checkout root, create a separate
+environment and activate it before installing:
+
+```sh
+python -m venv .venv-cusum
+```
+
+On Windows PowerShell use `.\.venv-cusum\Scripts\Activate.ps1`; on Linux/macOS use
+`source .venv-cusum/bin/activate`. Then run:
+
+```sh
+python -m pip install "numpy==2.2.6" "numba==0.61.2" "nrt==0.3.0" .
+python -m pip install --no-deps "grits-resolver @ git+https://github.com/ottoKae/GRiTS-Resolver.git@9a92523d8cdbf20ec0b3b377c2265875a6521d73"
+python -m pip check
+python -c "import importlib.metadata as m; from nrt.monitor.cusum import CuSum; from s1grits.analysis import analyze_cusum; print({k:m.version(k) for k in ('s1grits','grits-resolver','nrt','numpy','numba')})"
+python -m s1grits analyze_cusum --help
+```
+
+The Resolver command requires Git and matches this development candidate's pinned
+access backend. Install nrt directly from its own distribution; S1-GRiTS does not
+redistribute it. Do not install this version combination into a production environment.
+The tested runtime is Windows x64 / Python 3.12. A fresh environment with no inherited
+site packages was also verified using the candidate wheel, the pinned Resolver source
+and this nrt/NumPy/Numba combination; dependency checks and direct-backend small-sample
+comparisons passed. Other platforms have not been verified here.
+The current CLI/Agent experiment remains available; Web submission and bundled
+distribution remain outside the approved delivery scope.
+
+## Run and inspect
+
 ```bash
 s1grits analyze_cusum --catalog-root /data/cube --item-id PARENT_ITEM_ID \
   --output /data/analysis/cusum-run --band VV_dB \

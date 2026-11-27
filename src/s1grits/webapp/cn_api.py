@@ -17,12 +17,16 @@ import tempfile
 import threading
 import time
 import zipfile
+import warnings
 from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import numpy as np
+
+from .catalog_api import _ITEM_COLUMNS, filter_instances, representation
 
 from s1grits.canonical_catalog_schema import (
     CANONICAL_CATALOG_COLUMNS,
@@ -56,6 +60,8 @@ def _json_safe(value: Any) -> Any:
         return value.isoformat()
     if hasattr(value, "tolist"):
         return _json_safe(value.tolist())
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
     try:
         if bool(pd.isna(value)):
             return None
@@ -937,6 +943,9 @@ class ChineseConsole:
 
     @staticmethod
     def _filter_catalog(frame: pd.DataFrame, **filters) -> pd.DataFrame:
+        frame = filter_instances(frame, **filters)
+        if filters.get("track") is not None:
+            frame = frame[pd.to_numeric(frame["track"], errors="coerce") == filters["track"]]
         for key, column in (
             ("tile", "tile_id"),
             ("product", "product_type"),
@@ -949,26 +958,114 @@ class ChineseConsole:
                 frame = frame[frame[column].fillna("").astype(str) == value]
         return frame
 
-    def catalog_query(self, relative: str, root_id: str = "workspace", **filters) -> dict:
+    def catalog_query(self, relative: str, root_id: str = "workspace", *, offset=0, limit=500, **filters) -> dict:
         path, frame, info = self._valid_catalog(relative, root_id=root_id)
         frame = self._filter_catalog(frame, **filters)
         total = int(len(frame))
         if "datetime" in frame:
-            frame = frame.sort_values("datetime", na_position="last")
+            frame = frame.sort_values(["datetime", "item_id"], na_position="last", kind="stable")
         records = []
-        fields = (
-            "item_id", "tile_id", "product_type", "flight_direction",
-            "datetime", "month", "grid_id", "zarr_path", "status",
-        )
-        for _, row in frame.head(500).iterrows():
-            records.append({field: _json_safe(row.get(field)) for field in fields})
+        for _, row in frame.iloc[offset:offset + limit].iterrows():
+            records.append({**{field: _json_safe(row.get(field)) for field in (*_ITEM_COLUMNS, "status")},
+                            "representation": representation(row)})
         return {
             "catalog": str(path),
             "catalog_version": info["version"],
             "total": total,
             "returned": len(records),
+            "offset": offset,
+            "limit": limit,
             "records": records,
         }
+
+    def catalog_product(self, relative, item_id, root_id="workspace", *, band=None,
+                        row=0, col=0, start=None, end=None):
+        from s1grits.resolver import CubeResolver
+
+        path, frame, _ = self._valid_catalog(relative, root_id=root_id)
+        matches = frame[frame["item_id"] == item_id]
+        if len(matches) != 1:
+            raise ValueError(f"Select one unique item_id; found {len(matches)} records for {item_id}")
+        record = matches.iloc[0].to_dict()
+        if record.get("status") != "complete":
+            raise ValueError("Only complete products can be read")
+        resolver = CubeResolver(path.parent)
+        self._check_product_access(resolver, record)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", UserWarning)
+            with resolver.open(record, chunks={}) as dataset:
+                result = {
+                    "record": {**{field: _json_safe(record.get(field)) for field in (*_ITEM_COLUMNS, "status")},
+                               "representation": representation(record)},
+                    "sizes": dict(dataset.sizes),
+                    "attributes": _json_safe(dict(dataset.attrs)),
+                    "variables": {name: {"dimensions": list(array.dims), "dtype": str(array.dtype),
+                                          "units": _json_safe(array.attrs.get("units"))}
+                                  for name, array in dataset.data_vars.items()},
+                    "time_range": ([str(dataset.time.values.min()), str(dataset.time.values.max())]
+                                   if dataset.sizes.get("time", 0) else None),
+                }
+                if band is not None:
+                    if band not in dataset.data_vars:
+                        raise ValueError(f"Unknown band: {band}")
+                    array = dataset[band]
+                    if not {"x", "y"}.issubset(array.dims) or set(array.dims) - {"time", "x", "y"}:
+                        raise ValueError("Point reading requires (y, x) or (time, y, x) dimensions")
+                    if not 0 <= row < array.sizes["y"] or not 0 <= col < array.sizes["x"]:
+                        raise ValueError("Point row/column is outside this product")
+                    array = array.isel(y=row, x=col)
+                    if start or end:
+                        if "time" not in array.dims:
+                            raise ValueError("Static products have no time selection")
+                        first = pd.Timestamp(start) if start else None
+                        last = pd.Timestamp(end) if end else None
+                        if (first is not None and pd.isna(first)) or (last is not None and pd.isna(last)):
+                            raise ValueError("Invalid date selection")
+                        if (first is not None and first.tzinfo is not None) or (last is not None and last.tzinfo is not None):
+                            raise ValueError("Use UTC dates without timezone suffix")
+                        if first is not None and last is not None and first > last:
+                            raise ValueError("start must not exceed end")
+                        array = array.sel(time=slice(start, end))
+                    values = np.atleast_1d(array.values)
+                    if values.dtype.kind not in "biuf":
+                        raise ValueError("Point reading requires a numeric band")
+                    valid = np.isfinite(values) & (values != -9999)
+                    fill = array.encoding.get("_FillValue", array.attrs.get("_FillValue"))
+                    if isinstance(fill, (int, float, np.number)):
+                        valid &= values != fill
+                    result["sample"] = {
+                        "band": band, "row": row, "col": col,
+                        "x": _json_safe(dataset.x.values[col]), "y": _json_safe(dataset.y.values[row]),
+                        "times": [str(v) for v in array.time.values] if "time" in array.dims else None,
+                        "values": [v.item() if ok else None for v, ok in zip(values, valid)],
+                    }
+            result["warnings"] = list(dict.fromkeys(str(w.message) for w in caught))
+        return result
+
+    def _check_product_access(self, resolver, record):
+        """Catalog and view paths are external input, unlike trusted desktop Resolver calls."""
+        from s1grits.analysis.views import _load_definition, MULTITRACK_VERSION
+        from s1grits.resolver import CubeResolver
+
+        with self._lock:
+            roots = [item["path"] for item in self._catalog_roots.values()]
+        asset = resolver._asset_path(record).resolve()
+        if not any(asset.is_relative_to(root) for root in roots):
+            raise PermissionError("Product asset is outside the registered data roots")
+        if representation(record) == "virtual":
+            try:
+                definition = _load_definition(asset)
+                parents = definition["parents"] if definition.get("version") == MULTITRACK_VERSION else [definition["parent"]]
+                for parent in parents:
+                    if representation(parent) != "physical":
+                        raise ValueError("A view must reference physical parents")
+                    self._check_product_access(CubeResolver(asset.parent), parent)
+            except (KeyError, TypeError) as exc:
+                raise ValueError("Invalid view definition") from exc
+        else:
+            group = resolver._group_name(record)
+            if not (asset / group).resolve().is_relative_to(asset):
+                raise PermissionError("Product group must remain inside its Zarr store")
 
     def catalog_map(self, relative: str, root_id: str = "workspace", **filters) -> dict:
         """Aggregate a valid Catalog by MGRS tile and attach dictionary geometry."""
@@ -1152,7 +1249,37 @@ class ChineseConsole:
         output_dir = self.resolve_relative(output_subdir, allow_root=False)
         include_static = bool(body.get("include_static"))
         static_layers = list(STATIC_LAYER_NAMES) if include_static else []
+        spatial_filter = body.get("spatial_filter", "tv_bregman" if body.get("spatial_despeckle") else "none")
+        if spatial_filter not in ("none", "tv_bregman", "nlm"):
+            raise ValueError("spatial_filter must be none, tv_bregman or nlm")
+        monthly_method = body.get("monthly_method", "median")
+        if monthly_method not in ("mean", "median"):
+            raise ValueError("monthly_method must be mean or median")
+        mosaic_method = body.get("intra_pass_method", "first_valid_pixel")
+        looks_directory = body.get("looks_directory")
+        if looks_directory:
+            looks_directory = str(self.resolve_relative(looks_directory, allow_root=False))
+        processing_options = {}
+        if spatial_filter != "none":
+            processing_options["despeckle"] = {"method": spatial_filter}
+        if body.get("features_glcm"):
+            processing_options["features_glcm"] = True
+        if mosaic_method != "first_valid_pixel" or looks_directory:
+            processing_options["intra_pass_mosaic"] = {"method": mosaic_method}
+            if looks_directory:
+                processing_options["intra_pass_mosaic"]["looks_directory"] = looks_directory
+        from s1grits.scenes.average import validate_intra_pass_config
+        validate_intra_pass_config({"roi": {"flight_direction": directions[0]},
+            "processing": {**processing_options, "target_resolution": resolution,
+                           "resampling_method": resampling_method, "spatial_despeckle": spatial_filter != "none",
+                           "monthly": {"enabled": workflow == "monthly" or bool(body.get("smonthly"))}},
+            "static_layers": {"run_after_scenes": include_static}})
+        if mosaic_method == "nlooks_weighted":
+            from s1grits.scenes.looks import load_looks_assets
+            load_looks_assets(looks_directory)
         band_count = 2 + bool(body.get("features_ratio")) + bool(body.get("features_rvi"))
+        if body.get("features_glcm"):
+            band_count += 8
         steps = len(years) * len(months) * (4 if workflow == "scenes" else 1)
         pixels = (109800 / resolution) ** 2
         imagery = pixels * band_count * 4 * steps * len(tiles) * len(directions) / 1024**3
@@ -1177,7 +1304,11 @@ class ChineseConsole:
             "static_layers": static_layers,
             "features_ratio": bool(body.get("features_ratio")),
             "features_rvi": bool(body.get("features_rvi")),
-            "spatial_despeckle": bool(body.get("spatial_despeckle")),
+            "spatial_despeckle": spatial_filter != "none",
+            "spatial_filter": spatial_filter,
+            "monthly_method": monthly_method,
+            "intra_pass_method": mosaic_method,
+            "processing_options": processing_options,
             "smonthly": bool(body.get("smonthly")),
             "max_workers": max(1, min(8, int(body.get("max_workers") or 2))),
             "raw_gib": round(raw_gib, 3),
@@ -1193,6 +1324,8 @@ class ChineseConsole:
             "expires": time.time() + 3600,
             "consumed": False,
         }
+        if mosaic_method != "first_valid_pixel":
+            plan["result_subdir"] = str(Path(output_subdir) / "derived" / f"intra_pass_{mosaic_method}")
         with self._lock:
             self._plans[token] = plan
         return {**plan, "plan_id": token, "expires_at": int(plan["expires"])}
@@ -1218,6 +1351,7 @@ class ChineseConsole:
                 "formats": {"cog": visual, "preview": visual},
             },
             "processing": {
+                **plan.get("processing_options", {}),
                 "target_resolution": plan["target_resolution"],
                 "resampling_method": plan["resampling_method"],
                 "tile_clip": True,
@@ -1227,7 +1361,7 @@ class ChineseConsole:
                 "monthly": {
                     "enabled": monthly_enabled,
                     "only": monthly_only,
-                    "composite_method": "nanmedian",
+                    "composite_method": "nanmean" if plan.get("monthly_method") == "mean" else "nanmedian",
                     "generate_cog": visual,
                     "generate_preview": visual,
                     "blockwise_threads": 2,
@@ -1256,6 +1390,8 @@ class ChineseConsole:
             plan = self._plans.get(str(token))
             if not plan or plan["expires"] < time.time():
                 raise ValueError("规划不存在或已过期，请重新预检")
+            if plan.get("operation"):
+                raise ValueError("Use /api/tools/tasks for tool plans")
             if plan["consumed"]:
                 raise ValueError("规划已使用，不能重复创建任务")
             if plan["confirmation_phrase"] and confirmation != plan["confirmation_phrase"]:
@@ -1270,12 +1406,167 @@ class ChineseConsole:
                 "output_subdir", "output_dir", "include_static", "static_layers",
             )
         }
+        metadata["result_subdir"] = plan.get("result_subdir", plan["output_subdir"])
+        metadata["strategies"] = {key: plan[key] for key in ("spatial_filter", "monthly_method", "intra_pass_method")}
         job = self.jobs.submit_batch(
             configs,
             output_dir=plan["output_dir"],
             title=f"{plan['workflow']} · {len(plan['tiles'])} 瓦片",
             metadata=metadata,
         )
+        return self.task(job.to_dict())
+
+    def create_tool_plan(self, request):
+        from s1grits.analysis.cube_ops import select_parent, parent_masks
+        from s1grits.resolver import CubeResolver
+        from .tool_api import derive_arguments, FILE_TOOLS
+
+        if request.operation in FILE_TOOLS:
+            from .analysis_api import create_file_plan
+            return create_file_plan(self, request)
+        if request.operation != "derive_cube":
+            return self._create_view_plan(request)
+        body = request.model_dump(mode="json")
+        detail = self.catalog_product(body["output"], body["item_id"], body["root_id"])
+        record = detail["record"]
+        if record["representation"] != "physical":
+            raise ValueError("Derive requires a physical parent; materialize a view explicitly first")
+        if record["product_type"] not in ("scenes", "smonthly", "monthly"):
+            raise ValueError("Derive requires a time-varying VV_dB/VH_dB parent")
+        if not record["processing_signature"] or not record["grid_id"]:
+            raise ValueError("Parent processing signature and grid identity are required")
+        if body["monthly"] and (record["product_type"] != "scenes" or record["track"] is None):
+            raise ValueError("Monthly derivation requires a scenes parent with an explicit track")
+        catalog_root, _ = self.resolve_catalog(body["root_id"], body["output"])
+        resolver = CubeResolver(catalog_root)
+        destination = self._tool_destination(body["output_subdir"], catalog_root,
+                                             [resolver._asset_path(record).resolve()])
+        start, end = pd.to_datetime(body["start"], utc=True), pd.to_datetime(body["end"], utc=True)
+        if pd.isna(start) or pd.isna(end) or start > end:
+            raise ValueError("Provide a valid inclusive UTC start/end interval")
+        body["start"], body["end"] = start.isoformat(), end.isoformat()
+        with resolver.open(record, chunks={}) as dataset:
+            _, indices, window, _ = select_parent(dataset, dataset.attrs, start, end, body["window"])
+            masks = parent_masks(dataset)
+            if masks and (body["interpolation"] is not None or body["spatial_filter"] != "none" or body["monthly"] or "glcm" in body["features"]):
+                raise ValueError("Use the pre-interpolation parent for interpolation, filtering, GLCM or monthly compositing")
+        count = len(pd.period_range(start.tz_localize(None), end.tz_localize(None), freq="M")) if body["monthly"] else len(indices)
+        bands = 2 + int("ratio" in body["features"]) + int("rvi" in body["features"]) + 8*int("glcm" in body["features"])
+        raw_gib = window[2]*window[3]*count*(4*bands + (4 if body["monthly"] or body["interpolation"] is not None or masks else 0))/1024**3
+        if raw_gib > 500:
+            raise ValueError("Estimated output exceeds the 500 GiB service limit; select a smaller window")
+        token = secrets.token_urlsafe(32)
+        plan = {"operation": "derive_cube", "request": body, "parent": detail,
+                "catalog_root": str(catalog_root), "output_dir": str(destination),
+                "output_subdir": body["output_subdir"], "raw_gib": raw_gib,
+                "command": derive_arguments(body, catalog_root, destination),
+                "confirmation_required": raw_gib >= 10,
+                "confirmation_phrase": f"derive {raw_gib:.2f} GiB" if raw_gib >= 10 else "",
+                "warnings": detail["warnings"] + ["UTC timestamps are inclusive; an end date alone means midnight.",
+                    "Interrupted derivatives cannot resume in place; retain partial output and choose a new directory."],
+                "expires": time.time()+3600, "consumed": False}
+        with self._lock:
+            self._plans[token] = plan
+        return {**plan, "plan_id": token}
+
+    def _tool_destination(self, relative, catalog_root, assets):
+        destination = self.resolve_relative(relative, allow_root=False)
+        if destination.exists():
+            raise ValueError("Select a new output directory; existing products are never overwritten")
+        if catalog_root.is_relative_to(destination):
+            raise ValueError("Output must not contain the source catalog")
+        with self._lock:
+            readonly = [r["path"] for key, r in self._catalog_roots.items() if key != "workspace"]
+        if any(destination.is_relative_to(root) for root in readonly):
+            raise ValueError("Output must not be inside a registered read-only data root")
+        if any(destination.is_relative_to(asset) or asset.is_relative_to(destination) for asset in assets):
+            raise ValueError("Output must be separate from the parent Zarr store")
+        if any((p/'zarr.json').exists() or (p/'.zgroup').exists() for p in destination.parents):
+            raise ValueError("Output cannot be inside an existing Zarr store")
+        return destination
+
+    def _create_view_plan(self, request):
+        from .tool_api import tool_arguments, views_available
+
+        if not views_available():
+            raise ValueError('View tools require s1grits[views] (dask[array]); install the views extra')
+        from s1grits.analysis.views import define_view, _view_record
+        from s1grits.analysis.multitrack import define_multitrack_view, MULTITRACK_VERSION
+
+        body = request.model_dump(mode="json")
+        ids = body.get("item_ids", [body.get("item_id")])
+        details = [self.catalog_product(body["output"], item, body["root_id"]) for item in ids]
+        root, _ = self.resolve_catalog(body["root_id"], body["output"])
+        operation = body["operation"]
+        if operation == "view_create":
+            definition = define_view(root, body["item_id"], start=body["start"], end=body["end"],
+                                     window=body["window"], bands=body["bands"])
+            body.update(start=definition["contract"]["start"], end=definition["contract"]["end"])
+        elif operation == "view_multitrack":
+            definition = define_multitrack_view(root, ids, start_month=body["start_month"],
+                end_month=body["end_month"], method=body["method"], window=body["window"])
+        else:
+            if details[0]["record"]["representation"] != "virtual":
+                raise ValueError("Materialization requires a registered virtual view")
+            definition = details[0]["attributes"]["view_definition"]
+        parents = definition["parents"] if definition["version"] == MULTITRACK_VERSION else [definition["parent"]]
+        destination = self._tool_destination(body["output_subdir"], root,
+                                             [Path(p["zarr_path"]).resolve() for p in parents])
+        contract = definition["contract"]
+        grid = contract["grid"]
+        dtypes = {**{b: np.dtype('float32') for b in contract["bands"]},
+                  **{m: np.dtype('uint8') for m in contract["masks"]},
+                  **{b: np.dtype(t) for b, t in contract.get("auxiliary_dtypes", {}).items()}}
+        materialized_gib = grid["width"]*grid["height"]*len(contract["times"])*sum(d.itemsize for d in dtypes.values())/1024**3
+        physical = operation == "view_materialize"
+        raw_gib = materialized_gib if physical else 0
+        if raw_gib > 500:
+            raise ValueError("Estimated output exceeds the 500 GiB service limit; select a smaller window")
+        result = _view_record(definition)
+        if physical:
+            result["item_id"] += "_materialized"
+        token = secrets.token_urlsafe(32)
+        plan = {"operation": operation, "request": body, "parents": details, "definition": definition,
+                "catalog_root": str(root), "output_dir": str(destination),
+                "output_subdir": body["output_subdir"], "raw_gib": raw_gib,
+                "materialized_gib": materialized_gib, "result_type": "physical" if physical else "virtual",
+                "result_item_id": result["item_id"], "processing_signature": result["processing_signature"],
+                "command": tool_arguments(body, root, destination),
+                "confirmation_required": raw_gib >= 10,
+                "confirmation_phrase": f"materialize {raw_gib:.2f} GiB" if raw_gib >= 10 else "",
+                "warnings": list(dict.fromkeys(w for d in details for w in d["warnings"])),
+                "expires": time.time()+3600, "consumed": False}
+        if contract['parent_version_evidence'] == 'metadata_only':
+            plan['warnings'].append('Parent has no generation_id: metadata checks cannot detect in-place value changes')
+        with self._lock:
+            self._plans[token] = plan
+        return {**plan, "plan_id": token}
+
+    def create_tool_task(self, token, confirmation=""):
+        from .tool_api import TOOL_OPERATIONS
+
+        with self._lock:
+            plan = self._plans.get(token)
+            if not plan or plan.get("operation") not in TOOL_OPERATIONS or plan["expires"] < time.time() or plan["consumed"]:
+                raise ValueError("Tool plan is missing, expired or already consumed")
+            if confirmation != plan["confirmation_phrase"]:
+                raise ValueError("Confirmation phrase does not match")
+            request = plan["request"]
+            ids = request.get("item_ids", [request.get("item_id")])
+            if request['operation'] == 'mosaic_grid':
+                from .analysis_api import mosaic_plan
+                definition = mosaic_plan(self, request, Path(plan['output_dir']))
+                if definition != plan['mosaic']:
+                    raise ValueError('Mosaic inputs changed; create a new plan')
+                current = [dict(record=record) for record in definition['inputs']]
+            else:
+                current = [self.catalog_product(request["output"], item, request["root_id"]) for item in ids]
+            if current != plan.get("parents", [plan.get("parent")]):
+                raise ValueError("Parent metadata changed; create a new plan")
+            if Path(plan["output_dir"]).exists():
+                raise ValueError("Output directory now exists; create a new plan")
+            plan["consumed"] = True
+            job = self.jobs.submit_tool(plan)
         return self.task(job.to_dict())
 
     def task(self, data: dict) -> dict:
@@ -1296,9 +1587,9 @@ class ChineseConsole:
             "exit_code": data.get("returncode"),
             "command_index": data.get("current_command", 0),
         }
-        if status == "done" and data.get("output_subdir"):
+        if status == "done" and data.get("output_subdir") and data.get('result_type') not in ('analysis', 'raster'):
             try:
-                info = self.catalog_inspect(data["output_subdir"])
+                info = self.catalog_inspect(data.get("result_subdir", data["output_subdir"]))
                 result["validation"] = {
                     "records": info.get("record_count", 0),
                     "tiles": info.get("tile_count", 0),

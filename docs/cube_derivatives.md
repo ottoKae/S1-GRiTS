@@ -4,19 +4,24 @@
 
 For the separate, explicitly selected temporal step, see [retrospective interpolation and observation masks](temporal_interpolation.md).
 
+New users can start with the [synthetic Cube walkthrough (中文)](getting_started_existing_cube_ZH.md), including commands and expected numeric outputs.
+
+For selection and Ratio/RVI without immediately creating a Zarr output, see
+[local virtual products and explicit materialization](cube_views.md).
+
 ```bash
 s1grits derive_cube --catalog-root /data/cube --item-id PARENT_ITEM_ID \
   --output /data/derived-features --start 2026-01-01 --end 2026-03-31T23:59:59Z \
   --window 100 200 128 128 --features ratio rvi glcm --filter none
 ```
 
-`--item-id` selects the **Zarr store** referenced by one complete catalog row. The explicit UTC interval selects timestamps within that store, even when the row describes just one scene. Both endpoints are inclusive; a date without a time means midnight. `--window` is `(x offset, y offset, width, height)` in the parent's grid; omitting it selects the full grid. Source and destination roots must be separate, and the destination must not exist.
+`--item-id` selects the **Zarr store/group** referenced by one complete catalog row. The explicit UTC interval selects timestamps within that store, even when the row describes just one scene. Both endpoints are inclusive; a date without a time means midnight. `--window` is `(x offset, y offset, width, height)` in the parent's grid; omitting it selects the full grid. The destination must not exist, equal or contain the source catalog root, or overlap the actual source store. A new nested root inside the collection is supported; writing inside any existing Zarr store is rejected.
 
 | Option | Output and calculation |
 |---|---|
 | `--features ratio rvi` (default) | Ratio = VH/VV; dual-pol RVI proxy = 4 VH/(VV+VH), using linear power recovered from parent dB |
 | `--features glcm` | Eight VV/VH texture bands: contrast, homogeneity, entropy, correlation; 5×5 window, distance 1, 0°/90° average, 16 levels, fixed VV [−25,5] and VH [−32,−5] dB quantization ranges |
-| `--features` with no values | Keep the resulting VV_dB/VH_dB only |
+| `--features` with no values | Keep VV_dB/VH_dB and any supported parent observation/interpolation masks |
 | `--filter none` (default) | Preserve selected parent VV/VH values, with declared NoData and nonfinite values mapped to NaN |
 | `--filter tv_bregman` | Existing TV operator, regularization 5 |
 | `--filter nlm` | Existing NLM operator, patch 3, search distance 7, adaptive strength |
@@ -26,11 +31,22 @@ RVI here is the existing dual-polarization proxy, not a full-polarimetric decomp
 
 The order within one call is **parent VV/VH → optional monthly composite → optional spatial filter → requested features → crop**. To filter scenes before monthly compositing, first produce a filtered scenes Cube, then use that output as the next call's parent. This preserves both intermediate objects and their processing order. Existing auxiliary bands are not copied automatically.
 
+VV/VH `observed_mask` and `interpolated_mask` bands are the exception: copy/crop and pointwise Ratio/RVI derivation preserve them at the selected times and pixels. Subsequent VV/VH time-series analysis can therefore exclude filled values from real-observation counts. The masks describe their respective VV/VH bands; no new joint Ratio/RVI observation mask is inferred. Filtering, GLCM and monthly compositing of a masked parent currently raise an error because their mask propagation is not defined; use the pre-interpolation parent for those operations. Masked derivations use `cube_derivative_v2` and include selected mask contents in the input fingerprint. Unmasked derivations retain their existing contract and signatures.
+
 Monthly outputs include every month touched by the requested interval, including empty months between observations. Empty months have NaN backscatter/features and `n_obs=0`. `n_obs` is uint32 and counts paired valid **parent scenes**, not bursts, and is calculated before any optional filter. Partial first/last months use only observations inside the requested interval. At least one parent observation must be selected. Already-monthly parents can be filtered or used for features, but cannot be composited again with `--monthly`.
 
 ## Output and lineage
 
 Each output contains a Zarr store, global/per-tile `catalog.parquet`, and `derivation.json`. Open it with the existing `CubeResolver`; `catalog resync` preserves its derived identity. This entry point does not emit COGs automatically.
+
+For example, choose `/data/cube/products/monthly-mean` as the output while reading
+`/data/cube`. After successful derivation the new product is explicitly registered
+in `/data/cube`, so its root catalog and subsequent resync retain it alongside the
+parent. The new subroot remains independently readable. Parent arrays are unchanged;
+the collection catalog and registration manifest are updated. Independent output
+roots keep their previous behavior. If registration fails, the completed subroot
+remains available for inspection and explicit registration. Do not reuse an existing
+output path or redirect an existing item ID to another asset.
 
 The processing contract records the parent item, grid, processing signature, optional generation ID, selected time/window/support, decoded-input SHA-256, operator parameters and order. The receipt maps each output timestamp to its parent timestamps. Changing selected parent values or the operator changes the derived signature; changing only the output chunk size does not. These are parent-specific derivative identities, so the fixed-grid mosaic command's same-signature gate is not a cross-parent derivative compatibility checker.
 
