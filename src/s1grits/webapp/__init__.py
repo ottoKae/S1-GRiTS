@@ -1,4 +1,4 @@
-"""S1-GRiTS Data Cube Console and FastAPI service.
+"""S1-GRiTS v3 FastAPI and Chinese web console.
 
 API-first FastAPI server over a processing workspace, plus a zero-build
 static frontend. Install the optional extra to use it:

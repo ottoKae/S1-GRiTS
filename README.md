@@ -244,12 +244,11 @@ s1grits process_scenes --config my_run.yaml
 s1grits serve /path/to/output --port 5556
 ```
 
-The single packaged browser interface is the **S1-GRiTS Data Cube Console**
-(**S1-GRiTS 数据立方体控制台**), launched with `s1grits serve`.
-Switch between English and 中文 in the same page. The first visit follows the
-browser language (Chinese or English fallback); later visits remember your choice.
-Earlier Streamlit and English Workspace interfaces are preserved in
-[Git history](docs/web-history.md), not shipped as alternative applications.
+This V4 candidate retains the existing Chinese Web interface, launched with
+`s1grits serve`. The bilingual console, new tool forms and Web fixes are deferred
+to `feature/web-console-v4` for a later reviewed release. Use CLI/Python or the
+generic Agent skills for the new V4 tools; their availability does not imply
+support in the retained Web interface.
 
 Full installation options (conda, from-source, extras), authentication setup
 and first-run guidance: **[docs/installation.md](docs/installation.md)**.

@@ -1,13 +1,13 @@
-"""Small real stores for CRS pairing, Web missing values and batch identity."""
+"""Small real stores for CRS pairing and batch identity."""
 import numpy as np
 import pandas as pd
 import pytest
-from pyproj import CRS, Transformer
+from pyproj import CRS
 import zarr
 
 from s1grits.analysis import analyze_segments_batch
 from s1grits.resolver import CubeResolver
-from test_cube_derivatives import source, hashes
+from test_cube_derivatives import hashes
 from test_cube_segmentation import parent
 from test_resolver_selection import product, resolver, TILE
 from test_segmentation_batch import OPTIONS
@@ -47,31 +47,6 @@ def test_manual_read_keeps_crs_and_scalar_metadata(tmp_path):
     np.testing.assert_array_equal(ds.angle, np.full((2, 2), 42))
     assert ds.spatial_ref.item() == 0
     assert hashes(tmp_path) == before
-
-
-@pytest.mark.parametrize('layout', ['tyx', 'yxt'])
-def test_web_named_axes_nodata_and_valid_zero(tmp_path, layout):
-    pytest.importorskip('fastapi')
-    pytest.importorskip('httpx')
-    from fastapi.testclient import TestClient
-    from s1grits.webapp.server import create_app
-    group, _, _ = source(tmp_path, layout)
-    values = np.array([0, -12345, -9999, np.nan], dtype='f4')
-    if layout == 'tyx':
-        group['VV_dB'][:, 5, 5] = values
-    else:
-        group['VV_dB'][5, 5, :] = values
-    lon, lat = Transformer.from_crs(group.attrs['crs'], 4326, always_xy=True).transform(group['x'][5], group['y'][5])
-    row = CubeResolver(tmp_path).catalog.iloc[0]
-    before = hashes(tmp_path)
-    with TestClient(create_app(tmp_path)) as client:
-        response = client.get('/api/timeseries', params=dict(tile=TILE, zarr_path=row.zarr_path,
-                              lon=lon, lat=lat, bands='VV_dB'))
-    assert response.status_code == 200, response.text
-    assert response.json()['bands']['VV_dB'] == [0., None, None, None]
-    # The app may create its own job metadata; the source store must stay intact.
-    after = hashes(tmp_path)
-    assert all(after[name] == value for name, value in before.items())
 
 
 def test_batch_identity_ignores_location_but_tracks_values_and_parameters(tmp_path):

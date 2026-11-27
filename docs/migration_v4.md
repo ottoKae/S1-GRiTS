@@ -17,7 +17,8 @@ the reviewed candidate checkout or wheel there. Do not install an assumed
 
 保留可工作的 V3 环境、原 YAML 和来源记录，按安装指南在独立 Python 3.12 环境安装
 候选源码或 wheel。需要 Web／视图时选择相应的 web／views 可选依赖；
-LandTrendr、CUSUM 和 GDAL 的安装条件见各自指南，不因打开 Web 表单自动安装。
+LandTrendr、CUSUM 和 GDAL 的安装条件见各自指南。既有中文 Web 保留，双语切换和
+新增工具接入在 `feature/web-console-v4` 后续交付；本次新增能力使用 CLI／Python。
 
 ```sh
 python -c "import s1grits; print(s1grits.__version__); print(s1grits.__file__)"
@@ -61,11 +62,10 @@ can reference a whole store containing multiple timestamps; catalog row counts
 do not establish per-pixel coverage. Check values, masks and the internal time
 axis before analysis.
 
-Web 对 canonical catalog 字段的要求可能比旧 Resolver 严格。若旧目录缺少
-`registration_path`、`view_path`、`zarr_group` 等字段，按
-[旧 Catalog 接入说明](entry_points.md#older-catalogs--旧-catalog-的接入)将经核验的完整
-产品记录登记到新集合，保留资产原位及正确的 source root。不要手工虚构签名或改影像
-来满足字段要求。Web 中也要登记外部资产所在的只读根。
+需要将已有资产接入新集合时，按[旧 Catalog 接入说明](entry_points.md#older-catalogs--旧-catalog-的接入)
+使用 CLI 将经核验的完整产品记录登记到新集合，保留资产原位及正确的 source root。
+不要手工虚构签名或改影像来满足字段要求。新实例、group 和虚拟视图通过 Resolver
+读取；本次保留的旧 Web 不承诺支持这些新增表示。
 
 Registration and a virtual view do not copy imagery. A view retains its source
 dependencies; materialization explicitly writes a new product. Preserve parent

@@ -31,26 +31,7 @@ _ITEM_COLUMNS = [
     "track", "n_bursts", "n_scenes", "month", "datetime",
     "start_datetime", "end_datetime", "zarr_path", "cog_path", "preview_path",
     "bands", "crs", "width", "height", "processing_level", "geometry_group_id",
-    "grid_id", "processing_signature", "product_variant", "zarr_group", "view_path",
 ]
-
-
-def representation(record):
-    for field, kind in (("view_path", "virtual"), ("zarr_path", "physical")):
-        value = record.get(field)
-        if pd.notna(value) and str(value).strip():
-            return kind
-    return "unknown"
-
-
-def filter_instances(frame, **filters):
-    for column in ("item_id", "grid_id", "processing_level", "processing_signature", "product_variant"):
-        value = filters.get(column)
-        if value:
-            frame = frame[frame[column].fillna("").astype(str) == value] if column in frame else frame.iloc[:0]
-    if filters.get("representation"):
-        frame = frame[frame.apply(representation, axis=1) == filters["representation"]] if len(frame) else frame
-    return frame
 
 
 def _to_jsonable(value):
@@ -252,7 +233,6 @@ class Workspace:
         month_to: str | None = None,
         limit: int = 200,
         offset: int = 0,
-        **instance_filters,
     ) -> dict:
         """Filtered, paginated catalog records across the workspace."""
         tiles = [tile] if tile else self.tile_ids()
@@ -264,7 +244,6 @@ class Workspace:
         if not frames:
             return {"total": 0, "items": [], "months": {}}
         df = pd.concat(frames, ignore_index=True)
-        df = filter_instances(df, **instance_filters)
 
         if product_type and "product_type" in df.columns:
             df = df[df["product_type"] == product_type]
@@ -292,7 +271,6 @@ class Workspace:
         items = []
         for _, row in page.iterrows():
             rec = {c: _to_jsonable(row[c]) for c in _ITEM_COLUMNS if c in page.columns}
-            rec["representation"] = representation(row)
             rec["bounds4326"] = row.get("bounds4326")
             rec["outline4326"] = row.get("outline4326")
             items.append(rec)
@@ -516,16 +494,10 @@ class Workspace:
         chosen = chosen[:max_bands + 1]
 
         series: dict[str, list] = {}
-        import xarray as xr
-        from s1grits.asf_io import NODATA_SENTINEL
-
-        with xr.open_zarr(str(store), chunks=None, consolidated=False) as dataset:
-            for band in chosen:
-                if set(dataset[band].dims) != {'time', 'y', 'x'}:
-                    raise ValueError('Time-series bands require named time/y/x dimensions')
-                vals = np.asarray(dataset[band].isel(y=row, x=col).values, dtype="float64")[order]
-                series[band] = [None if not np.isfinite(v) or v == NODATA_SENTINEL else round(float(v), 4)
-                                for v in vals]
+        for band in chosen:
+            vals = np.asarray(g[band][:, row, col], dtype="float64")[order]
+            series[band] = [None if not np.isfinite(v) else round(float(v), 4)
+                            for v in vals]
         return {
             "tile_id": tile,
             "zarr_path": zarr_path,

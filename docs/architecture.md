@@ -2,7 +2,7 @@
 
 ## Architecture
 
-S1-GRiTS uses a **Zarr-first data cube architecture**, with the existing production workflow and explicit optional analysis tools. See the [V4 runtime call paths](call_flow.md) for CLI, Python and Web ownership and the distinction between production, views and derived outputs.
+S1-GRiTS uses a **Zarr-first data cube architecture**, with the existing production workflow and explicit optional analysis tools. See the [V4 runtime call paths](call_flow.md) for CLI/Python ownership and the distinction between production, views and derived outputs. The existing Web is retained; its new integrations are deferred to a separate branch.
 
 ### Zarr-First Philosophy
 

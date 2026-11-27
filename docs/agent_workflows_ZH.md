@@ -11,7 +11,7 @@ S1-GRiTS 的计算由同一套 CLI／Python 实现执行。Agent 负责理解任
 | 保存计算定义、按需读取或物化 | 已登记的视图 JSON | `s1grits-analysis` | `view create/multitrack/materialize` 与 Resolver |
 
 YAML 继续服务生产配置；分析命令参数和视图 JSON 已有各自语义，不需要统一改成另一个分析 YAML 引擎。
-Web 表单将所选参数交给同一 CLI：生产保存 YAML，工具保存 request.json、执行命令和原生回执。它只开放支持矩阵中列出的功能，并不提供所有 CLI 参数的编辑器。Agent 也不需要操纵 Web 才能使用已有 Cube。
+本次保留既有中文 Web，新增工具表单及双语控制台在 `feature/web-console-v4` 后续交付。新增能力通过 CLI／Python 调用并保存参数、命令和原生回执；Agent 不需要操纵 Web 才能使用已有 Cube。
 两类 skill 都是通用数据工作流，不包含林业应用或私有研究检测器。
 
 ## 新用户从哪里开始
@@ -67,7 +67,7 @@ python -m s1grits catalog inspect --output-dir /data/output
 
 - 取得与软件匹配的仓库或源码包，显式让 Agent 读取 `agents/skills/s1grits-cube/SKILL.md` 或 `agents/skills/s1grits-analysis/SKILL.md`。若需要自动发现，按所用 Agent 的配置登记该路径。
 - 也可让 Agent 读取本文、[入口支持矩阵](entry_points.md)和当前命令 `--help`，执行相同任务。
-- 直接使用 CLI／Python／Web；已有 Cube 从[小样本教程](getting_started_existing_cube_ZH.md)开始。
+- 直接使用 CLI／Python；已有 Cube 从[小样本教程](getting_started_existing_cube_ZH.md)开始。既有 Web 的范围见[Web 指南](webapp.md)，不包含本次新增工具表单。
 - 数据交接任务可直接指定本仓库的 [s1-data-handoff](../agents/skills/s1-data-handoff/SKILL.md)；它链接到同一公开交接指南，自动发现取决于 Agent 配置。
 
 本文和两类通用 skill 对应 V4.0.0 候选功能。执行前核对 `python -m s1grits --version`、`s1grits.__file__` 和所需子命令帮助；V3 安装不因能读取 skill 就具备 V4 功能。发布副本不要手改；更新规范源后运行 `tools/export_agent_skills.py` 重新生成，方法见 skills README。已经使用规范源的本工作区无需再次安装发布副本。

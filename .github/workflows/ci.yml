@@ -80,7 +80,7 @@ jobs:
       - name: Require Web test dependencies and collection
         run: |
           python -c "import fastapi, uvicorn, httpx, rasterio, zarr"
-          python -m pytest tests/test_webapp_api.py tests/test_webapp_cn_api.py tests/test_webapp_i18n.py --collect-only -q -p no:cacheprovider
+          python -m pytest tests/test_webapp_api.py tests/test_webapp_cn_api.py --collect-only -q -p no:cacheprovider
 
       - name: Import + CLI smoke
         # Provenance-aware spatial exports use the separately maintained reader.
