@@ -1,7 +1,7 @@
 # S1-GRiTS Release Process
 
 This document is the maintainer contract for publishing the Python package,
-GitHub Release and bundled existing Chinese Web interface. A release is immutable: never
+GitHub Release and bundled Chinese/English web console. A release is immutable: never
 reuse an existing PyPI version or move a published tag.
 
 <a id="v4-scope"></a>
@@ -16,7 +16,7 @@ describe the deliverable behavior.
 | --- | --- |
 | Existing production and correctness fixes / 生产与修复 | Preserve defaults; include exact 30 m nearest-neighbour mapping, NoData/count/empty-month fixes and compatible resume checks. Historical products remain unchanged. |
 | Explicit optional tools / 显式可选工具 | Include intra-pass strategies, filtering/features, monthly mean/median, interpolation, product/group access, registration, views/materialization, multi-track monthly combination and inter-tile mosaics, within their documented input contracts. |
-| User entry points / 使用入口 | Documented YAML, CLI, Python and generic Agent routes. Skills are maintained separately from the wheel. Retain the existing Chinese Web; new Web tools, bilingual switching and Web fixes are deferred to `feature/web-console-v4` for a later release. |
+| User entry points / 使用入口 | One bilingual console and documented YAML, CLI, Python and generic Agent routes. Skills are maintained separately from the wheel. Web supports the subset listed in the support matrix. |
 | Local LandTrendr / 本地 LandTrendr | Experimental, separately installed backend; point, point-set and small-window scope. Do not claim GEE equivalence or SAR detection accuracy. |
 | Public CUSUM / 公共 CUSUM | Ship the independent experimental adapter, tests and instructions; user installs nrt separately. No bundled/modified nrt, automatic extra or Web/SaaS delivery. The [decision](local_backends.md#cusum-distribution-decision) records the inspected scope and limits. |
 | GEE segmentation / GEE 分段 | Explicit optional single-point route; no automatic fallback. Offline checks do not establish online acceptance. |
@@ -38,7 +38,7 @@ One tag publishes two artifacts:
 
 The wheel is pure Python but depends on binary geospatial wheels. Supported
 Python is currently `>=3.12,<3.13`. The wheel includes the three spatial
-GeoParquet dictionaries and the retained Chinese frontend under
+GeoParquet dictionaries and the single canonical bilingual frontend under
 `s1grits/webapp/static/`.
 
 The source distribution also includes the generated Cube/analysis skills and
@@ -47,8 +47,8 @@ reference. They are not installed by the wheel. Regenerate from the sole editabl
 source when skills or the package version change; see the [skill export guide](../agents/skills/README.md).
 
 The retired Streamlit/English prototype is not a second product: it is absent
-from `src/`, package-data rules and the wheel. The bilingual console remains on
-`feature/web-console-v4`; it is not part of this candidate's Web assets.
+from `src/`, package-data rules and the wheel. Chinese and English are selected
+on the same static SPA; there is no parallel `webapp_en` application.
 
 ## 2. Version and tag contract
 
@@ -93,7 +93,7 @@ the wheel in an isolated environment and run the small-output tutorial and Web
 checks there. Source imports must not mask missing packaged resources.
 
 The candidate gate is network-free. It verifies version parity, tag syntax,
-required GeoParquet and retained web assets, absence of a
+required GeoParquet and web assets, the bilingual canonical page, absence of a
 tracked legacy frontend, package-data rules and wheel-first quick-start docs.
 It also rejects tracked email addresses, user-home paths, high-confidence
 private keys and common GitHub/AWS token formats.
@@ -160,10 +160,10 @@ New-Item -ItemType Directory -Path .test-tmp/release-smoke -Force
 .\.venv-release-smoke\Scripts\s1grits serve .test-tmp/release-smoke/output --port 5556
 ```
 
-Confirm that `http://127.0.0.1:5556/` opens the retained Chinese Web and its
-existing production/catalog routes still work. Verify new V4 tools through the
-CLI/Python tutorial; bilingual switching and new tool forms belong to the later
-Web release. Also confirm both artifacts appear on GitHub Releases and PyPI.
+Confirm that `http://127.0.0.1:5556/` opens S1-GRiTS Data Cube Console /
+S1-GRiTS 数据立方体控制台, language switching works on the same page, and that
+`/api/capabilities` reports the released version. Also confirm both artifacts
+appear on GitHub Releases and PyPI.
 
 If a published build is defective, stop recommending it, yank that exact PyPI
 version when appropriate, fix forward with a new patch version, and retain the

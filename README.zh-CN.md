@@ -176,10 +176,11 @@ s1grits process_scenes --config my_run.yaml
 s1grits serve --root /path/to/output --port 5556
 ```
 
-本次 V4 候选保留既有中文 Web，通过 `s1grits serve` 启动。
-双语控制台、新工具表单及 Web 修复独立保存在 `feature/web-console-v4`，
-后续审阅后再合并发布。本次新增工具使用 CLI／Python 或通用 Agent skills；
-这些工具可用不代表既有 Web 已经接入。
+唯一随 Python 包提供的 Web 为 **S1-GRiTS 数据立方体控制台**
+（**S1-GRiTS Data Cube Console**），统一使用 `s1grits serve` 启动。
+支持同页中文／English 切换。首次按浏览器语言选择（非中文回落英文），之后记住手动选择。
+早期 Streamlit 和英文 Workspace 界面保留在 [Git 历史索引](docs/web-history.md)，
+不作为另一个应用打包或维护。
 
 conda、源码安装、可选依赖、认证和首次运行说明见 **[安装文档](docs/installation.md)**。
 

@@ -325,10 +325,10 @@ mosaic_scenes_20240115_ASCENDING.tif
 
 ### Web interface
 
-Launch the retained Chinese Web interface. See [the Web guide](webapp.md)
-for its existing workflows. Bilingual switching, new V4 tool forms and Web fixes
-are deferred to `feature/web-console-v4`; the commands above remain available
-through CLI/Python without the Web update.
+Launch the **S1-GRiTS Data Cube Console / S1-GRiTS 数据立方体控制台**.
+The current frontend provides production planning, local Catalog browsing,
+coverage reports, task logs and recovery. See [the Web guide](webapp.md)
+for supported workflows and [the history index](web-history.md) for retired interfaces.
 
 ```bash
 s1grits serve --root <workspace>

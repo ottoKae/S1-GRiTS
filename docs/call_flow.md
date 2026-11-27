@@ -2,14 +2,13 @@
 
 This map describes the V4 implementation. Commands, defaults and support limits
 remain in [entry points](entry_points.md); this page identifies the code owners.
-The new tools use CLI/Python. The existing Chinese Web and its bounded job queue
-are retained; new Web integrations are deferred to `feature/web-console-v4`.
-This does not introduce a distributed scheduler or a second algorithm engine.
+The expected use is a local operator or the existing bounded Web job queue.
+It does not introduce a distributed scheduler or a second algorithm engine.
 
 ```mermaid
 flowchart TD
     U["CLI / python -m s1grits"] --> C["cli.main → cmd_*"]
-    W["Retained Web production routes"] --> P["Existing production plan"]
+    W["Web server routes"] --> P["Console plan + typed request"]
     P --> J["JobManager → saved argument list"]
     J --> C
     C --> S["workflow_scenes → scenes.pipeline"]
@@ -22,8 +21,8 @@ flowchart TD
 
 Web uses argument lists with `shell=False`, not generated shell programs.
 Read-only catalog queries go directly to `webapp.catalog_api.Workspace`;
-existing production tasks use the queue and CLI handlers. This does not expose
-all new CLI handlers through Web. Python callers can invoke the analysis functions directly.
+computational tasks use the queue and the same CLI handlers as command-line use.
+Python callers can invoke the analysis functions directly.
 
 | Operation / 操作 | Entry → implementation / 入口与实现 | Result / 输出 |
 | --- | --- | --- |
@@ -47,12 +46,12 @@ all new CLI handlers through Web. Python callers can invoke the analysis functio
 重新运行生产。派生和物化复用现有 block writer／回滚辅助函数，
 因此修改 writer 时应一起运行对应派生、视图与生产测试。
 
-新增工具的 Web 参数映射、预检查及结果读取保存在 `feature/web-console-v4`，
-本次候选不包含这些接入。修改科学参数时核对 CLI、Python 实现及原生 receipt；
-后续 Web 接入复用这些实现，不另建计算逻辑。
+`webapp.tool_api` 是 Web 参数到 CLI 参数的映射；`analysis_api` 处理文件工具的
+预检查和结果读取；`jobs` 保存计划、命令与任务状态。修改一个科学参数时，应核对
+CLI 参数、Python 实现、Web 映射及原生 receipt，而不是在 Web 内复制计算。
 
 Regression tests live in `tests/`; runtime modules do not import tests, tools
 or benchmarks. See [test/artifact placement](../tests/README.md). The practical
-cross-entry checks are `test_onboarding`, `test_skill_replay`,
-`test_multitrack_views`, `test_resolver_selection` and
+cross-entry checks are `test_onboarding`, `test_webapp_tools`,
+`test_webapp_views`, `test_multitrack_views`, `test_resolver_selection` and
 `test_workflow_scenes_monthly_only`. No new dispatcher or abstraction is needed.

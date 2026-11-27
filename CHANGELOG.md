@@ -28,7 +28,8 @@ still requires the release gates. See the [migration guide](docs/migration_v4.md
   installed by the user; exclude backend bundles and Web/SaaS delivery.
   GEE CCDC/LandTrendr is explicit and point-only;
   local CCDC is not implemented. No automatic cloud fallback is introduced.
-- Document CLI, Python, production YAML and the two generic Agent workflows through one
+- Expose supported tools in one Chinese/English console; document CLI, Python,
+  production YAML and the two generic Agent workflows through one
   [entry/support matrix](docs/entry_points.md). Skills are separate from the wheel.
   Generated Cube/analysis skill exports accompany the repository and source
   distribution, with package-version and source-hash records; their editable
@@ -40,8 +41,8 @@ still requires the release gates. See the [migration guide](docs/migration_v4.md
   well as Windows without creating output directories during validation.
 - Reject incompatible grid identity during resume and preserve monthly method
   identity before replacement or provenance writes.
-- Retain the existing Chinese Web interface. Defer the bilingual console,
-  optional-tool forms and Web log fixes to `feature/web-console-v4` for a later release.
+- Correct Web log pagination and UTF-8 chunk reading; align installed-package
+  resource tests with the actual packaged assets.
 - Keep manuscript files, research data and private operational artifacts out
   of Python distributions. Existing products are not migrated by installation.
 

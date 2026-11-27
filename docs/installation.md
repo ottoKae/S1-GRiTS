@@ -31,7 +31,7 @@ conda activate s1grits
 # 2. Install geospatial core libraries via conda-forge (optional but recommended on Windows)
 conda install -c conda-forge rasterio geopandas rioxarray pyproj shapely
 
-# 3. Install s1grits from PyPI, including the optional web interface
+# 3. Install s1grits from PyPI, including the bilingual web console
 pip install "s1grits[web]"
 ```
 
@@ -79,7 +79,7 @@ python -m ipykernel install --user --name py312_s1grits --display-name "Python (
 jupyter lab
 ```
 
-#### Existing Chinese web interface
+#### Bilingual web console
 
 ```bash
 pip install "s1grits[web]"
@@ -87,9 +87,8 @@ mkdir s1grits-output
 s1grits serve --root s1grits-output --port 5556  # see docs/webapp.md
 ```
 
-This candidate retains the existing Chinese Web interface. The bilingual console
-and new tool forms are deferred to `feature/web-console-v4`; use CLI/Python for
-the new V4 tools. See the [retained Web guide](webapp.md).
+The public **S1-GRiTS Data Cube Console / S1-GRiTS 数据立方体控制台** supports
+switching between English and Chinese on the same page. See the [Web guide](webapp.md).
 
 #### Install all extras
 

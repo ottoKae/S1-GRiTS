@@ -57,6 +57,7 @@ def cn_client(tmp_path: Path) -> TestClient:
 
 def test_capabilities_and_packaged_frontend(cn_client):
     caps = cn_client.get("/api/capabilities").json()
+    assert caps["service"] == "S1-GRiTS 数据立方体控制台"
     assert caps["version"] == __version__
     assert caps["catalog_schema_version"] == 8
     assert caps["stac_format"] == "geoparquet"
@@ -66,9 +67,80 @@ def test_capabilities_and_packaged_frontend(cn_client):
     assert caps["basemaps"]["satellite"][1]["name"] == "Esri 卫星（备用）"
     assert caps["mgrs_map"]["count_only_below_min_zoom"] is True
     assert caps["catalog_map"]["endpoint"] == "/api/catalog/map"
-    assert cn_client.get("/").status_code == 200
+    frontend = cn_client.get("/")
+    assert frontend.status_code == 200
+    assert '<title data-i18n="S1-GRiTS 数据立方体控制台">' in frontend.text
+    assert '<h1><span data-i18n="S1-GRiTS 数据立方体控制台">' in frontend.text
+    translations = cn_client.get('/static/i18n.js')
+    assert translations.status_code == 200
+    assert 'no-cache' in translations.headers['cache-control']
     assert cn_client.get("/static/leaflet/leaflet.js").status_code == 200
     assert cn_client.get("/static/logo-mark.png").status_code == 200
+
+
+@pytest.fixture()
+def log_job(cn_client):
+    jobs = cn_client.app.state.jobs
+    job = jobs.submit("catalog_resync")
+    deadline = time.monotonic() + 10
+    while job.status in {"queued", "running"} and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert job.status == "success"
+    return job.job_dir / "log.txt", f"/api/tasks/{job.id}/log"
+
+
+@pytest.mark.parametrize("limit", [1, 2, 3, 4, 5, 7, 16])
+def test_task_log_utf8_pages_preserve_bytes(cn_client, log_job, limit):
+    path, url = log_job
+    original = "ASCII\r\n中文🌍记录\n🚀done\n".encode("utf-8")
+    path.write_bytes(original)
+    offset = 0
+    received = []
+    while offset < len(original):
+        response = cn_client.get(url, params={"format": "json", "offset": offset, "limit": limit})
+        assert response.status_code == 200
+        page = response.json()
+        assert page["offset"] == offset
+        assert offset < page["next_offset"] <= offset + limit + 3
+        assert page["size"] == len(original)
+        received.append(page["text"])
+        offset = page["next_offset"]
+    assert "".join(received).encode("utf-8") == original
+    assert path.read_bytes() == original
+    assert cn_client.get(url).content == original
+    eof = cn_client.get(url, params={"format": "json", "offset": offset}).json()
+    assert eof["next_offset"] == offset and eof["text"] == ""
+
+
+def test_task_log_partial_character_waits_for_append(cn_client, log_job):
+    path, url = log_job
+    emoji = "🌍".encode("utf-8")
+    path.write_bytes(b"ok" + emoji[:2])
+    page = cn_client.get(url, params={"format": "json"}).json()
+    assert page["text"] == "ok" and page["next_offset"] == 2
+    for _ in range(2):
+        page = cn_client.get(url, params={"format": "json", "offset": 2, "limit": 1}).json()
+        assert page["text"] == "" and page["next_offset"] == 2
+    with path.open("ab") as fp:
+        fp.write(emoji[2:] + b"\n")
+    page = cn_client.get(url, params={"format": "json", "offset": 2, "limit": 1}).json()
+    assert page["text"] == "🌍" and page["next_offset"] == 6
+
+
+def test_task_log_tail_unaligned_offset_and_missing(cn_client, log_job):
+    path, url = log_job
+    original = "A中🌍B".encode("utf-8")
+    path.write_bytes(original)
+    tail = cn_client.get(url, params={"format": "json", "tail": True, "limit": 3}).json()
+    assert tail["text"] == "B" and tail["offset"] == 8 and tail["next_offset"] == 9
+    middle = cn_client.get(url, params={"format": "json", "offset": 2, "limit": 1}).json()
+    assert middle["offset"] == 4 and middle["text"] == "🌍" and middle["next_offset"] == 8
+    past = cn_client.get(url, params={"format": "json", "offset": 100}).json()
+    assert past["offset"] == past["next_offset"] == 9 and past["text"] == ""
+    assert path.read_bytes() == original
+    path.unlink()
+    empty = cn_client.get(url, params={"format": "json"}).json()
+    assert empty["size"] == empty["next_offset"] == 0 and empty["text"] == ""
 
 
 def test_catalog_picker_schema_v8_and_query(cn_client):
@@ -644,7 +716,7 @@ def test_frontend_exposes_subset_selection_shapefile_and_recovery(cn_client):
     assert "清除 AOI" in html and "清空瓦片" in html
     assert "大任务二次确认" in html and "恢复中断任务" in html
     assert "任务中心" in html and "本地数据" in html
-    assert ">卫星</button>" in html
+    assert 'data-i18n="卫星"' in html
     assert "Catalog 检索与报告" not in html
     assert "sessionStorage" in script
     assert "selection_mode:'tiles'" in script

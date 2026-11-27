@@ -973,7 +973,7 @@ def cmd_mosaic_scenes(args):
 
 
 def cmd_serve(args):
-    """Run the v3 Chinese web console + API over a workspace directory."""
+    """Run the S1-GRiTS Data Cube Console + API over a workspace directory."""
     root = args.root or args.workspace
     if not root:
         console.print(
@@ -1410,10 +1410,10 @@ Examples:
     )
     parser_mosaic_scenes.set_defaults(func=cmd_mosaic_scenes)
 
-    # ── serve (v3 Chinese web console) ────────────────────────────────────────
+    # ── serve (Data Cube Console) ────────────────────────────────────────────
     parser_serve = subparsers.add_parser(
         'serve',
-        help='Run the web UI + API over a workspace (requires s1grits[web])'
+        help='Run the S1-GRiTS Data Cube Console + API (requires s1grits[web])'
     )
     # Workspace directory: positional (`s1grits serve /path/to/workspace`,
     # the natural spelling) or the --root flag; exactly one is required.
