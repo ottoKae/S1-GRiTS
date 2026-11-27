@@ -15,13 +15,13 @@
 <p align="center"><strong>English</strong> | <a href="README.zh-CN.md">简体中文</a></p>
 <p align="center">
   <a href="https://www.python.org/downloads/">
-    <img src="https://img.shields.io/badge/python-3.12+-blue.svg" />
+    <img src="https://img.shields.io/badge/python-3.12-blue.svg" />
   </a>
   <a href="LICENSE">
     <img src="https://img.shields.io/badge/license-PolyForm%20NC-green.svg" />
   </a>
   <a href="https://github.com/ottoKae/S1-GRiTS">
-    <img src="https://img.shields.io/badge/version-3.0.1rc1-orange.svg" />
+    <img src="https://img.shields.io/badge/version-4.0.0-orange.svg" />
   </a>
 </p>
 
@@ -32,6 +32,12 @@
   It converts burst-level observations into MGRS-aligned, temporally consistent Zarr data cubes, with optional COG exports.
 </p>
 
+
+Start with [installation](docs/installation.md) for a new environment, the
+[small existing-Cube tutorial](docs/getting_started_existing_cube_ZH.md) for local analysis,
+or [entry points and support](docs/entry_points.md) to choose CLI, Python, Web or Agent.
+This checkout describes the **V4.0.0 development candidate**; its version badge does not
+mean V4 is published on PyPI. Check the installed version and command help before use.
 
 ## Using and handing off an existing dataset
 
@@ -86,7 +92,7 @@ Each row links a core methodological claim in the paper to the module/function a
 | **Temporal median compositing + TV-Bregman despeckle before tile-clip** (§3.2) | `asf_io.py` → `load_and_despeckle_rtc_strict` (`tv_bregman`), `asf_array_processing.despeckle_2d` | `s1grits process_scenes` (`processing.monthly`) |
 | **Incremental, appendable Zarr cube + STAC 1.1.0 + Parquet catalogs** (§3.2) | `stac_builder.py` (`STAC_VERSION = "1.1.0"`, datacube ext v2.3.0), `catalog_sync.py`, `canonical_catalog_schema.py` | `s1grits catalog inspect` |
 | **Static acquisition-geometry layers** (LIA, inc. angle, layover/shadow, looks, ANF β0/σ0) (§2.2, §4.1) | `workflow_static.py` (`local_inc_angle`, `inc_angle`, `ls_map`, `number_of_looks`, `rtc_anf_beta0`, `rtc_anf_sigma0`) | scenes YAML or `s1grits static ensure` |
-| **Cross-orbit (ASC–DESC) backscatter offset quantification vs. LIA/ANF** (§3.4, §4.3, Table 3) | `manuscript_analysis_scripts/c05_t03_*`, `c05_f07_*` | run scripts (see below) |
+| **Cross-orbit (ASC–DESC) backscatter offset quantification vs. LIA/ANF** (§3.4, §4.3, Table 3) | Paper scripts on `research/paper-analysis` | Separate research workflow (see below) |
 
 ### Dynamic/static co-location and pairing contract
 
@@ -134,7 +140,10 @@ duplicated along the full time axis in the archive.
 
 ### Reproducing the paper's figures & tables
 
-The `manuscript_analysis_scripts/` directory contains the exact scripts used to produce the published results:
+Paper scripts and study boundaries are maintained separately on the
+[`research/paper-analysis` branch](https://github.com/ottoKae/S1-GRiTS/tree/research/paper-analysis/manuscript_analysis_scripts).
+They are not part of this software branch or Python distributions. The historical
+script-to-figure mapping is:
 
 | Script | Reproduces |
 |---|---|
@@ -150,7 +159,7 @@ The `manuscript_analysis_scripts/` directory contains the exact scripts used to 
 - Multi-region scalability composites — [10.5281/zenodo.20604391](https://doi.org/10.5281/zenodo.20604391)
 - Pixel-level orbit-pair statistics & static geometry — [10.5281/zenodo.20607604](https://doi.org/10.5281/zenodo.20607604)
 
-### Reproduce the headline result in 3 commands
+### Prepare production inputs for paper analysis
 
 ```bash
 # 1. Generate the geometry-consistent gridded time series for the paper's study tile
@@ -159,9 +168,11 @@ s1grits process_scenes --config config/s1grits_scenes.yaml      # edit: manual_m
 # 2. Generate the static acquisition-geometry layers (LIA, ANF β0) used in the offset analysis
 s1grits static ensure --output-dir ./output --product-label smonthly_ASCENDING
 
-# 3. Quantify cross-orbit ASC–DESC offsets (paper Table 3 / Fig. 7)
-python manuscript_analysis_scripts/c01_f5a_gridded_composites_17MPU.py
 ```
+
+Run the relevant research script from its separate checkout after reviewing its
+input paths and study parameters. These production commands alone do not reproduce
+the paper's statistics.
 
 ---
 
@@ -186,12 +197,12 @@ S1-GRiTS is designed for researchers and practitioners who need **large-scale, l
 6. **Standardized Gamma0 Radiometry** — Built on OPERA RTC-S1 with radiometric terrain correction
 7. **Dual Speckle Suppression** — Temporal median compositing + optional spatial TV-Bregman filtering
 8. **Incremental Time-Series Updates** — Zarr supports append-only updates without reprocessing
-9. **STAC 1.1.0 Metadata** — Full STAC compliance with Parquet catalogs for fast queries
+9. **Hierarchical Catalog and Metadata Provenance** — Parquet catalogs for fast queries, with explicit STAC export through [`catalog resync`](docs/cli.md#resync-catalog)
 10. **Rich Analysis API** — 8 analysis submodules for data loading, time series extraction, visualization, validation
 
 **Typical Use Cases:**
 
-- Long-term deformation monitoring
+- Long-term backscatter change monitoring
 - Agricultural crop classification
 - Forest change detection
 - Flood disaster assessment
@@ -212,8 +223,11 @@ S1-GRiTS is designed for researchers and practitioners who need **large-scale, l
 
 ## Quick Start
 
+The command below installs the published package. To try this V4 candidate, use
+the [source installation instructions](docs/installation.md) with this checkout instead.
+
 ```bash
-# 1. Install with the canonical Chinese web console (Python 3.12)
+# 1. Install the published package with Web dependencies (Python 3.12)
 pip install "s1grits[web]"
 
 # 2. (Optional) Earthdata auth for ASF downloads — ~/.netrc with your
@@ -226,14 +240,16 @@ s1grits init my_run.yaml
 s1grits doctor --config my_run.yaml
 s1grits process_scenes --config my_run.yaml
 
-# 5. 启动中文下载与目录检索控制台（workspace 是安全输出根）
+# 5. Launch the console with an explicit output workspace
 s1grits serve /path/to/output --port 5556
 ```
 
-The packaged browser interface is the **Chinese v3 console**. The removed
-Streamlit/English prototype is not shipped or tracked; a future English UI
-will be translated from this single frontend instead of maintained as a second
-implementation.
+The single packaged browser interface is the **S1-GRiTS Data Cube Console**
+(**S1-GRiTS 数据立方体控制台**), launched with `s1grits serve`.
+Switch between English and 中文 in the same page. The first visit follows the
+browser language (Chinese or English fallback); later visits remember your choice.
+Earlier Streamlit and English Workspace interfaces are preserved in
+[Git history](docs/web-history.md), not shipped as alternative applications.
 
 Full installation options (conda, from-source, extras), authentication setup
 and first-run guidance: **[docs/installation.md](docs/installation.md)**.
@@ -276,15 +292,21 @@ Start with the task you need; the detailed references can be read as needed.
 | Task | Read |
 |---|---|
 | Install and run the first check | [Installation](docs/installation.md) |
+| Choose CLI, Agent or Web; check supported capabilities | [Entry points and support](docs/entry_points.md) |
+| Give an Agent a reproducible task; check skill availability | [YAML, commands and skills](docs/agent_workflows_ZH.md) |
+| Move from V3 to the V4 development candidate | [Migration and compatibility](docs/migration_v4.md), [release scope](docs/release.md#v4-scope) |
 | Produce scenes, monthly composites and paired static layers | [Workflows](docs/workflows.md), [Web interface](docs/webapp.md), [Configuration](docs/configuration.md) |
 | Understand and hand off a dataset | [Output structure](docs/outputs.md), [Data handoff](docs/DATA_HANDOFF_ZH.md) |
 | Record or inspect processing evidence | [Monthly production records](docs/PROVENANCE_WORKFLOW_ZH.md), [Historical metadata export](docs/PROVENANCE_READONLY_ZH.md) |
 | Read data and prepare analysis inputs | [Python API](docs/python_api.md), [Examples](docs/examples.md) |
+| Mosaic selected scientific COGs onto an explicit grid | [Fixed-grid mosaics](docs/grid_mosaic.md) |
+| Derive features, filters or monthly products from an existing Cube | [Cube derivatives](docs/cube_derivatives.md) |
+| Extract points or regions and build stand indexes | [Local spatial products](docs/spatial-products.md), [Stand grid](docs/stand-geographic-grid.md), [Direct OPERA acquisition](docs/opera-spatial.md) |
 | Troubleshoot | [FAQ](docs/faq.md) |
 
 Technical and maintainer references: [CLI](docs/cli.md),
 [Grid and resampling](docs/target-grid-resampling-v1.md), [Architecture](docs/architecture.md),
-[Blockwise memory](docs/scenes_blockwise_architecture.md), [Release process](docs/release.md)
+[Blockwise memory](docs/scenes_blockwise_architecture.md), [Repository layout](docs/entry_points.md#repository-layout), [Runtime call paths](docs/call_flow.md), [Release process](docs/release.md)
 and [Changelog](CHANGELOG.md).
 
 

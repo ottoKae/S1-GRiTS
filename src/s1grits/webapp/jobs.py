@@ -34,6 +34,8 @@ from pathlib import Path
 
 import yaml
 
+from .tool_api import TOOL_OPERATIONS, tool_arguments
+
 logger = logging.getLogger(__name__)
 
 # Values of credential-looking keys are redacted from log lines (same policy
@@ -136,10 +138,10 @@ class Job:
             "stage": self.stage,
             "attempt_count": self.attempt_count,
             "interrupted_at": self.interrupted_at,
-            "recoverable": self.status == "interrupted" or (
+            "recoverable": self.type not in TOOL_OPERATIONS and (self.status == "interrupted" or (
                 self.status == "failed"
                 and self.error == "Server restarted while the job was active"
-            ),
+            )),
         }
         result.update(self.metadata)
         return result
@@ -236,10 +238,11 @@ class JobManager:
             commands.append(self._cmd_prefix + ["process_scenes", "--config", str(cfg_path)])
             stages.append("processing")
         if catalog_gates:
+            catalog_target = self.root / metadata["result_subdir"] if metadata and metadata.get("result_subdir") else target
             commands.extend([
-                self._cmd_prefix + ["catalog", "resync", "--output-dir", str(target)],
-                self._cmd_prefix + ["catalog", "validate", "--output-dir", str(target)],
-                self._cmd_prefix + ["catalog", "doctor", "--strict", "--output-dir", str(target)],
+                self._cmd_prefix + ["catalog", "resync", "--output-dir", str(catalog_target)],
+                self._cmd_prefix + ["catalog", "validate", "--output-dir", str(catalog_target)],
+                self._cmd_prefix + ["catalog", "doctor", "--strict", "--output-dir", str(catalog_target)],
             ])
             stages.extend(["validating", "validating", "validating"])
 
@@ -252,6 +255,44 @@ class JobManager:
             commands=commands,
             command_stages=stages,
         )
+        with self._lock:
+            self._jobs[job_id] = job
+            self._order.append(job_id)
+        self._persist(job)
+        self._queue.put(job_id)
+        return job
+
+    def submit_tool(self, plan: dict) -> Job:
+        target = Path(plan["output_dir"])
+        request = plan["request"]
+        job_id = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
+        job_dir = self.jobs_dir / job_id
+        job_dir.mkdir(parents=True)
+        arguments = tool_arguments(request, plan["catalog_root"], target, job_dir)
+        (job_dir / "request.json").write_text(json.dumps(request, ensure_ascii=False, indent=2), encoding="utf-8")
+        operation = request['operation']
+        from .tool_api import FILE_TOOLS
+        if operation == 'mosaic_grid':
+            (job_dir/'items.json').write_text(json.dumps(request['item_ids']), encoding='utf-8')
+        elif operation == 'analyze_segments_batch' and request['points'] is not None:
+            (job_dir/'points.json').write_text(json.dumps(request['points'], ensure_ascii=False), encoding='utf-8')
+        commands, stages = [self._cmd_prefix + arguments], ['processing']
+        if operation not in FILE_TOOLS:
+            commands.append(self._cmd_prefix + ['catalog', 'validate', '--output-dir', str(target)])
+            stages.append('validating')
+        parents = plan.get('parents', [plan.get('parent')])
+        parent_ids = [p['record']['item_id'] for p in parents]
+        job = Job(id=job_id, type=operation, title=f"{operation} · {', '.join(parent_ids)}", job_dir=job_dir,
+                  commands=commands, command_stages=stages,
+                  metadata={"workflow": operation, "output_dir": str(target),
+                            "output_subdir": plan["output_subdir"], "result_subdir": plan["output_subdir"],
+                            "parent_item_id": parent_ids[0], "parent_item_ids": parent_ids,
+                            "result_type": plan.get("result_type", "physical"),
+                            "result_item_id": plan.get("result_item_id"),
+                            "tiles": sorted({p["record"]["tile_id"] for p in parents}),
+                            "tool_request": request,
+                            "receipt": str(target / plan['receipt_name']) if operation in FILE_TOOLS else (
+                                str(target / "derivation.json") if operation == "derive_cube" else str(job_dir / "request.json"))})
         with self._lock:
             self._jobs[job_id] = job
             self._order.append(job_id)
@@ -317,6 +358,8 @@ class JobManager:
         )
         issues: list[str] = []
         warnings: list[str] = []
+        if job.type in TOOL_OPERATIONS:
+            issues.append("派生任务不支持原地续写；保留已有输出，使用新目录重新预检")
         if job.status != "interrupted" and not legacy_restart:
             issues.append("只有因服务重启而中断的任务可以恢复")
         if job.process_pid and self._saved_process_alive(job):
@@ -678,6 +721,9 @@ class JobManager:
             job.commands = [list(command) for command in data.get("commands") or []]
             job.command_stages = list(data.get("command_stages") or [])
             status = data.get("status", "failed")
+            if job.type in TOOL_OPERATIONS and status == "queued":
+                status = "interrupted"
+                job.error = "派生任务需重新预检并提交；不会重放账本中的命令"
             if status == "running":
                 if self._saved_process_alive(job):
                     job.status = "detached"
@@ -685,7 +731,8 @@ class JobManager:
                 else:
                     job.status = "interrupted"
                     job.interrupted_at = job.interrupted_at or time.time()
-                    job.error = "服务重启导致任务中断；已有成果可保留并安全恢复"
+                    job.error = ("派生任务已中断；保留已有输出，使用新目录重新预检" if job.type in TOOL_OPERATIONS
+                                 else "服务重启导致任务中断；已有成果可保留并安全恢复")
                     job.events.append({
                         "timestamp": job.interrupted_at,
                         "event": "task_interrupted",
@@ -722,6 +769,8 @@ class JobManager:
             return False
 
     def _recover_commands(self, job: Job) -> tuple[list[list[str]], list[str]]:
+        if job.type in TOOL_OPERATIONS:
+            return [], []
         commands = [list(command) for command in job.commands]
         stages = list(job.command_stages)
         if commands:

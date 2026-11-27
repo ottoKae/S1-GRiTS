@@ -310,6 +310,9 @@ def build_stac_item_dict(
         if dt_val is not None:
             ts = pd.Timestamp(dt_val)
             item_id = f"{mgrs_tile_id}{flight_suffix}_{ts.strftime('%Y%m%dT%H%M%S')}"
+            if (any(token in str(record.get('product_label', '')) for token in ('_average_', '_bursts_center_', '_nlooks_weighted_', '_derived_'))
+                    or (pd.notna(record.get('registration_path')) and record.get('registration_path'))) and _explicit_id:
+                item_id = _explicit_id
             datetime_str = ts.strftime("%Y-%m-%dT%H:%M:%SZ")
         else:
             item_id = f"{mgrs_tile_id}{flight_suffix}_{month}"
@@ -370,10 +373,11 @@ def build_stac_item_dict(
         """
         if not path_from_record:
             return None
-        _p = str(path_from_record).replace("\\", "/").lstrip("/")
+        _p = str(path_from_record).replace("\\", "/")
         if _p.startswith("./"):
             _p = _p[2:]
-        if mgrs_tile_id and not (_p == mgrs_tile_id or _p.startswith(mgrs_tile_id + "/")):
+        if (not os.path.isabs(_p) and not os.path.exists(os.path.join(output_root, _p))
+                and mgrs_tile_id and not (_p == mgrs_tile_id or _p.startswith(mgrs_tile_id + "/"))):
             _p = f"{mgrs_tile_id}/{_p}"
         _asset_abs = os.path.join(output_root, _p)
         return os.path.relpath(_asset_abs, _href_base).replace("\\", "/")
@@ -513,12 +517,13 @@ def build_stac_item_dict(
 
     cog_href = _rel_to_item(record.get("cog_path"))
     if cog_href:
+        cog_bands = [b for b in bands if b not in ('n_contributors', 'n_candidates', 'source_index', 'weight_sum')]
         item["assets"]["cog"] = {
             "href": cog_href,
             "type": "image/tiff; application=geotiff; profile=cloud-optimized",
             "roles": ["data"],
-            "title": f"{asset_title_prefix} COG ({', '.join(bands)})",
-            "eo:bands": [{"name": _b} for _b in bands],
+            "title": f"{asset_title_prefix} COG ({', '.join(cog_bands)})",
+            "eo:bands": [{"name": _b} for _b in cog_bands],
         }
 
     zarr_path_rec = record.get("zarr_path") or record.get("vv_path")
@@ -534,6 +539,13 @@ def build_stac_item_dict(
             "title": "Full Time Series Zarr Store",
             "eo:bands": [{"name": _b} for _b in bands],
         }
+        if record.get('zarr_group'):
+            item['assets']['zarr']['s1grits:zarr_group'] = record['zarr_group']
+
+    if record.get('view_path'):
+        item['assets']['view'] = {'href': _rel_to_item(record['view_path']),
+            'type': 'application/json', 'roles': ['metadata'], 'title': 'Virtual product definition'}
+        item['properties']['s1grits:representation'] = 'virtual'
 
     preview_href = _rel_to_item(record.get("preview_path"))
     if preview_href:

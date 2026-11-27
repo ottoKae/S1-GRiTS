@@ -23,6 +23,14 @@ Example:
     >>> plot_timeseries_figure(ts, output_path="ts.png")
 """
 
+from .derive import derive_cube
+from .views import define_view, register_view, materialize_view
+from .multitrack import define_multitrack_view
+from s1grits.catalog_registration import register_product
+from .cusum import analyze_cusum
+from .segmentation import analyze_segments
+from .segmentation_batch import analyze_segments_batch
+
 from .io import (
     load_zarr_dataset,
     load_catalog,
@@ -43,6 +51,7 @@ from .plotting import (
 )
 
 from .mosaic import (
+    create_grid_mosaic,
     create_mosaic_vrt,
     find_cog_files_for_mosaic,
     validate_mosaic_inputs,
@@ -75,6 +84,13 @@ from .reporting import (
 )
 
 __all__ = [
+    'define_view', 'register_view', 'materialize_view',
+    'define_multitrack_view',
+    'register_product',
+    'analyze_segments_batch',
+    "analyze_cusum",
+    "analyze_segments",
+    "derive_cube",
     # IO
     "load_zarr_dataset",
     "load_catalog",
@@ -92,6 +108,7 @@ __all__ = [
     "plot_monthly_preview",
 
     # Mosaic
+    "create_grid_mosaic",
     "create_mosaic_vrt",
     "find_cog_files_for_mosaic",
     "validate_mosaic_inputs",

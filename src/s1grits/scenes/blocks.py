@@ -200,7 +200,7 @@ def _write_smonthly_block_bands(
             # means "no observations" and lands as 0 in the integer store.
             arr = np.nan_to_num(arr, nan=0.0).astype(dst.dtype)
         else:
-            arr = arr.astype(np.float32, copy=False)
+            arr = arr.astype(dst.dtype, copy=False)
         dst[time_index, y_slice, x_slice] = arr
         if numeric_tracker is not None:
             domain = "count" if name == N_OBS_BAND else "db"

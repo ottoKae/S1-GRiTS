@@ -101,6 +101,9 @@ CANONICAL_CATALOG_COLUMNS: list[str] = [
 
     # ---- Assets ----
     "zarr_path",            # str: relative path from tile_dir, or null
+    "view_path",            # str: local virtual definition; mutually exclusive with zarr_path
+    "registration_path",    # str: explicit manifest relative to the collection root, or null
+    "zarr_group",           # str: optional group within the store; null means root
     "cog_path",             # str: relative path or null
     "preview_path",         # str: relative path or null
     "item_path",            # str: relative path to STAC item JSON, or null
@@ -225,7 +228,7 @@ def normalize_catalog_record(record: dict[str, Any], status: str = "complete") -
 
 # Catalog columns that hold filesystem-relative paths to assets / STAC items.
 CATALOG_PATH_COLUMNS: tuple[str, ...] = (
-    "zarr_path", "cog_path", "preview_path", "item_path",
+    "zarr_path", "view_path", "cog_path", "preview_path", "item_path", "registration_path",
 )
 
 

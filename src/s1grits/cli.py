@@ -327,6 +327,16 @@ def cmd_catalog_doctor(args):
         sys.exit(1)
 
 
+def cmd_catalog_register(args):
+    """Persist an explicit local Zarr product reference."""
+    import json
+    from s1grits.catalog_registration import register_product
+
+    record = json.loads(Path(args.record).read_text(encoding='utf-8'))
+    result = register_product(args.output_dir, record, source_root=args.source_root)
+    console.print(f"[green]Registered[/green] {result['item_id']}")
+
+
 def cmd_catalog_resync(args):
     """Resync catalog + STAC from existing filesystem data."""
     from s1grits.analysis.catalog import resync_catalog_from_filesystem
@@ -526,6 +536,115 @@ def _import_gdal():
             "environment.yml[/red]"
         )
         raise SystemExit(1) from exc
+
+
+def cmd_derive_cube(args):
+    """Apply optional operators to an existing Cube, writing a new root."""
+    from s1grits.analysis.derive import derive_cube
+
+    try:
+        record = derive_cube(args.catalog_root, args.item_id, args.output,
+            start=args.start, end=args.end, features=args.features, spatial_filter=args.filter,
+            monthly=args.monthly, window=args.window, chunk_size=args.chunk_size,
+            interpolation=args.interpolation, interpolation_domain=args.interpolation_domain,
+            max_gap_days=args.max_gap_days)
+    except Exception as exc:
+        console.print(f'[red]ERROR: {exc}[/red]')
+        raise SystemExit(1) from exc
+    console.print(f'[green]Derived Cube created: {args.output} ({record["processing_signature"]})[/green]')
+
+
+def cmd_view(args):
+    """Create metadata-only local views or explicitly materialize one."""
+    from s1grits.analysis.views import define_view, register_view, materialize_view
+
+    try:
+        if args.view_cmd == 'multitrack':
+            from s1grits.analysis.multitrack import define_multitrack_view
+            definition = define_multitrack_view(args.catalog_root, args.item_ids,
+                start_month=args.start_month, end_month=args.end_month, method=args.method, window=args.window)
+            record = register_view(args.output, definition)
+        elif args.view_cmd == 'create':
+            definition = define_view(args.catalog_root, args.item_id, start=args.start,
+                end=args.end, window=args.window, bands=args.bands)
+            record = register_view(args.output, definition)
+        else:
+            record = materialize_view(args.catalog_root, args.item_id, args.output, chunk_size=args.chunk_size)
+    except Exception as exc:
+        console.print(f'[red]ERROR: {exc}[/red]')
+        raise SystemExit(1) from exc
+    console.print(f"[green]{args.view_cmd}: {record['item_id']}[/green]")
+
+
+def cmd_analyze_cusum(args):
+    """Run the separately installed public CUSUM backend on an existing Cube."""
+    from s1grits.analysis import analyze_cusum
+
+    try:
+        receipt = analyze_cusum(args.catalog_root, args.item_id, args.output,
+            band=args.band, history_start=args.history_start, history_end=args.history_end,
+            monitor_start=args.monitor_start, monitor_end=args.monitor_end,
+            trend=not args.no_trend, harmonic_order=args.harmonic_order,
+            sensitivity=args.sensitivity, fit_alpha=args.fit_alpha,
+            window=args.window, chunk_size=args.chunk_size)
+    except Exception as exc:
+        console.print(f'[red]ERROR: {exc}[/red]')
+        raise SystemExit(1) from exc
+    console.print(f'[green]CUSUM analysis created: {args.output} ({receipt["processing_signature"]})[/green]')
+
+
+def cmd_analyze_segments(args):
+    """Run a local or explicitly selected cloud backend for one Cube pixel."""
+    from s1grits.analysis import analyze_segments
+
+    try:
+        receipt = analyze_segments(args.catalog_root, args.item_id, args.output,
+            algorithm=args.algorithm, backend=args.backend, band=args.band, pixel=args.pixel,
+            start=args.start, end=args.end, project=args.project, annual_method=args.annual_method,
+            annual_domain=args.annual_domain, disturbance_direction=args.disturbance_direction,
+            min_annual_observations=args.min_annual_observations)
+    except Exception as exc:
+        console.print(f'[red]ERROR: {exc}[/red]')
+        raise SystemExit(1) from exc
+    console.print(f'[green]Analysis created: {args.output} ({receipt["analysis_state"]})[/green]')
+
+
+def cmd_analyze_segments_batch(args):
+    """Run the local LandTrendr point-set/window tool."""
+    import json
+    from s1grits.analysis import analyze_segments_batch
+
+    try:
+        points = json.loads(Path(args.points_file).read_text(encoding='utf-8-sig')) if args.points_file else None
+        receipt = analyze_segments_batch(args.catalog_root, args.item_id, args.output,
+            points=points, window=args.window, band=args.band, start=args.start, end=args.end,
+            annual_method=args.annual_method, annual_domain=args.annual_domain,
+            disturbance_direction=args.disturbance_direction,
+            min_annual_observations=args.min_annual_observations)
+    except Exception as exc:
+        console.print(f'[red]ERROR: {exc}[/red]')
+        raise SystemExit(1) from exc
+    console.print(f'Batch {receipt["status"]}: {args.output}; '
+                  f'{receipt["completed_points"]} complete, {receipt["failed_points"]} failed')
+    if receipt['status'] != 'complete':
+        raise SystemExit(1)
+
+
+def cmd_mosaic_grid(args):
+    """Create an exact, fixed-grid mosaic from explicit catalog item IDs."""
+    import json
+    from s1grits.analysis.mosaic import create_grid_mosaic
+
+    _import_gdal()
+    try:
+        item_ids = json.loads(Path(args.items_file).read_text(encoding='utf-8'))
+        output = create_grid_mosaic(args.catalog_root, item_ids, args.output,
+                                    target_crs=args.crs, resolution=args.resolution,
+                                    bounds=args.bounds, output_format=args.format)
+    except Exception as exc:
+        console.print(f'[red]ERROR: {exc}[/red]')
+        raise SystemExit(1) from exc
+    console.print(f'[green]Mosaic created: {output}[/green]')
 
 
 def cmd_mosaic(args):
@@ -854,7 +973,7 @@ def cmd_mosaic_scenes(args):
 
 
 def cmd_serve(args):
-    """Run the v3 Chinese web console + API over a workspace directory."""
+    """Run the S1-GRiTS Data Cube Console + API over a workspace directory."""
     root = args.root or args.workspace
     if not root:
         console.print(
@@ -950,6 +1069,12 @@ Examples:
         dest='command', metavar='<command>', help='Available commands'
     )
 
+    from s1grits.stand_grid import register_cli
+    register_cli(subparsers)
+
+    from s1grits.spatial import register_cli as register_spatial_cli
+    register_spatial_cli(subparsers)
+
     parser_init = subparsers.add_parser(
         'init',
         help='Write a starter scenes YAML configuration',
@@ -986,6 +1111,12 @@ Examples:
     # ── catalog ───────────────────────────────────────────────────────────────
     parser_catalog = subparsers.add_parser('catalog', help='Catalog management')
     catalog_sub = parser_catalog.add_subparsers(dest='catalog_cmd', help='Catalog operations')
+
+    p = catalog_sub.add_parser('register', help='Register one local Zarr product without copying it')
+    p.add_argument('--output-dir', required=True, help='Collection catalog root')
+    p.add_argument('--record', required=True, help='JSON object containing one canonical product record')
+    p.add_argument('--source-root', help='Root for input locators; defaults to output-dir')
+    p.set_defaults(func=cmd_catalog_register)
 
     # catalog validate
     p = catalog_sub.add_parser(
@@ -1089,6 +1220,110 @@ Examples:
     )
     parser_mosaic.set_defaults(func=cmd_mosaic)
 
+    parser_derive = subparsers.add_parser('derive_cube', help='Derive features, filters or monthly products from an existing Cube')
+    parser_derive.add_argument('--catalog-root', required=True)
+    parser_derive.add_argument('--item-id', required=True, help='Catalog item selecting the parent Zarr store')
+    parser_derive.add_argument('--output', required=True, help='New Cube root separate from the source')
+    parser_derive.add_argument('--start', required=True, help='Inclusive UTC timestamp')
+    parser_derive.add_argument('--end', required=True, help='Inclusive UTC timestamp (date alone means midnight)')
+    parser_derive.add_argument('--features', nargs='*', choices=['ratio', 'rvi', 'glcm'], default=['ratio', 'rvi'])
+    parser_derive.add_argument('--filter', choices=['none', 'tv_bregman', 'nlm'], default='none')
+    parser_derive.add_argument('--monthly', choices=['mean', 'median'])
+    parser_derive.add_argument('--interpolation', choices=['none', 'linear'], help='Separate temporal step; use --features with no values')
+    parser_derive.add_argument('--interpolation-domain', choices=['db', 'linear_power'])
+    parser_derive.add_argument('--max-gap-days', type=float, help='Maximum span between bracketing valid observations (linear only)')
+    parser_derive.add_argument('--window', nargs=4, type=int, metavar=('XOFF', 'YOFF', 'WIDTH', 'HEIGHT'))
+    parser_derive.add_argument('--chunk-size', type=int, default=256)
+    parser_derive.set_defaults(func=cmd_derive_cube)
+
+    parser_view = subparsers.add_parser('view', help='Local selection/features/monthly track views and materialization')
+    view_sub = parser_view.add_subparsers(dest='view_cmd', required=True)
+    for operation in ('create', 'materialize'):
+        p = view_sub.add_parser(operation)
+        p.add_argument('--catalog-root', required=True)
+        p.add_argument('--item-id', required=True)
+        p.add_argument('--output', required=True, help='Collection root for create; new Cube root for materialize')
+        if operation == 'create':
+            p.add_argument('--start', required=True)
+            p.add_argument('--end', required=True)
+            p.add_argument('--window', nargs=4, type=int, metavar=('XOFF', 'YOFF', 'WIDTH', 'HEIGHT'))
+            p.add_argument('--bands', nargs='+', choices=['VV_dB', 'VH_dB', 'Ratio', 'RVI'],
+                           default=['VV_dB', 'VH_dB', 'Ratio', 'RVI'])
+        else:
+            p.add_argument('--chunk-size', type=int, default=256)
+        p.set_defaults(func=cmd_view)
+
+    p = view_sub.add_parser('multitrack', help='Combine explicitly ordered single-track monthly products')
+    p.add_argument('--catalog-root', required=True)
+    p.add_argument('--item-ids', nargs='+', required=True, help='One item per track, in priority order')
+    p.add_argument('--output', required=True, help='Collection root for the virtual definition')
+    p.add_argument('--start-month', required=True, help='YYYY-MM')
+    p.add_argument('--end-month', required=True, help='YYYY-MM, inclusive')
+    p.add_argument('--method', required=True, choices=['first_valid_pixel', 'mean'])
+    p.add_argument('--window', nargs=4, type=int, metavar=('XOFF', 'YOFF', 'WIDTH', 'HEIGHT'))
+    p.set_defaults(func=cmd_view)
+
+    parser_cusum = subparsers.add_parser('analyze_cusum', help='Optional public nrt CUSUM analysis of an existing Cube')
+    parser_cusum.add_argument('--catalog-root', required=True)
+    parser_cusum.add_argument('--item-id', required=True)
+    parser_cusum.add_argument('--output', required=True, help='New analysis directory separate from the source')
+    parser_cusum.add_argument('--band', choices=['VV_dB', 'VH_dB'], required=True)
+    for interval in ('history-start', 'history-end', 'monitor-start', 'monitor-end'):
+        parser_cusum.add_argument('--'+interval, required=True, help='Inclusive UTC timestamp; date alone means midnight')
+    parser_cusum.add_argument('--no-trend', action='store_true')
+    parser_cusum.add_argument('--harmonic-order', type=int, default=2)
+    parser_cusum.add_argument('--sensitivity', type=float, default=.05)
+    parser_cusum.add_argument('--fit-alpha', type=float, default=.05)
+    parser_cusum.add_argument('--window', nargs=4, type=int, metavar=('XOFF', 'YOFF', 'WIDTH', 'HEIGHT'))
+    parser_cusum.add_argument('--chunk-size', type=int, default=64)
+    parser_cusum.set_defaults(func=cmd_analyze_cusum)
+
+    parser_segments = subparsers.add_parser('analyze_segments', help='Local LandTrendr or explicit Earth Engine segmentation for one Cube pixel')
+    parser_segments.add_argument('--catalog-root', required=True)
+    parser_segments.add_argument('--item-id', required=True)
+    parser_segments.add_argument('--output', required=True)
+    parser_segments.add_argument('--backend', choices=['local', 'earthengine'], default='local')
+    parser_segments.add_argument('--algorithm', choices=['ccdc', 'landtrendr'], required=True)
+    parser_segments.add_argument('--band', choices=['VV_dB', 'VH_dB'], required=True)
+    parser_segments.add_argument('--pixel', nargs=2, type=int, metavar=('COL', 'ROW'), required=True)
+    parser_segments.add_argument('--start', required=True, help='Inclusive UTC timestamp')
+    parser_segments.add_argument('--end', required=True, help='Inclusive UTC timestamp; date alone means midnight')
+    parser_segments.add_argument('--project', help='Authorized Earth Engine project; otherwise use client credential defaults')
+    parser_segments.add_argument('--annual-method', choices=['mean', 'median'])
+    parser_segments.add_argument('--annual-domain', choices=['db', 'linear_power'])
+    parser_segments.add_argument('--disturbance-direction', choices=['increase', 'decrease'])
+    parser_segments.add_argument('--min-annual-observations', type=int, default=1)
+    parser_segments.set_defaults(func=cmd_analyze_segments)
+
+    parser_batch = subparsers.add_parser('analyze_segments_batch',
+        help='Experimental local LandTrendr for a small native-grid point set or window')
+    parser_batch.add_argument('--catalog-root', required=True)
+    parser_batch.add_argument('--item-id', required=True)
+    parser_batch.add_argument('--output', required=True)
+    locations = parser_batch.add_mutually_exclusive_group(required=True)
+    locations.add_argument('--points-file', help='JSON list of point_id, col, row records on the selected parent grid')
+    locations.add_argument('--window', nargs=4, type=int, metavar=('XOFF', 'YOFF', 'WIDTH', 'HEIGHT'))
+    parser_batch.add_argument('--band', choices=['VV_dB', 'VH_dB'], required=True)
+    parser_batch.add_argument('--start', required=True, help='Inclusive UTC timestamp')
+    parser_batch.add_argument('--end', required=True, help='Inclusive UTC timestamp; date alone means midnight')
+    parser_batch.add_argument('--annual-method', choices=['mean', 'median'], required=True)
+    parser_batch.add_argument('--annual-domain', choices=['db', 'linear_power'], required=True)
+    parser_batch.add_argument('--disturbance-direction', choices=['increase', 'decrease'], required=True)
+    parser_batch.add_argument('--min-annual-observations', type=int, default=1)
+    parser_batch.set_defaults(func=cmd_analyze_segments_batch)
+
+    parser_grid = subparsers.add_parser('mosaic_grid',
+        help='Mosaic explicit catalog COGs onto a fixed metric grid')
+    parser_grid.add_argument('--catalog-root', required=True, help='Source Cube root with catalog.parquet')
+    parser_grid.add_argument('--items-file', required=True, help='JSON list of item IDs, first-valid priority order')
+    parser_grid.add_argument('--output', required=True, help='New .vrt or .tif path outside the source Cube')
+    parser_grid.add_argument('--format', choices=['VRT', 'COG'], default='VRT')
+    parser_grid.add_argument('--crs', required=True, help='Projected target CRS in metres')
+    parser_grid.add_argument('--resolution', required=True, type=float, help='Target pixel size in metres')
+    parser_grid.add_argument('--bounds', required=True, type=float, nargs=4,
+                             metavar=('XMIN', 'YMIN', 'XMAX', 'YMAX'))
+    parser_grid.set_defaults(func=cmd_mosaic_grid)
+
     # ── doctor ────────────────────────────────────────────────────────────────
     parser_doctor = subparsers.add_parser(
         'doctor',
@@ -1175,10 +1410,10 @@ Examples:
     )
     parser_mosaic_scenes.set_defaults(func=cmd_mosaic_scenes)
 
-    # ── serve (v3 Chinese web console) ────────────────────────────────────────
+    # ── serve (Data Cube Console) ────────────────────────────────────────────
     parser_serve = subparsers.add_parser(
         'serve',
-        help='Run the web UI + API over a workspace (requires s1grits[web])'
+        help='Run the S1-GRiTS Data Cube Console + API (requires s1grits[web])'
     )
     # Workspace directory: positional (`s1grits serve /path/to/workspace`,
     # the natural spelling) or the --root flag; exactly one is required.

@@ -42,9 +42,9 @@ static_layers:
 # Metadata — product registry reference
 # ---------------------------------------------------------------------------
 metadata:
-  # Path to product registry YAML (relative to project root or absolute)
-  # Defines collection_id, bands, array_dims for each product_type.
-  # If omitted, defaults to config/s1grits_products.yaml then built-in.
+  # Explicit registry overlay (relative to the working directory or absolute).
+  # Defines structural metadata; actual bands come from the processing config.
+  # If omitted, uses built-ins; no config file is discovered implicitly.
   product_config: config/s1grits_products.yaml
 
 # =============================================================================
