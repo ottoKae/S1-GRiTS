@@ -8,7 +8,7 @@ reuse an existing PyPI version or move a published tag.
 ## V4.0.0 candidate scope / 候选发布范围
 
 V4.0.0 is the target, not the currently published version or a completed release
-gate. The local candidate remains 3.0.1rc1. The [changelog](../CHANGELOG.md),
+gate. The local package version is prepared as 4.0.0. The [changelog](../CHANGELOG.md),
 [migration guide](migration_v4.md) and [entry/support matrix](entry_points.md)
 describe the deliverable behavior.
 
@@ -18,13 +18,14 @@ describe the deliverable behavior.
 | Explicit optional tools / 显式可选工具 | Include intra-pass strategies, filtering/features, monthly mean/median, interpolation, product/group access, registration, views/materialization, multi-track monthly combination and inter-tile mosaics, within their documented input contracts. |
 | User entry points / 使用入口 | One bilingual console and documented YAML, CLI, Python and generic Agent routes. Skills are maintained separately from the wheel. Web supports the subset listed in the support matrix. |
 | Local LandTrendr / 本地 LandTrendr | Experimental, separately installed backend; point, point-set and small-window scope. Do not claim GEE equivalence or SAR detection accuracy. |
-| Public CUSUM / 公共 CUSUM | Local candidate adapter exists; separate backend installation. Distribution review remains unresolved. Before publication, record a decision covering the shipped adapter and documentation; if excluded, remove it from the release candidate's CLI, exports, docs and tests consistently and revalidate that candidate. Do not call this gate passed merely because the backend is not bundled. |
+| Public CUSUM / 公共 CUSUM | Ship the independent experimental adapter, tests and instructions; user installs nrt separately. No bundled/modified nrt, automatic extra or Web/SaaS delivery. The [decision](local_backends.md#cusum-distribution-decision) records the inspected scope and limits. |
 | GEE segmentation / GEE 分段 | Explicit optional single-point route; no automatic fallback. Offline checks do not establish online acceptance. |
 | Local CCDC / 本地 CCDC | Not implemented and excluded from supported V4 capabilities. It may continue as a separate follow-up without being promised by this release. |
 | Research / 研究材料 | Manuscripts, research datasets, private operational files and domain-specific skills do not enter Python distributions. |
 
 本轮交付以已验收的有限扩展为范围，不要求实现本地 CCDC 才能定义 V4；
-但不能把它列为正式支持。CUSUM 的公开分发决定仍是发布前待处理项。
+但不能把它列为正式支持。CUSUM 本次分发范围已明确为适配器及说明，后端由用户另装；
+重新分发后端、商业组合交付和 Web／SaaS 不在此决定范围。
 严格 STAC 全模式／扩展合规、大洲吞吐和跨后端科学等价均不作为已完成能力。
 软件包包含公开说明及所需参考字典，不包含用户论文和研究数据。
 
@@ -69,9 +70,8 @@ Work on a feature branch, then:
 4. Run lint, tests and a local package build.
 5. Merge the reviewed commit to `main` and push `main` before tagging.
 
-For the current unchanged candidate, run `python tools/release_check.py`
-without a future tag argument. The following Windows/PowerShell example applies
-only after preparing a future `v4.0.0` release commit:
+The local 4.0.0 preparation can use `--candidate-tag v4.0.0` without creating
+a Git tag. The following Windows/PowerShell checks precede publication:
 
 ```powershell
 python tools/release_check.py --candidate-tag v4.0.0

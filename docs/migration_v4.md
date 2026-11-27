@@ -6,7 +6,7 @@ command help before using candidate-only commands. Installing a new version
 does not rewrite, relocate or regenerate an existing Cube.
 
 本文对应目标为 V4.0.0 的开发候选。升级软件不会自动修改历史 Cube，也不会把旧数据
-标记成新算法的结果。当前包版本仍为 3.0.1rc1；命令可用性以实际安装内容为准。
+标记成新算法的结果。本地待发布包版本为 4.0.0；命令可用性以实际安装内容为准。
 
 ## 1. Keep the old environment and verify the new one / 保留环境，核对入口
 
@@ -89,7 +89,8 @@ range. Save the command, selected item, parameters and native receipt.
 The [support matrix](entry_points.md) is the canonical interface list. Local
 LandTrendr remains experimental and is not numerically equivalent to GEE by
 assumption. CUSUM requires its separately installed backend and its distribution
-review is still open. Local CCDC is unavailable; GEE must be explicitly selected
+scope is limited to the adapter and instructions, without redistributing nrt.
+Local CCDC is unavailable; GEE must be explicitly selected
 and currently supports single-point segmentation only.
 
 保留分析后端、版本、单位与参数。软件适配测试不代表 SAR 检测精度，也不代表跨平台、

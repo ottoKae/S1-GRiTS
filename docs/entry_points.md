@@ -76,7 +76,7 @@ available as a form control. Scientific method names remain identical in both la
 | Materialize / 显式物化 | `view materialize` | `s1grits-analysis` | 支持 | 单独操作，写新实体；无隐式物化 |
 | Multi-track monthly / 多轨月组合 | [`view multitrack`](multitrack_monthly.md) | `s1grits-analysis` | first_valid_pixel / mean | 同格网／方向及统计范围兼容的单轨派生月实体；贡献轨道数不同于 n_obs |
 | Local LandTrendr | [`analyze_segments`, `analyze_segments_batch`](segmentation.md) | `s1grits-analysis` | 单点／点集／窗口 | 实验 LT-rs 0.4.0；Web ≤64 像元，≤128 有效年份／像元；明确年度方法／域／方向 |
-| Public CUSUM | [`analyze_cusum`](cusum.md) | `s1grits-analysis` | 不开放 | 另装实验后端；分发事项未完成 |
+| Public CUSUM | [`analyze_cusum`](cusum.md) | `s1grits-analysis` | 不开放 | 分发适配器与说明；用户另装 nrt，保持实验状态；不捆绑后端 |
 | Local CCDC | 尚无本地实现 | 明确不可用 | 不开放 | 不将其他算法改名为 CCDC |
 | GEE segmentation | 显式 `--backend earthengine` 的单点入口 | 需要明确远程执行授权 | 不开放 | 不因本地缺依赖自动发送数据至 GEE；批次入口仅本地 |
 | Inter-tile grid mosaic / 邻格镶嵌 | [`mosaic_grid`](grid_mosaic.md) | 按同一 CLI／指南执行 | VRT / COG | 明确有序 COG、目标网格；同月或同次获取；精确最近邻，逐波段首有效 |

@@ -8,8 +8,8 @@ the full history.
 ## Unreleased
 
 Target: **V4.0.0**. This section describes the development candidate, not a
-published package. The package version remains 3.0.1rc1 until release gates
-are completed. See the [migration guide](docs/migration_v4.md) and
+published package. The local package version is prepared as 4.0.0; publication
+still requires the release gates. See the [migration guide](docs/migration_v4.md) and
 [release scope](docs/release.md#v4-scope).
 
 ### Data Cube tools and access
@@ -24,8 +24,9 @@ are completed. See the [migration guide](docs/migration_v4.md) and
   Ordered multi-track monthly first-valid/mean combination and inter-tile
   VRT/COG mosaics remain distinct operations with distinct input contracts.
 - Add local experimental LandTrendr point, point-set and small-window adapters.
-  Public CUSUM remains a separately installed experimental backend with
-  distribution review pending. GEE CCDC/LandTrendr is explicit and point-only;
+  Ship the experimental CUSUM adapter and instructions, with nrt separately
+  installed by the user; exclude backend bundles and Web/SaaS delivery.
+  GEE CCDC/LandTrendr is explicit and point-only;
   local CCDC is not implemented. No automatic cloud fallback is introduced.
 - Expose supported tools in one Chinese/English console; document CLI, Python,
   production YAML and the two generic Agent workflows through one

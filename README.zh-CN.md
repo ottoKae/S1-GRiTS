@@ -14,7 +14,7 @@
 <p align="center">
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.12+-blue.svg" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20NC-green.svg" /></a>
-  <a href="https://github.com/ottoKae/S1-GRiTS"><img src="https://img.shields.io/badge/version-3.0.1rc1-orange.svg" /></a>
+  <a href="https://github.com/ottoKae/S1-GRiTS"><img src="https://img.shields.io/badge/version-4.0.0-orange.svg" /></a>
 </p>
 
 ---

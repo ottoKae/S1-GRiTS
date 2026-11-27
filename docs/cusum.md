@@ -2,9 +2,9 @@
 
 `analyze_cusum` reads a single existing scenes or monthly Cube instance and writes independent analysis maps. It never downloads bursts or modifies the parent. The default Cube pipeline and installation dependencies are unchanged. This adapter uses the separately installed [ec-jrc/nrt CuSum](https://nrt.readthedocs.io/en/stable/api_reference.html), not the unpublished Windowed CuSum method.
 
-The verified backend is `nrt==0.3.0`, with NumPy 2.2.6 and Numba 0.61.2 in an isolated Python 3.12 test environment. nrt is EUPL-1.2 licensed. Its source and dependencies are not bundled here or added to an installation extra. **Distribution and licensing review remains pending**; the local experiment does not establish compatibility with this project's licensing or authorize a public release. See [the upstream license](https://github.com/ec-jrc/nrt/blob/master/LICENSE).
+The verified backend is `nrt==0.3.0`, with NumPy 2.2.6 and Numba 0.61.2 in an isolated Python 3.12 test environment. nrt is EUPL-1.2 licensed. V4 ships the S1-GRiTS adapter and instructions; the user installs nrt separately. No nrt source, binaries or installation extra are bundled. See [the upstream license](https://github.com/ec-jrc/nrt/blob/v0.3.0/LICENSE).
 
-The [local backend assessment](local_backends.md) records the current decision: retain separate installation and experimental status. API interoperability is distinct from incorporating upstream code; no blanket incompatibility or distribution clearance is inferred merely from a license name.
+The [distribution decision](local_backends.md#cusum-distribution-decision) covers this independent experimental adapter and its instructions. It does not cover redistributed backend bundles, commercial combined deliveries or Web/SaaS deployments; separate installation is not itself a license exemption.
 
 ## Separate analysis environment
 
@@ -34,8 +34,8 @@ The tested runtime is Windows x64 / Python 3.12. A fresh environment with no inh
 site packages was also verified using the candidate wheel, the pinned Resolver source
 and this nrt/NumPy/Numba combination; dependency checks and direct-backend small-sample
 comparisons passed. Other platforms have not been verified here.
-The current CLI/Agent experiment remains available; Web submission and bundled
-distribution remain outside the approved delivery scope.
+The local CLI/Python/Agent adapter remains experimental; Web submission and
+bundled backend distribution remain outside the V4 delivery scope.
 
 ## Run and inspect
 
@@ -70,4 +70,4 @@ The output contains `cusum.zarr` (2D y/x maps with x/y coordinates, CRS and affi
 
 **Mask 1 alone is not a verified no-change result.** Zero-variance/unusable fits retain their backend mask but have `fit_usable=0`, no monitoring updates and cleared diagnostics. Fewer than `max(regressors+2, ceil(1.5*regressors))` history observations are marked 4 before fitting: the additional recursive-fit requirement avoids a verified short-series division by zero in nrt 0.3.0. Entirely empty pixels are 0. Unusable support/date fields are zero and floating diagnostics are NaN. An exception leaves the new output marked `building`; it is not a successful empty result.
 
-Small on-disk tests compare the adapter with direct public-backend calls at matching block layouts, plus stable/change inputs, unstable/short/constant history, masks, NoData, named axes, cropped output, signatures, CLI and source immutability. These verify implementation, not SAR detection accuracy or continental throughput. Real SAR calibration and distribution review remain separate work.
+Small on-disk tests compare the adapter with direct public-backend calls at matching block layouts, plus stable/change inputs, unstable/short/constant history, masks, NoData, named axes, cropped output, signatures, CLI and source immutability. These verify implementation, not SAR detection accuracy or continental throughput. Real SAR calibration remains separate work; redistribution outside the documented V4 scope requires a separate assessment.

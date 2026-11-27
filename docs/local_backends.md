@@ -4,7 +4,7 @@ Assessment date: 2026-11-27. These are development-candidate capabilities, not a
 
 | Algorithm / candidate | Decision | Evidence and limit |
 | --- | --- | --- |
-| CUSUM: ec-jrc/nrt 0.3.0 | Retain the separately installed local experimental adapter | Existing direct-library and real SAR tests pass. Distribution review is not replaced by those tests. |
+| CUSUM: ec-jrc/nrt 0.3.0 | Ship the S1-GRiTS adapter and instructions; user installs nrt separately | Local experimental CLI/Python use only; no bundled backend, automatic install extra or Web/SaaS endpoint. |
 | CCDC: USGS PyCCD | Not selected for direct VV/VH adaptation | Its public interface requires Landsat optical, thermal and QA series. Do not fabricate those bands from SAR. |
 | CCDC: pyxccd | Do not relabel COLD / S-CCD as the existing GEE CCDC | These are distinct algorithm choices, requiring their own contract and validation. |
 | CCDC / LandTrendr: Zeit | Not selected for direct SAR CCDC adaptation in this candidate | Reviewed 3.10.0 source: fixed LASSO strength and mandatory TMask path; changing the range alone does not meet our SAR input contract. Not installed or integrated. |
@@ -16,20 +16,36 @@ Assessment date: 2026-11-27. These are development-candidate capabilities, not a
 
 S1-GRiTS currently uses PolyForm Noncommercial 1.0.0 with a separate commercial licensing route. nrt is EUPL-1.2. The [EUPL text](https://github.com/ec-jrc/nrt/blob/master/LICENSE) distinguishes use, interoperability and redistribution of derivative works; PolyForm is not in its compatible-license appendix. That absence alone does **not** prove that an unmodified API dependency is an incompatible derivative.
 
-The European Commission's [FAQ](https://interoperable-europe.ec.europa.eu/collection/eupl/faqs) distinguishes independent components linked through their public interfaces from incorporated or modified code, while noting that derivative-work classification depends on applicable law. Our adapter imports the separately installed CuSum API; it does not vendor or modify nrt. The engineering decision is to keep this separate installation route and the existing experimental status. No nrt extra, bundled copy, project relicensing or claim of universal legal compatibility is introduced. Public/commercial distribution clearance remains an explicit open item, not an automatic failure of local use.
+The European Commission's [FAQ](https://interoperable-europe.ec.europa.eu/collection/eupl/faqs) distinguishes independent components linked through their interfaces from incorporated code, while noting that derivative-work classification depends on applicable law. Our adapter imports the separately installed CuSum API; it does not vendor or modify nrt.
+
+**V4 distribution decision, 2026-11-27:** include the S1-GRiTS adapter, CLI/Python
+entry points, tests and usage instructions in the S1-GRiTS source/wheel distribution.
+Keep nrt 0.3.0 separately installed from its upstream distribution under its own
+[EUPL-1.2 terms](https://github.com/ec-jrc/nrt/blob/v0.3.0/LICENSE).
+No nrt code, binaries, copied detection implementation, dependency extra or
+automatic download is included. S1-GRiTS retains its existing license.
+
+This is the engineering interpretation for the inspected independent adapter,
+supported by the FAQ's interoperability distinction; separate installation alone
+is not a license exemption. It closes this V4 packaging-scope decision, not
+universal legal clearance. Bundled/modified nrt distributions, containers that
+redistribute nrt, commercial combined deliveries and CUSUM Web/SaaS remain outside
+this scope and need their own review of the actual delivery and obligations.
+No claim that EUPL prohibits commercial use is made.
 
 For the already verified research environment, the tested versions are nrt 0.3.0, NumPy 2.2.6 and Numba 0.61.2. Use a separate environment so this combination does not replace a production stack. See [CUSUM behavior and outputs](cusum.md). This assessment is a dependency/distribution record, not legal clearance for every jurisdiction or business model.
 
 The concrete candidate scope is the existing CLI/Agent adapter with a user-installed,
-unmodified backend. Installation commands are now documented. Bundled nrt, an automatic
-installation extra and public Web/SaaS access are not part of that decision; their
-distribution review remains open. A new small-sample run passed all 18 CUSUM and
+unmodified backend. Installation commands are documented. Bundled nrt, an automatic
+installation extra and public Web/SaaS access are outside this V4 delivery.
+A small-sample run passed all 18 CUSUM and
 Zarr-group tests, including comparisons with direct backend calls. Subsequent R7
 verification installed the candidate wheel and the same nrt/NumPy/Numba versions in
 a fresh Windows Python 3.12 environment without inherited site packages: `pip check`
 and direct-backend CUSUM tests passed. This establishes installation and adapter
-behavior for that environment; it does not close the distribution review or establish
-SAR detection accuracy.
+behavior for that environment; it does not establish SAR detection accuracy.
+The distribution decision above follows the inspected integration and upstream
+terms, not the numerical test results.
 
 ## Local LandTrendr selection
 
