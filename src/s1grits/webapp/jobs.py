@@ -275,14 +275,14 @@ class JobManager:
         job = self.get(job_id)
         log_path = job.job_dir / "log.txt"
         lines: list[str] = []
+        next_after = after
         if log_path.exists():
             with open(log_path, "r", encoding="utf-8", errors="replace") as fp:
                 for i, line in enumerate(fp):
-                    if i >= after:
+                    if i >= after and len(lines) < limit:
                         lines.append(line.rstrip("\n"))
-                        if len(lines) >= limit:
-                            break
-        return {"after": after, "next": after + len(lines),
+                    next_after = i + 1
+        return {"after": after, "next": max(next_after, after + len(lines)),
                 "lines": lines, "status": job.status}
 
     def cancel(self, job_id: str, term_timeout: float = 8.0) -> dict:
