@@ -64,6 +64,13 @@ def _init_zarr_2band(
                 _incompat = (
                     f"grid mismatch: existing=({z_h},{z_w}) new=({H},{W})"
                 )
+            elif pyproj.CRS.from_user_input(g_check.attrs['crs']) != pyproj.CRS.from_user_input(target_crs):
+                _incompat = 'grid mismatch: CRS differs'
+            elif not np.allclose(g_check.attrs['transform'][:6], list(transform)[:6], rtol=0, atol=1e-7):
+                _incompat = 'grid mismatch: transform differs'
+            elif (not np.allclose(g_check['x'][:], x_coords, rtol=0, atol=1e-7)
+                  or not np.allclose(g_check['y'][:], y_coords, rtol=0, atol=1e-7)):
+                _incompat = 'grid mismatch: pixel coordinates differ'
             else:
                 # Validate that all expected band datasets exist
                 _missing = [b for b in band_names if b not in g_check]

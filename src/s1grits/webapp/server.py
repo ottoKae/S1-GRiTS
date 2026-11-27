@@ -14,6 +14,7 @@ resolves endpoint annotations at runtime, and stringified annotations cannot
 find the function-local request models defined inside create_app.
 """
 import base64
+import codecs
 import hmac
 import ipaddress
 import logging
@@ -31,6 +32,32 @@ from s1grits.webapp.jobs import JOB_TYPES, JobManager
 logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+
+def _read_log_chunk(path: Path, offset: int, limit: int, tail: bool) -> dict:
+    size = path.stat().st_size if path.is_file() else 0
+    start = max(0, size - limit) if tail and offset == 0 else min(offset, size)
+    data = b""
+    if size:
+        with path.open("rb") as fp:
+            fp.seek(start)
+            # Up to three bytes to align the start, then three to finish a character.
+            data = fp.read(limit + 6)
+    skipped = 0
+    while skipped < len(data) and data[skipped] & 0xC0 == 0x80:
+        skipped += 1
+    start += skipped
+    data = data[skipped:]
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    chunk = data[:limit]
+    text = decoder.decode(chunk, final=False)
+    if not text and decoder.getstate()[0]:
+        extra = data[limit:limit + 3]
+        text += decoder.decode(extra, final=False)
+        chunk += extra
+    # Leave an incomplete trailing character for the next poll, including at EOF.
+    consumed = len(chunk) - len(decoder.getstate()[0])
+    return {"offset": start, "next_offset": start + consumed, "size": size, "text": text}
 
 
 def _is_local_client_host(host: str) -> bool:
@@ -577,14 +604,8 @@ def create_app(root: Path | str, token: str | None = None,
                 from fastapi.responses import Response
                 return Response("", media_type="text/plain; charset=utf-8")
             return FileResponse(path, media_type="text/plain", filename=f"{job_id}.log")
-        data = path.read_bytes() if path.is_file() else b""
-        start = max(0, len(data) - limit) if tail and offset == 0 else min(offset, len(data))
-        chunk = data[start:start + limit]
         return {
-            "offset": start,
-            "next_offset": start + len(chunk),
-            "size": len(data),
-            "text": chunk.decode("utf-8", errors="replace"),
+            **_read_log_chunk(path, offset, limit, tail),
             "status": job.status,
         }
 

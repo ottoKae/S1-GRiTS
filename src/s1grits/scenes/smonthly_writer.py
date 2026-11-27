@@ -1129,6 +1129,30 @@ def _monthly_output_months(writer_kwargs, *, skip_months=()) -> set[str]:
     return valid_months
 
 
+def _monthly_variant_values(args):
+    return {
+        'processing.spatial_despeckle': args['processing_level'] != 'ARDC',
+        'processing.despeckle_method': None,
+        'processing.despeckle_strength': None,
+        'processing.features_ratio': args.get('features_ratio', False),
+        'processing.features_rvi': args.get('features_rvi', False),
+        'processing.features_glcm': args.get('features_glcm', False),
+        'processing.monthly.composite_method': (args.get('monthly_cfg') or {}).get('composite_method', 'median'),
+        'processing.target_resolution': float(args['target_res']),
+        'processing.resampling_method': str(args.get('resampling_method', 'nearest')),
+    }
+
+
+def _check_monthly_identity(path, signature):
+    if path.exists():
+        existing = zarr.open_group(str(path), mode='r')
+        if existing['time'].shape[0] and existing.attrs.get('processing_signature') != signature:
+            raise ValueError(
+                'Cannot resume monthly output: processing identity differs or is unknown. '
+                'Use a new output.base_dir; existing monthly values and metadata are unchanged.'
+            )
+
+
 def _write_smonthly_one_track(
     mgrs_tile_id: str,
     direction_label: str,
@@ -1251,21 +1275,13 @@ def _write_smonthly_one_track(
     _band_names.append(N_OBS_BAND)
 
     # ---- Compute smonthly product instance metadata ----
-    _composite_method = monthly_cfg.get('composite_method', 'median') if monthly_cfg else 'median'
     _smonthly_bands = list(_band_names)
-    _smonthly_variant_vals = {
-        "processing.spatial_despeckle": processing_level != "ARDC",
-        "processing.despeckle_method": None,
-        "processing.despeckle_strength": None,
-        "processing.features_ratio": features_ratio,
-        "processing.features_rvi": features_rvi,
-        "processing.features_glcm": features_glcm,
-        "processing.monthly.composite_method": _composite_method,
-        "processing.target_resolution": float(target_res),
-        "processing.resampling_method": str(resampling_method),
-    }
+    _smonthly_variant_vals = _monthly_variant_values(locals())
     _smonthly_sig = make_processing_signature(_smonthly_variant_vals)
     _smonthly_variant = make_product_variant('smonthly', _smonthly_variant_vals, _smonthly_bands)
+
+    if _provenance_tracker is None:
+        _check_monthly_identity(zarr_path, _smonthly_sig)
 
     # Open / create Zarr (always enabled — Zarr is the primary Data Cube product)
     g = _init_zarr_2band(
