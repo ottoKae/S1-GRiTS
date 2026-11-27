@@ -216,6 +216,7 @@ s1grits static ensure --output-dir /path/to/output --product-label smonthly_ASCE
 |---|---|
 | 安装并完成首次检查 | [安装](docs/installation.md) |
 | 选择 CLI／Agent／Web，了解各入口支持范围 | [入口支持矩阵](docs/entry_points.md) |
+| 从 V3 迁移到 V4 开发候选 | [迁移与兼容说明](docs/migration_v4.md)、[发布范围](docs/release.md#v4-scope) |
 | 下载逐景／月度影像及配套 static | [工作流](docs/workflows.md)、[网页界面](docs/webapp.md)、[配置参考](docs/configuration.md) |
 | 理解并交接已有数据 | [输出结构](docs/outputs.md)、[数据交接](docs/DATA_HANDOFF_ZH.md) |
 | 记录或核查处理过程 | [月度生产留痕](docs/PROVENANCE_WORKFLOW_ZH.md)、[历史元数据导出](docs/PROVENANCE_READONLY_ZH.md) |

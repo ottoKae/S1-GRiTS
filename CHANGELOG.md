@@ -7,6 +7,38 @@ the full history.
 
 ## Unreleased
 
+Target: **V4.0.0**. This section describes the development candidate, not a
+published package. The package version remains 3.0.1rc1 until release gates
+are completed. See the [migration guide](docs/migration_v4.md) and
+[release scope](docs/release.md#v4-scope).
+
+### Data Cube tools and access
+- Keep the existing production framework and default first-valid-pixel
+  mosaicking. Add explicit intra-pass average, burst-center and looks-weighted
+  choices, with method-specific parameters and provenance.
+- Derive independent filtered, Ratio/RVI/GLCM and mean/median monthly products
+  from existing Cubes. Add explicit linear temporal interpolation with observed
+  masks and a maximum gap; analysis does not require rebuilding the parent.
+- Select product instances and Zarr groups explicitly. Register existing assets,
+  read virtual selection/feature views and explicitly materialize new outputs.
+  Ordered multi-track monthly first-valid/mean combination and inter-tile
+  VRT/COG mosaics remain distinct operations with distinct input contracts.
+- Add local experimental LandTrendr point, point-set and small-window adapters.
+  Public CUSUM remains a separately installed experimental backend with
+  distribution review pending. GEE CCDC/LandTrendr is explicit and point-only;
+  local CCDC is not implemented. No automatic cloud fallback is introduced.
+- Expose supported tools in one Chinese/English console; document CLI, Python,
+  production YAML and the two generic Agent workflows through one
+  [entry/support matrix](docs/entry_points.md). Skills are separate from the wheel.
+
+### Data integrity and delivery
+- Reject incompatible grid identity during resume and preserve monthly method
+  identity before replacement or provenance writes.
+- Correct Web log pagination and UTF-8 chunk reading; align installed-package
+  resource tests with the actual packaged assets.
+- Keep manuscript files, research data and private operational artifacts out
+  of Python distributions. Existing products are not migrated by installation.
+
 ### Fixed
 - Nearest-neighbour reprojection now uses exact coordinate transformations
   (`tolerance=0`) in burst prealignment, scene/monthly blocks, full-frame
@@ -37,9 +69,9 @@ the full history.
   gates for version, package assets, canonical frontend and Git state.
 
 ### Changed
-- The bundled v3 Chinese web console is the single canonical frontend. The
-  retired Streamlit/English prototype remains absent from source and wheels;
-  future English support will internationalize this frontend.
+- The single canonical frontend now switches between Chinese and English on
+  the same page. Retired Streamlit/English prototypes remain absent from
+  source and wheels.
 - Quick starts install `s1grits[web]` when they instruct users to run
   `s1grits serve`, and document the complete wheel-first setup path.
 

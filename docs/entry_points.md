@@ -8,6 +8,9 @@ Check `python -m s1grits --version`, `s1grits.__file__` and the relevant command
 帮助。CLI／Python 执行计算；Web 提供有限表单；Agent 根据通用 skill 选择输入、调用
 已有命令并检查结果。**YAML 保存生产配置，skill 是操作说明，两者不是替代关系。**
 
+Upgrading an existing installation? Start with [migration and compatibility](migration_v4.md).
+已有 V3 环境或历史 Cube，请先阅读迁移说明；安装新软件不会自动改写历史产品。
+
 ## Choose a starting route / 选择起点
 
 | Your situation / 当前情况 | Start here / 推荐入口 | Keep / 需要保留 |

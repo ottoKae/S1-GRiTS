@@ -1,8 +1,32 @@
 # S1-GRiTS Release Process
 
 This document is the maintainer contract for publishing the Python package,
-GitHub Release and bundled Chinese web console. A release is immutable: never
+GitHub Release and bundled Chinese/English web console. A release is immutable: never
 reuse an existing PyPI version or move a published tag.
+
+<a id="v4-scope"></a>
+## V4.0.0 candidate scope / 候选发布范围
+
+V4.0.0 is the target, not the currently published version or a completed release
+gate. The local candidate remains 3.0.1rc1. The [changelog](../CHANGELOG.md),
+[migration guide](migration_v4.md) and [entry/support matrix](entry_points.md)
+describe the deliverable behavior.
+
+| Scope / 范围 | Release treatment / 发布处理 |
+| --- | --- |
+| Existing production and correctness fixes / 生产与修复 | Preserve defaults; include exact 30 m nearest-neighbour mapping, NoData/count/empty-month fixes and compatible resume checks. Historical products remain unchanged. |
+| Explicit optional tools / 显式可选工具 | Include intra-pass strategies, filtering/features, monthly mean/median, interpolation, product/group access, registration, views/materialization, multi-track monthly combination and inter-tile mosaics, within their documented input contracts. |
+| User entry points / 使用入口 | One bilingual console and documented YAML, CLI, Python and generic Agent routes. Skills are maintained separately from the wheel. Web supports the subset listed in the support matrix. |
+| Local LandTrendr / 本地 LandTrendr | Experimental, separately installed backend; point, point-set and small-window scope. Do not claim GEE equivalence or SAR detection accuracy. |
+| Public CUSUM / 公共 CUSUM | Local candidate adapter exists; separate backend installation. Distribution review remains unresolved. Before publication, record a decision covering the shipped adapter and documentation; if excluded, remove it from the release candidate's CLI, exports, docs and tests consistently and revalidate that candidate. Do not call this gate passed merely because the backend is not bundled. |
+| GEE segmentation / GEE 分段 | Explicit optional single-point route; no automatic fallback. Offline checks do not establish online acceptance. |
+| Local CCDC / 本地 CCDC | Not implemented and excluded from supported V4 capabilities. It may continue as a separate follow-up without being promised by this release. |
+| Research / 研究材料 | Manuscripts, research datasets, private operational files and domain-specific skills do not enter Python distributions. |
+
+本轮交付以已验收的有限扩展为范围，不要求实现本地 CCDC 才能定义 V4；
+但不能把它列为正式支持。CUSUM 的公开分发决定仍是发布前待处理项。
+严格 STAC 全模式／扩展合规、大洲吞吐和跨后端科学等价均不作为已完成能力。
+软件包包含公开说明及所需参考字典，不包含用户论文和研究数据。
 
 ## 1. What is released
 
@@ -13,13 +37,12 @@ One tag publishes two artifacts:
 
 The wheel is pure Python but depends on binary geospatial wheels. Supported
 Python is currently `>=3.12,<3.13`. The wheel includes the three spatial
-GeoParquet dictionaries and the single canonical v3 Chinese frontend under
+GeoParquet dictionaries and the single canonical bilingual frontend under
 `s1grits/webapp/static/`.
 
 The retired Streamlit/English prototype is not a second product: it is absent
-from `src/`, package-data rules and the wheel. Future English support should be
-implemented by internationalising the same static SPA, not by restoring a
-parallel `webapp_en` tree.
+from `src/`, package-data rules and the wheel. Chinese and English are selected
+on the same static SPA; there is no parallel `webapp_en` application.
 
 ## 2. Version and tag contract
 
@@ -27,36 +50,45 @@ The following values must agree exactly:
 
 - `[project].version` in `pyproject.toml`;
 - `__version__` in `src/s1grits/__version__.py`;
+- `version` in `CITATION.cff`;
 - the Git tag, with a leading `v`.
 
 Stable tags use `vX.Y.Z`; release candidates use `vX.Y.Z-rcN`, which maps to
-the PEP 440 package version `X.Y.ZrcN`. Feature additions such as the Chinese
-GUI and 10 m optimized resampling require a minor release (for example
-`3.1.0`), not reuse of the already published `3.0.0`.
+the PEP 440 package version `X.Y.ZrcN`. This update targets `4.0.0`;
+do not reuse the published `3.0.0` version. A major target names the expanded
+product/access/tool interface; it does not require rewriting the production core.
 
 ## 3. Prepare the release commit
 
 Work on a feature branch, then:
 
 1. Finish and review `CHANGELOG.md` under `Unreleased`.
-2. Set the next version in both version files.
+2. Close the release-scope decisions above, then set the next version in both
+   version files and CITATION.cff; update the citation date for the actual release.
 3. Run the offline source gate.
 4. Run lint, tests and a local package build.
 5. Merge the reviewed commit to `main` and push `main` before tagging.
 
-Windows/PowerShell example for a future `v3.1.0` release:
+For the current unchanged candidate, run `python tools/release_check.py`
+without a future tag argument. The following Windows/PowerShell example applies
+only after preparing a future `v4.0.0` release commit:
 
 ```powershell
-python tools/release_check.py --candidate-tag v3.1.0
+python tools/release_check.py --candidate-tag v4.0.0
 python -m ruff check src tests tools benchmarks
 python -m mypy
-python -m pytest tests -q --tb=short
+python -m pytest tests -q --tb=short --basetemp .test-tmp/release-v4 -p no:cacheprovider
 python -m build
 python -m twine check --strict dist/*
 ```
 
+Use a fresh dedicated test directory for each run; pytest may clear its basetemp.
+Verify wheel/sdist contents exclude manuscripts and research data, then install
+the wheel in an isolated environment and run the small-output tutorial and Web
+checks there. Source imports must not mask missing packaged resources.
+
 The candidate gate is network-free. It verifies version parity, tag syntax,
-required GeoParquet and web assets, the `zh-CN` canonical page, absence of a
+required GeoParquet and web assets, the bilingual canonical page, absence of a
 tracked legacy frontend, package-data rules and wheel-first quick-start docs.
 It also rejects tracked email addresses, user-home paths, high-confidence
 private keys and common GitHub/AWS token formats.
@@ -92,9 +124,9 @@ After the release commit is present on `origin/main`:
 ```powershell
 git switch main
 git pull --ff-only origin main
-git tag -a v3.1.0 -m "S1-GRiTS 3.1.0"
-python tools/release_check.py --release-tag v3.1.0
-git push origin v3.1.0
+git tag -a v4.0.0 -m "S1-GRiTS 4.0.0"
+python tools/release_check.py --release-tag v4.0.0
+git push origin v4.0.0
 ```
 
 The strict gate additionally requires a completely clean worktree, an
@@ -115,14 +147,15 @@ wheel:
 ```powershell
 python -m venv .venv-release-smoke
 .\.venv-release-smoke\Scripts\python -m pip install --upgrade pip
-.\.venv-release-smoke\Scripts\python -m pip install "s1grits[web]==3.1.0"
+.\.venv-release-smoke\Scripts\python -m pip install "s1grits[web]==4.0.0"
 .\.venv-release-smoke\Scripts\s1grits --version
 .\.venv-release-smoke\Scripts\s1grits init smoke.yaml
 .\.venv-release-smoke\Scripts\s1grits doctor --config smoke.yaml
 .\.venv-release-smoke\Scripts\s1grits serve smoke-output --port 5556
 ```
 
-Confirm that `http://127.0.0.1:5556/` opens the Chinese console and that
+Confirm that `http://127.0.0.1:5556/` opens S1-GRiTS Data Cube Console /
+S1-GRiTS 数据立方体控制台, language switching works on the same page, and that
 `/api/capabilities` reports the released version. Also confirm both artifacts
 appear on GitHub Releases and PyPI.
 

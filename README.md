@@ -279,6 +279,7 @@ Start with the task you need; the detailed references can be read as needed.
 |---|---|
 | Install and run the first check | [Installation](docs/installation.md) |
 | Choose CLI, Agent or Web; check supported capabilities | [Entry points and support](docs/entry_points.md) |
+| Move from V3 to the V4 development candidate | [Migration and compatibility](docs/migration_v4.md), [release scope](docs/release.md#v4-scope) |
 | Produce scenes, monthly composites and paired static layers | [Workflows](docs/workflows.md), [Web interface](docs/webapp.md), [Configuration](docs/configuration.md) |
 | Understand and hand off a dataset | [Output structure](docs/outputs.md), [Data handoff](docs/DATA_HANDOFF_ZH.md) |
 | Record or inspect processing evidence | [Monthly production records](docs/PROVENANCE_WORKFLOW_ZH.md), [Historical metadata export](docs/PROVENANCE_READONLY_ZH.md) |
