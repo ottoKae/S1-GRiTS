@@ -1,0 +1,13 @@
+{
+  "generated": true,
+  "s1grits_version": "4.0.0",
+  "canonical_source": ".agents/skills",
+  "files": {
+    "s1grits-cube/SKILL.md": {
+      "sha256": "8be885330e3febe320dc8565c7be84315515020a9b1aa43026acc36fd1214f51"
+    },
+    "s1grits-analysis/SKILL.md": {
+      "sha256": "b2b8c61b4419d458a2b7f75132f4f0ecc083f0ae183cbcd445ad97373e462537"
+    }
+  }
+}

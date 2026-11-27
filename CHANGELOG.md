@@ -31,6 +31,9 @@ still requires the release gates. See the [migration guide](docs/migration_v4.md
 - Expose supported tools in one Chinese/English console; document CLI, Python,
   production YAML and the two generic Agent workflows through one
   [entry/support matrix](docs/entry_points.md). Skills are separate from the wheel.
+  Generated Cube/analysis skill exports accompany the repository and source
+  distribution, with package-version and source-hash records; their editable
+  canonical source remains unique.
 
 ### Data integrity and delivery
 - Reject incompatible grid identity during resume and preserve monthly method
