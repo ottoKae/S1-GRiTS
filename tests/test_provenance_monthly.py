@@ -228,7 +228,6 @@ def test_append_and_same_time_replace_keep_current_locations_correct(tmp_path):
     feb_receipt = _receipt(root, "run-feb")
     kwargs, sources, bindings = _inputs(root)
     kwargs["on_time_conflict"] = "overwrite"
-    kwargs["monthly_cfg"]["composite_method"] = "mean"
     kwargs["final_vv"][0] = kwargs["final_vv"][0] + np.float32(2)
     _write(root, run="run-replace", inputs=(kwargs, sources, bindings))
     outputs = _tables(root)[0]
@@ -241,13 +240,26 @@ def test_append_and_same_time_replace_keep_current_locations_correct(tmp_path):
     assert _receipt(root, "run-feb") == feb_receipt
     replacement = _receipt(root, "run-replace")
     assert replacement["generation_id"] == current["generation_id"]
-    assert replacement["numeric_processing"] != original_receipt["numeric_processing"]
+    assert replacement["numeric_processing"] == original_receipt["numeric_processing"]
     pointer = json.loads((root / "provenance/current.json").read_text())
     release = root / "provenance/releases" / pointer["metadata_release_id"]
     for row in outputs:
         saved = json.loads((release / row["evidence_ref"]).read_text())
         assert saved["generation_id"] == row["generation_id"]
         assert saved["numeric_processing"] == _receipt(root, row["run_id"])["numeric_processing"]
+
+
+@pytest.mark.parametrize('conflict', ['skip', 'overwrite'])
+def test_changed_method_rejected_before_pending(tmp_path, conflict):
+    root = tmp_path/'tracked'
+    _write(root)
+    before = _snapshot(root)
+    kwargs, sources, bindings = _inputs(root)
+    kwargs['monthly_cfg']['composite_method'] = 'mean'
+    kwargs['on_time_conflict'] = conflict
+    with pytest.raises(ValueError, match='processing identity'):
+        _write(root, run='changed-method', inputs=(kwargs, sources, bindings))
+    assert _snapshot(root) == before
 
 
 def test_rejects_empty_qc_and_existing_catalog_before_pending(tmp_path):

@@ -274,6 +274,8 @@ def _prealign_scenes_to_master_grid(
                 dst_crs=target_crs,
                 dst_nodata=np.nan,
                 resampling=resampling,
+                # Approximate coordinates can select a different nearest pixel per block.
+                tolerance=0.0 if resampling == Resampling.nearest else 0.125,
                 num_threads=1,
             )
         except Exception as exc:
@@ -296,6 +298,7 @@ def _prealign_scenes_to_master_grid(
         if hasattr(final_arr, "record_numeric"):
             final_arr.record_numeric("grid_alignment", "linear_power", "linear_power",
                                      {"mode": "prealign_reproject", "resampling": resampling.name,
+                                      "transform_tolerance_pixels": 0.0 if resampling == Resampling.nearest else 0.125,
                                       "result_dtype": "float32", "input_index": idx,
                                       "src_nodata": prof.get("nodata"),
                                       "nodata_policy": "rasterio_src_nodata"})
@@ -390,6 +393,7 @@ def _mosaic_align_window(
                     dst_crs=target_crs,
                     dst_nodata=np.nan,
                     resampling=resampling,
+                    tolerance=0.0 if resampling == Resampling.nearest else 0.125,
                     num_threads=1,
                 )
             except Exception as exc:
@@ -412,6 +416,8 @@ def _mosaic_align_window(
                             "src_nodata": prof.get("nodata"),
                             "nodata_policy": "mask_source_nodata" if alignment_mode == "direct_copy"
                             else "rasterio_src_nodata",
+                            "transform_tolerance_pixels": (0.0 if resampling == Resampling.nearest else 0.125)
+                            if alignment_mode == "window_reproject" else None,
                             "resampling": resampling.name if alignment_mode == "window_reproject" else None})
         tmp[~np.isfinite(tmp) | (tmp <= 0)] = np.nan
         if numeric_record is not None:
@@ -519,6 +525,7 @@ def _mosaic_align_scene_window(
                 dst_transform=dst_transform,
                 dst_crs=target_crs,
                 resampling=resampling,
+                tolerance=0.0 if resampling == Resampling.nearest else 0.125,
                 src_nodata=float(src_nd),
                 dst_nodata=NODATA_SENTINEL,
                 init_dest_nodata=True,

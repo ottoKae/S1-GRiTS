@@ -7,6 +7,18 @@ the full history.
 
 ## Unreleased
 
+### Fixed
+- Nearest-neighbour reprojection now uses exact coordinate transformations
+  (`tolerance=0`) in burst prealignment, scene/monthly blocks, full-frame
+  mosaics and band alignment. Cross-UTM nearest-pixel selection no longer
+  depends on the approximation used for a particular warp window.
+- The 30 m `auto` route remains nearest-neighbour in linear power; aligned
+  inputs retain direct-copy handling. The 10 m `auto` bilinear route and
+  preview averaging retain their existing interpolation/approximation settings.
+- Require Rasterio 1.4.4 or newer, which supports the transformation-tolerance
+  argument. Existing products are not rewritten; affected cross-grid outputs
+  must be regenerated to adopt the new mapping.
+
 ### Candidate 3.0.1rc1 — 2026-10-28
 - Add opt-in monthly processing receipts: exact source membership, numeric
   operations, append/replace generations and coordinated Catalog recovery.

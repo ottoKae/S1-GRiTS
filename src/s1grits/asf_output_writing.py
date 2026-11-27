@@ -563,6 +563,8 @@ def _mosaic_align(
             dst_transform=master_transform,
             dst_crs=target_crs,
             resampling=resampling,
+            # Match the exact nearest-pixel mapping used by prealignment and blocks.
+            tolerance=0.0 if resampling == Resampling.nearest else 0.125,
             src_nodata=float(src_nd),
             dst_nodata=NODATA_TMP,
             init_dest_nodata=True,
@@ -2494,6 +2496,7 @@ def _reproject_band_to_master(
         dst_transform=dst_transform,
         dst_crs=dst_crs,
         resampling=resampling,
+        tolerance=0.0 if resampling == Resampling.nearest else 0.125,
         src_nodata=np.nan,
         dst_nodata=np.nan,
     )

@@ -324,6 +324,15 @@ processing:
 
 #### Scenes Workflow Processing Options
 
+`spatial_despeckle` applies only to the per-acquisition scene product.
+TV-Bregman and NLM accept linear-power arrays, filter internally in dB,
+and return linear power before the output-band conversion. Disabling the
+option leaves scenes unfiltered. The `smonthly` writer independently
+composites unfiltered acquisition mosaics in linear power; enabling scene
+despeckling does not make it composite filtered scenes. Its STAC metadata
+reports the selected reducer (`mean`, `median`, or `min`) rather than a
+fixed median label. Existing products are not relabelled in place.
+
 ```yaml
 processing:
   spatial_despeckle: false         # Per-scene spatial TV-Bregman filtering
